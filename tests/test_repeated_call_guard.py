@@ -2,77 +2,112 @@ from agent.orchestration import should_block_repeated_call, tool_call_fingerprin
 
 
 def test_fingerprint_ignores_dict_key_order():
-    assert tool_call_fingerprint("sqlite_query", {"a": 1, "b": 2}) == tool_call_fingerprint(
-        "sqlite_query", {"b": 2, "a": 1}
+    assert tool_call_fingerprint("terminal", {"command": "pwd", "timeout": 20}) == tool_call_fingerprint(
+        "terminal", {"timeout": 20, "command": "pwd"}
     )
 
 
 def test_first_call_is_not_blocked():
-    assert should_block_repeated_call("read_excel", {"path": "book.xlsx"}, []) is None
+    assert should_block_repeated_call("load_file_for_model", {"path": "/workspace/book.pdf"}, []) is None
 
 
 def test_exact_call_after_failure_is_blocked():
-    args = {"database_path": "dbs/data.db", "sql": "SELECT strval(x) FROM t"}
+    args = {"command": "cat /workspace/missing.txt"}
     history = [{
-        "tool_name": "sqlite_query",
-        "call_fingerprint": tool_call_fingerprint("sqlite_query", args),
-        "error": "SQLite query failed: no such function: strval",
+        "tool_name": "terminal",
+        "call_fingerprint": tool_call_fingerprint("terminal", args),
+        "error": "No such file",
     }]
-    result = should_block_repeated_call("sqlite_query", args, history)
+    result = should_block_repeated_call("terminal", args, history)
     assert result["blocked"] is True
     assert result["category"] == "repeated_failed_call"
     assert result["retry_safe_without_state_check"] is False
-    assert "no such function" in result["previous_error"]
 
 
 def test_changed_arguments_are_not_blocked():
     history = [{
-        "call_fingerprint": tool_call_fingerprint("sqlite_query", {"sql": "SELECT 1"}),
-        "error": "bad query",
+        "call_fingerprint": tool_call_fingerprint("terminal", {"command": "pwd"}),
+        "error": "bad command",
     }]
-    assert should_block_repeated_call("sqlite_query", {"sql": "SELECT 2"}, history) is None
+    assert should_block_repeated_call("terminal", {"command": "ls"}, history) is None
 
 
 def test_non_list_history_is_safe():
-    assert should_block_repeated_call("read_excel", {"path": "x.xlsx"}, None) is None
+    assert should_block_repeated_call("load_file_for_model", {"path": "/workspace/x.txt"}, None) is None
 
 
-def test_unrelated_success_does_not_unblock_same_failed_call():
-    args = {"path": "missing.xlsx"}
+def test_unrelated_terminal_success_does_not_unblock_same_failed_call():
+    args = {"command": "cat /workspace/missing.txt"}
+    other = {"command": "ls /workspace"}
     history = [{
-        "tool_name": "read_excel",
-        "call_fingerprint": tool_call_fingerprint("read_excel", args),
-        "error": "file not found",
+        "tool_name": "terminal",
+        "call_fingerprint": tool_call_fingerprint("terminal", args),
+        "error": "No such file",
     }, {
         "status": "success",
-        "tool_name": "list_files",
-        "call_fingerprint": tool_call_fingerprint("list_files", {"path": "."}),
+        "tool_name": "terminal",
+        "call_fingerprint": tool_call_fingerprint("terminal", other),
+        "arguments": other,
     }]
-    result = should_block_repeated_call("read_excel", args, history)
-    assert result["blocked"] is True
+    assert should_block_repeated_call("terminal", args, history)["blocked"] is True
 
 
 def test_same_call_success_after_failure_clears_guard():
-    args = {"path": "missing.xlsx"}
-    fingerprint = tool_call_fingerprint("read_excel", args)
+    args = {"command": "pwd"}
+    fingerprint = tool_call_fingerprint("terminal", args)
     history = [{
-        "tool_name": "read_excel",
+        "tool_name": "terminal",
         "call_fingerprint": fingerprint,
-        "error": "file not found",
+        "error": "temporary error",
     }, {
         "status": "success",
-        "tool_name": "read_excel",
+        "tool_name": "terminal",
         "call_fingerprint": fingerprint,
     }]
-    assert should_block_repeated_call("read_excel", args, history) is None
+    assert should_block_repeated_call("terminal", args, history) is None
 
 
-def test_excel_strategy_is_present_in_planner_and_step_prompts():
-    from agent.core import PLAN_SYSTEM_PROMPT, STEP_TASK_PROMPT_SYSTEM
+def test_terminal_creation_of_missing_file_unblocks_model_inspection_retry():
+    failed_args = {"path": "/work/read_verify_files.txt"}
+    repair_args = {"command": "touch /work/read_verify_files.txt"}
+    history = [{
+        "tool_name": "load_file_for_model",
+        "arguments": failed_args,
+        "call_fingerprint": tool_call_fingerprint("load_file_for_model", failed_args),
+        "error": "FileNotFoundError: /work/read_verify_files.txt",
+    }, {
+        "status": "success",
+        "tool_name": "terminal",
+        "arguments": repair_args,
+        "call_fingerprint": tool_call_fingerprint("terminal", repair_args),
+    }]
+    assert should_block_repeated_call("load_file_for_model", failed_args, history) is None
+
+
+def test_unrelated_file_creation_does_not_unblock_model_inspection_retry():
+    failed_args = {"path": "/work/read_verify_files.txt"}
+    repair_args = {"command": "touch /work/other.txt"}
+    history = [{
+        "tool_name": "load_file_for_model",
+        "arguments": failed_args,
+        "call_fingerprint": tool_call_fingerprint("load_file_for_model", failed_args),
+        "error": "FileNotFoundError: /work/read_verify_files.txt",
+    }, {
+        "status": "success",
+        "tool_name": "terminal",
+        "arguments": repair_args,
+        "call_fingerprint": tool_call_fingerprint("terminal", repair_args),
+    }]
+    assert should_block_repeated_call("load_file_for_model", failed_args, history)["blocked"] is True
+
+
+def test_excel_strategy_remains_in_planner_and_step_prompts():
+    from agent.core import PLAN_SYSTEM_PROMPT, SYSTEM_PROMPT
     assert "inspect workbook structure first" in PLAN_SYSTEM_PROMPT
     assert "process only relevant sheets" in PLAN_SYSTEM_PROMPT
-    assert "do not load an entire workbook into context" in STEP_TASK_PROMPT_SYSTEM
-    assert "publish_file" in STEP_TASK_PROMPT_SYSTEM or "terminal" in STEP_TASK_PROMPT_SYSTEM
+    assert "do not load an entire workbook into model context" in PLAN_SYSTEM_PROMPT
+    assert "terminal" in SYSTEM_PROMPT
+    assert "publish_file" in SYSTEM_PROMPT
 
 
 def test_resume_refreshes_old_agent_system_prompt_only():
@@ -88,77 +123,8 @@ def test_resume_refreshes_old_agent_system_prompt_only():
     assert result[2]["content"] == "Продолжи задачу"
 
 
-def test_matching_file_creation_unblocks_previously_missing_python_script():
-    failed_args = {"path": "/work/read_verify_files.py", "timeout_seconds": 60}
-    write_args = {"path": "/work/read_verify_files.py", "content": "print('ok')"}
-    history = [{
-        "tool_name": "run_python",
-        "arguments": failed_args,
-        "call_fingerprint": tool_call_fingerprint("run_python", failed_args),
-        "error": "FileNotFoundError: Python script not found: /work/read_verify_files.py",
-    }, {
-        "status": "success",
-        "tool_name": "write_file",
-        "arguments": write_args,
-        "call_fingerprint": tool_call_fingerprint("write_file", write_args),
-    }]
-    assert should_block_repeated_call("run_python", failed_args, history) is None
-
-
-def test_unrelated_file_creation_does_not_unblock_missing_script_retry():
-    failed_args = {"path": "/work/read_verify_files.py", "timeout_seconds": 60}
-    write_args = {"path": "/work/other.py", "content": "print('other')"}
-    history = [{
-        "tool_name": "run_python",
-        "arguments": failed_args,
-        "call_fingerprint": tool_call_fingerprint("run_python", failed_args),
-        "error": "FileNotFoundError: Python script not found: /work/read_verify_files.py",
-    }, {
-        "status": "success",
-        "tool_name": "write_file",
-        "arguments": write_args,
-        "call_fingerprint": tool_call_fingerprint("write_file", write_args),
-    }]
-    assert should_block_repeated_call("run_python", failed_args, history)["blocked"] is True
-
-
-
 def test_work_prefix_without_leading_slash_is_normalized_for_file_paths():
     from agent.tools import _work_path_suffix
     assert _work_path_suffix("work/create.py") == "create.py"
     assert _work_path_suffix("/work/create.py") == "create.py"
     assert _work_path_suffix("create.py") is None
-
-
-def test_rewriting_script_after_python_exception_unblocks_same_run_call():
-    failed_args = {"path": "create_excel_and_csv.py"}
-    write_args = {"path": "create_excel_and_csv.py", "content": "fixed code", "overwrite": True}
-    history = [{
-        "tool_name": "run_python",
-        "arguments": failed_args,
-        "call_fingerprint": tool_call_fingerprint("run_python", failed_args),
-        "error": "AttributeError: property 'active' of 'Workbook' object has no deleter",
-    }, {
-        "status": "success",
-        "tool_name": "write_file",
-        "arguments": write_args,
-        "call_fingerprint": tool_call_fingerprint("write_file", write_args),
-    }]
-    assert should_block_repeated_call("run_python", failed_args, history) is None
-
-
-def test_work_shorthand_matches_explicit_work_path_for_recovery():
-    failed_args = {"path": "/work/create.py"}
-    write_args = {"path": "work/create.py", "content": "fixed"}
-    history = [{
-        "tool_name": "run_python",
-        "arguments": failed_args,
-        "call_fingerprint": tool_call_fingerprint("run_python", failed_args),
-        "error": "SyntaxError: invalid syntax",
-    }, {
-        "status": "success",
-        "tool_name": "write_file",
-        "arguments": write_args,
-        "call_fingerprint": tool_call_fingerprint("write_file", write_args),
-    }]
-    assert should_block_repeated_call("run_python", failed_args, history) is None

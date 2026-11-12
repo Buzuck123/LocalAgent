@@ -307,7 +307,7 @@ def retrieve_tool_result_fragment(archive: dict[str, str], result_id: str, start
         return {"ok": False, "error": "start must be a non-negative integer"}
     if isinstance(length, bool) or not isinstance(length, int) or length < 1:
         return {"ok": False, "error": "length must be a positive integer"}
-    length = min(length, 6000)
+    # The caller controls chunk size; preserve exact offset semantics without a hidden cap.
     raw = archive[result_id]
     if not isinstance(raw, str):
         raw = json.dumps(raw, ensure_ascii=False, default=str)
@@ -320,5 +320,6 @@ def retrieve_tool_result_fragment(archive: dict[str, str], result_id: str, start
         "end": end,
         "total_chars": len(raw),
         "has_more": end < len(raw),
+        "next_start": end if end < len(raw) else None,
         "content": raw[start:end],
     }

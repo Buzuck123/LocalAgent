@@ -57,7 +57,7 @@ rootless Podman container (one per conversation)
 persistent Bash session: main
 ```
 
-The planner does not import Podman or SWE-ReX. It sees the terminal as an ordinary tool and receives the command result (`stdout`, `stderr`, `exit_code`, timeout state). Sandbox lifecycle is managed outside the planner.
+The planner does not import Podman or SWE-ReX. It sees the terminal as an ordinary tool and receives the available terminal transcript; the separate exit code remains internal to the controller. Sandbox lifecycle is managed outside the planner.
 
 The container is created on the first `terminal` call for a conversation. It is not created per task or per HTTP request. Its writable container filesystem and Bash shell state survive later messages and LocalAgent restarts. The host's `workspace/work` directory is mounted read-write at `/host-workspace`; this is a deliberate shared workspace boundary, not a full home-directory mount. Do not describe the sandbox as isolated from that host directory.
 
@@ -161,14 +161,13 @@ The web service binds to `127.0.0.1` by default. Do not expose it to a LAN or th
 
 The model-facing tool catalog is intentionally small:
 
-- `terminal` — the only terminal tool. It waits for command completion and returns the accumulated terminal transcript; if output goes quiet for 10 seconds (or a single wait reaches 300 seconds), it returns control so the model can wait again, provide input, or send Ctrl+C through the same tool. Operation IDs and polling are internal.
-- `load_file_for_model` — direct model inspection of supported files; use terminal for programmatic processing.
-- `publish_file` — transfers a finished file from the container to the host download area and returns a download URL.
-- `web_search`, `open_web_page`, `open_browser_page` — external web discovery and reading.
-- `get_tool_result` — internal retrieval of a previously archived tool result.
-- `self_test_tools` — diagnostic smoke test.
+- `terminal` — the only computer interface. It runs Bash commands in the persistent Linux container and supports waiting, interactive input, and interruption through the same tool. Operation IDs and terminal lifecycle details remain internal.
+- `load_file_for_model` — direct model inspection of supported files at readable container paths. Text documents are delivered in sequential paragraph-aware chunks (`start`/`length`, `next_start`); use terminal and installed libraries for programmatic processing. Video is represented by sampled timestamped frames; its first 30 seconds of audio are attached only with a Gemma 4 model when an audio stream is present. Direct audio input is currently Gemma 4-only.
+- `publish_file` — transfers a finished file from the container to the host download area. The controller chooses a unique filename and never overwrites an existing download.
+- `web_search` and `open_browser_page` — external web discovery and rendered page inspection.
+- `get_tool_result` — retrieves sequential character ranges from a previously archived tool result using its returned `result_id`.
 
-There are no model-facing `read_file`, `write_file`, `run_python`, Excel, Word, SQLite, copy, move, or delete tools. Those operations are performed with Bash and ordinary Linux/Python utilities inside the container. `load_file_for_model` is the exception for direct model inspection of supported files, not a substitute for programmatic processing.
+There are no model-facing `read_file`, `write_file`, `run_python`, Excel, Word, SQLite, copy, move, or delete tools. Those operations are performed with Bash and ordinary Linux/Python utilities inside the container. A small internal compatibility dispatcher can finish pending calls from older saved checkpoints, but legacy schemas are never sent to the model. `load_file_for_model` is the exception for direct model inspection of supported files, not a substitute for programmatic processing.
 
 Shell state persists: `cd`, exported variables, shell functions, and files remain available in later terminal calls in the same conversation. Do not reset the working directory unless the task requires it. Install packages inside the container when necessary; the container is persistent for the life of the conversation.
 

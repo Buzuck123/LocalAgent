@@ -11,6 +11,24 @@ def _names(definitions):
     return {item["function"]["name"] for item in definitions}
 
 
+def _fake_container_file(monkeypatch, tmp_path, content):
+    from agent import attachments, sandbox_manager as sandbox_manager_module
+
+    attachment_root = tmp_path / "managed-attachments"
+    monkeypatch.setattr(attachments, "ATTACHMENT_ROOT", attachment_root)
+
+    def fake_download(conversation_id, source_path, target_path, *, max_bytes=None):
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(content)
+        return target_path
+
+    monkeypatch.setattr(
+        sandbox_manager_module, "sandbox_manager",
+        SimpleNamespace(download_file=fake_download),
+    )
+    return attachment_root
+
+
 def test_attachment_questions_skip_planner_but_workflows_do_not():
     image = [{"kind": "image", "name": "photo.jpg"}]
     text_doc = [{"kind": "document", "name": "notes.pdf"}]
@@ -22,7 +40,7 @@ def test_attachment_questions_skip_planner_but_workflows_do_not():
     assert core.classify_execution_mode("Обработай фото и расправь рукава", image) == "planned"
     assert core.classify_execution_mode("Создай Excel по данным фото", image) == "planned"
     assert core.classify_execution_mode("Обработай книгу и создай отчёт", workbook) == "planned"
-    assert core.classify_execution_mode("Сохрани результат в новый файл", image) == "planned"
+    assert core.classify_execution_mode("Сохрани результат в новый файл", image) == "simple"
 
 
 def test_tool_scope_matches_only_the_tools_sent_to_ollama():
@@ -98,43 +116,47 @@ def test_copy_file_rejects_symlinks_and_path_traversal(tmp_path, monkeypatch):
 
 
 def test_load_file_for_model_returns_native_image_attachment(tmp_path, monkeypatch):
-    root = tmp_path / "workspace"
-    root.mkdir()
-    monkeypatch.setattr(tools, "settings", SimpleNamespace(workspace_path=root.resolve()))
-    image_path = root / "photo.png"
-    image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"test-png")
-    result = tools.dispatch_tool("load_file_for_model", {"path": "photo.png", "question": "Describe it"})
+    image_bytes = b"\x89PNG\r\n\x1a\n" + b"test-png"
+    attachment_root = _fake_container_file(monkeypatch, tmp_path, image_bytes)
+    result = tools.dispatch_tool(
+        "load_file_for_model", {"path": "/workspace/photo.png"},
+        conversation_id="conversation-image",
+    )
     assert result["ok"] is True
     assert result["delivery"] == "ollama_native_images"
-    assert result["_model_attachment"]["path"] == str(image_path)
-    assert result["_model_attachment"]["source"] == "workspace_file"
+    assert result["namespace"] == "container"
+    assert result["_model_attachment"]["source"] == "managed_attachment"
+    assert str(attachment_root) in result["_model_attachment"]["path"]
 
 
 def test_load_file_for_model_extracts_text_file(tmp_path, monkeypatch):
-    root = tmp_path / "workspace"
-    root.mkdir()
-    monkeypatch.setattr(tools, "settings", SimpleNamespace(workspace_path=root.resolve()))
-    (root / "notes.md").write_text("Important note\nSecond line", encoding="utf-8")
-    result = tools.dispatch_tool("load_file_for_model", {"path": "notes.md"})
+    _fake_container_file(monkeypatch, tmp_path, b"Important note\nSecond line")
+    result = tools.dispatch_tool(
+        "load_file_for_model", {"path": "/workspace/notes.md"},
+        conversation_id="conversation-text",
+    )
     assert result["ok"] is True
     assert result["kind"] == "text"
     assert "Important note" in result["extracted_text"]
 
 
 def test_load_file_for_model_extracts_xlsx_preview(tmp_path, monkeypatch):
+    from io import BytesIO
     from openpyxl import Workbook
 
-    root = tmp_path / "workspace"
-    root.mkdir()
-    monkeypatch.setattr(tools, "settings", SimpleNamespace(workspace_path=root.resolve()))
     book = Workbook()
     book.active.append(["Product", "Quantity"])
     book.active.append(["Widget", 12])
-    book.save(root / "sample.xlsx")
-    result = tools.dispatch_tool("load_file_for_model", {"path": "sample.xlsx"})
+    buffer = BytesIO()
+    book.save(buffer)
+    _fake_container_file(monkeypatch, tmp_path, buffer.getvalue())
+    result = tools.dispatch_tool(
+        "load_file_for_model", {"path": "/workspace/sample.xlsx"},
+        conversation_id="conversation-xlsx",
+    )
     assert result["kind"] == "text"
     assert "Widget" in result["extracted_text"]
-    assert "read_excel" in result["note"]
+    assert "terminal" in result["note"]
 
 
 def test_model_tool_message_promotes_image_reference_to_attachment():
@@ -183,7 +205,10 @@ def test_ollama_client_sends_workspace_image_from_model_tool(tmp_path, monkeypat
         captured.update(payload)
         return {"message": {"content": "описание"}}
 
-    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "_post_stream", fake_post)
+    monkeypatch.setattr(client, "_post", lambda endpoint, payload, timeout=None: {"parameters": ""})
+    monkeypatch.setattr(core.db, "get_app_setting", lambda key, default=None: default)
+    monkeypatch.setattr(core.db, "record_debug_trace", lambda *args, **kwargs: None)
     tool_messages = core._build_tool_messages("load_file_for_model", json.dumps({
         "ok": True,
         "result": {"name": "photo.png", "_model_attachment": {
@@ -240,17 +265,15 @@ def test_attached_image_question_uses_direct_model_turn_without_planner_and_keep
     assert "LOCAL_AGENT_TOOL_SCOPE" in calls[0][0][1]["content"]
 
 
-def test_load_file_for_model_reads_current_task_work_directory(tmp_path, monkeypatch):
-    root = tmp_path / "workspace"
-    root.mkdir()
-    monkeypatch.setattr(tools, "settings", SimpleNamespace(workspace_path=root.resolve()))
-    work, _ = tools._task_work_directory(root, "task-model-file")
-    (work / "input.txt").write_text("Task-scoped source", encoding="utf-8")
+def test_load_file_for_model_reads_container_work_path_not_host_workdir(tmp_path, monkeypatch):
+    _fake_container_file(monkeypatch, tmp_path, b"Container task-scoped source")
     result = tools.dispatch_tool(
-        "load_file_for_model", {"path": "/work/input.txt"}, task_id="task-model-file"
+        "load_file_for_model", {"path": "/work/input.txt"},
+        conversation_id="conversation-work",
     )
-    assert result["namespace"] == "work"
-    assert result["extracted_text"] == "Task-scoped source"
+    assert result["namespace"] == "container"
+    assert result["path"] == "/work/input.txt"
+    assert result["extracted_text"] == "Container task-scoped source"
 
 
 def test_release_version_is_synchronized():

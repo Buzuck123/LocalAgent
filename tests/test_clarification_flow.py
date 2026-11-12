@@ -12,35 +12,11 @@ def _isolated_db(tmp_path, monkeypatch):
     return db.create_conversation("clarification test")
 
 
-def test_preflight_invalid_response_defaults_to_proceed(monkeypatch):
-    class FakeClient:
-        def chat(self, messages, tools=None, reasoning=True):
-            return {"message": {"content": "not json"}}
-
-    monkeypatch.setattr(core, "client", FakeClient())
-    result = core._request_autonomous_preflight("Задача")
-    assert result["decision"] == "proceed"
-
-
-def test_preflight_detects_clear_conflict(monkeypatch):
-    class FakeClient:
-        def chat(self, messages, tools=None, reasoning=True):
-            return {"message": {"content": json.dumps({
-                "decision": "clarify", "reason": "Числа несовместимы", "question": "Какое значение верное?"
-            })}}
-
-    monkeypatch.setattr(core, "client", FakeClient())
-    result = core._request_autonomous_preflight("Сумма должна быть одновременно 10 и 20")
-    assert result["decision"] == "clarify"
-    assert result["question"] == "Какое значение верное?"
-
-
 def test_normal_message_is_saved_and_routes_to_waiting_task(tmp_path, monkeypatch):
     conversation = _isolated_db(tmp_path, monkeypatch)
     task = db.create_task(conversation["id"], "Исходная задача")
     checkpoint = {
-        "mode": "autonomous", "phase": "paused", "pause_reason": "needs_user_input",
-        "preflight_checked": True, "preflight_pending": False,
+        "mode": "unified", "phase": "paused", "pause_reason": "needs_user_input",
         "messages": [{"role": "system", "content": "system"}, {"role": "user", "content": "Исходная задача"}],
         "clarification": {"question": "Какой вариант выбрать?", "answer": None, "resolved": False},
         "plan": {

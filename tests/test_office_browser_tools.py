@@ -4,7 +4,6 @@ from openpyxl import load_workbook
 from docx import Document
 
 from agent import tools
-from agent.tools import dispatch_tool
 
 
 def _settings(tmp_path, monkeypatch):
@@ -16,12 +15,12 @@ def _settings(tmp_path, monkeypatch):
 
 def test_excel_write_read_and_literal_formula(tmp_path, monkeypatch):
     workspace = _settings(tmp_path, monkeypatch)
-    created = dispatch_tool("write_excel", {
-        "path": "report.xlsx", "sheet_name": "Summary",
-        "rows": [["Name", "Value"], ["=HYPERLINK(\"https://example.invalid\")", 42]],
-    })
+    created = tools.write_excel(
+        "report.xlsx", "Summary",
+        [["Name", "Value"], ["=HYPERLINK(\"https://example.invalid\")", 42]],
+    )
     assert created["rows_written"] == 2
-    result = dispatch_tool("read_excel", {"path": "report.xlsx", "sheet_name": "Summary"})
+    result = tools.read_excel("report.xlsx", "Summary")
     assert result["sheets"][0]["preview"][0] == ["Name", "Value"]
     assert result["sheets"][0]["preview"][1] == ['=HYPERLINK("https://example.invalid")', 42]
     wb = load_workbook(workspace / "report.xlsx", data_only=False)
@@ -33,30 +32,30 @@ def test_excel_write_read_and_literal_formula(tmp_path, monkeypatch):
 
 def test_excel_existing_cells_need_overwrite(tmp_path, monkeypatch):
     _settings(tmp_path, monkeypatch)
-    dispatch_tool("write_excel", {"path": "report.xlsx", "sheet_name": "Sheet1", "rows": [[1]]})
+    tools.write_excel("report.xlsx", "Sheet1", [[1]])
     with pytest.raises(FileExistsError):
-        dispatch_tool("write_excel", {"path": "report.xlsx", "sheet_name": "Sheet1", "rows": [[2]]})
-    dispatch_tool("write_excel", {"path": "report.xlsx", "sheet_name": "Sheet1", "rows": [[2]], "overwrite": True})
-    result = dispatch_tool("read_excel", {"path": "report.xlsx", "sheet_name": "Sheet1"})
+        tools.write_excel("report.xlsx", "Sheet1", [[2]])
+    tools.write_excel("report.xlsx", "Sheet1", [[2]], overwrite=True)
+    result = tools.read_excel("report.xlsx", "Sheet1")
     assert result["sheets"][0]["preview"][0][0] == 2
 
 
-def test_office_tools_reject_path_escape_and_wrong_extension(tmp_path, monkeypatch):
+def test_office_helpers_reject_path_escape_and_wrong_extension(tmp_path, monkeypatch):
     _settings(tmp_path, monkeypatch)
     with pytest.raises(ValueError):
-        dispatch_tool("read_excel", {"path": "../outside.xlsx"})
+        tools.read_excel("../outside.xlsx")
     with pytest.raises(ValueError):
-        dispatch_tool("write_word", {"path": "bad.txt", "paragraphs": ["x"]})
+        tools.write_word("bad.txt", ["x"])
 
 
 def test_word_round_trip_with_table(tmp_path, monkeypatch):
     workspace = _settings(tmp_path, monkeypatch)
-    result = dispatch_tool("write_word", {
-        "path": "summary.docx", "paragraphs": ["Report", "Second paragraph"],
-        "tables": [[["Name", "Count"], ["Apples", 3]]],
-    })
+    result = tools.write_word(
+        "summary.docx", ["Report", "Second paragraph"],
+        [[["Name", "Count"], ["Apples", 3]]],
+    )
     assert result["tables_written"] == 1
-    read = dispatch_tool("read_word", {"path": "summary.docx"})
+    read = tools.read_word("summary.docx")
     assert read["paragraphs"] == ["Report", "Second paragraph"]
     assert read["tables"][0][1] == ["Apples", "3"]
     doc = Document(workspace / "summary.docx")
@@ -65,9 +64,9 @@ def test_word_round_trip_with_table(tmp_path, monkeypatch):
 
 def test_word_existing_file_is_protected(tmp_path, monkeypatch):
     _settings(tmp_path, monkeypatch)
-    dispatch_tool("write_word", {"path": "summary.docx", "paragraphs": ["first"]})
+    tools.write_word("summary.docx", ["first"])
     with pytest.raises(FileExistsError):
-        dispatch_tool("write_word", {"path": "summary.docx", "paragraphs": ["second"]})
+        tools.write_word("summary.docx", ["second"])
 
 
 def test_public_url_validator_blocks_local_and_nonstandard_ports(monkeypatch):
@@ -79,7 +78,7 @@ def test_public_url_validator_blocks_local_and_nonstandard_ports(monkeypatch):
     assert tools._validate_public_url("https://example.com/") == "https://example.com/"
 
 
-def test_browser_tool_remains_and_office_tools_are_replaced_by_terminal():
+def test_browser_tool_remains_and_office_helpers_are_not_model_tools():
     names = {item["function"]["name"] for item in tools.TOOL_DEFINITIONS}
     assert {"terminal", "publish_file", "open_browser_page"} <= names
     assert not {"read_excel", "write_excel", "read_word", "write_word"} & names

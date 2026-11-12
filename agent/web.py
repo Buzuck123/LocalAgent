@@ -188,7 +188,7 @@ def _operation_status(operation):
     if result.get("timed_out") is True:
         return "failed", "Выполнение завершилось по тайм-ауту"
     if "exit_code" in result and result.get("exit_code") not in (0, None):
-        return "failed", f"run_python завершился с exit_code={result.get('exit_code')}"
+        return "failed", f"Инструмент завершился с exit_code={result.get('exit_code')}"
     useful = []
     for key in ("path", "destination_path", "database_path", "table", "rows_written", "rows_imported", "rows_exported", "bytes_written", "returned_rows", "table_count", "created", "deleted"):
         if key in result and result[key] is not None:
@@ -231,6 +231,11 @@ def _pause_report(task, checkpoint):
     }
     reason = reason_map.get(checkpoint.get("pause_reason"), "Задача приостановлена.")
     sections = [reason]
+    clarification = checkpoint.get("clarification")
+    if checkpoint.get("pause_reason") == "needs_user_input" and isinstance(clarification, dict):
+        question = str(clarification.get("question") or checkpoint.get("pending_question") or "").strip()
+        if question and not clarification.get("resolved"):
+            sections.append("Вопрос агента — ответьте обычным сообщением в этом диалоге:\n" + question)
     if statuses["completed"]:
         sections.append("Успешные операции (это подтверждает выполнение самих вызовов, не обязательно всей цели):\n- " + "\n- ".join(statuses["completed"][-8:]))
     if statuses["failed"]:
@@ -386,15 +391,6 @@ def resume_task(tid: str):
 @app.post("/api/tasks/{tid}/cancel")
 def cancel_task(tid: str):
     return task_action(tid, agent.cancel)
-
-@app.post("/api/tools/self-test")
-def tools_self_test():
-    """Run the same bounded, isolated tool audit exposed to the agent."""
-    from .tool_checks import run_tool_self_test
-    try:
-        return run_tool_self_test()
-    except Exception as exc:
-        raise HTTPException(500, f"Проверка инструментов не завершилась: {type(exc).__name__}: {exc}") from exc
 
 
 @app.get("/api/settings/debug-trace")

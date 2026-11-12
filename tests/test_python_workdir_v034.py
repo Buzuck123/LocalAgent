@@ -107,27 +107,6 @@ def test_terminal_schema_and_publish_tool_replace_old_python_and_copy_tools():
     assert "run_python" not in definitions and "copy_file" not in definitions
 
 
-def test_tool_activity_shows_python_script_and_result_preview():
-    from agent import core
-
-    summary = core._tool_activity_summary(
-        "run_python",
-        {"path": "process_data.py", "timeout_seconds": 60},
-        {"ok": True, "result": {
-            "script": "process_data.py",
-            "exit_code": 0,
-            "timed_out": False,
-            "stdout": "Rows processed: 2411\nWorkbook verified\n",
-            "stderr": "",
-            "work_dir": ".agent_runs/task-abc/work",
-        }},
-    )
-    assert "run_python" in summary
-    assert "process_data.py" in summary
-    assert "exit_code=0" in summary
-    assert "Rows processed: 2411" in summary
-
-
 def test_tool_activity_shows_publish_destination():
     from agent import core
 
@@ -144,44 +123,3 @@ def test_tool_activity_shows_publish_destination():
     assert "publish_workspace_file" in summary
     assert "report.xlsx" in summary
     assert "1024" in summary
-
-
-def test_run_python_binds_persistent_workdir_and_accepts_120_seconds(workspace, tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    project = tmp_path / "project"
-    agent_dir = project / "agent"
-    venv = project / ".venv"
-    (venv / "bin").mkdir(parents=True)
-    agent_dir.mkdir()
-    (venv / "bin" / "python").write_text("placeholder", encoding="utf-8")
-    (venv / "pyvenv.cfg").write_text("home = /usr", encoding="utf-8")
-    (workspace / "probe.py").write_text("print('probe')", encoding="utf-8")
-    monkeypatch.setattr(tools, "__file__", str(agent_dir / "tools.py"))
-    monkeypatch.setattr(tools.shutil, "which", lambda name: f"/usr/bin/{name}")
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        kwargs["stdout"].write(b"SCRIPT_RAN\n")
-        kwargs["stderr"].write(b"")
-        return SimpleNamespace(returncode=0)
-
-    monkeypatch.setattr(tools.subprocess, "run", fake_run)
-    first = tools.run_python_sandbox("probe.py", timeout_seconds=120, task_id="task-a")
-    work_dir = workspace / first["work_dir"]
-    (work_dir / "persist.txt").write_text("persistent", encoding="utf-8")
-    second = tools.run_python_sandbox("probe.py", timeout_seconds=120, task_id="task-a")
-
-    command = calls[0][0]
-    assert calls[0][1]["timeout"] == 124
-    assert "--bind" in command and str(workspace.resolve()) in command
-    assert "--tmpfs" in command and "/workspace/.agent_runs" in command
-    bind_index = command.index("--bind", command.index("/opt/localagent-venv") + 1)
-    assert command[bind_index + 1] == str(work_dir)
-    assert command[bind_index + 2] == "/work"
-    assert command[command.index("--chdir") + 1] == "/work"
-    assert first["exit_code"] == 0 and first["stdout"].strip() == "SCRIPT_RAN"
-    assert second["work_dir"] == first["work_dir"]
-    assert (workspace / second["work_dir"] / "persist.txt").read_text(encoding="utf-8") == "persistent"
-    assert first["output_dir"] != second["output_dir"]

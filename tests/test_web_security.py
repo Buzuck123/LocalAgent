@@ -43,30 +43,6 @@ def test_public_url_accepts_public_hostname(monkeypatch):
     assert tools._validate_public_url("https://example.com/path") == "https://example.com/path"
 
 
-def test_redirect_to_private_host_is_rejected_before_second_request(monkeypatch):
-    calls = []
-    class FakeResponse:
-        is_redirect = True
-        is_permanent_redirect = False
-        headers = {"Location": "http://127.0.0.1/admin"}
-        def close(self): pass
-    class FakeSession:
-        trust_env = True
-        def get(self, url, **kwargs):
-            calls.append(url)
-            return FakeResponse()
-        def close(self): pass
-    def fake_validate(url):
-        if "127.0.0.1" in url:
-            raise ValueError("Private, local, or non-public IP addresses are not allowed")
-        return url
-    monkeypatch.setattr(tools, "_validate_public_url", fake_validate)
-    monkeypatch.setattr(tools.requests, "Session", FakeSession)
-    with pytest.raises(ValueError, match="Private"):
-        tools.open_web_page("https://public.example/")
-    assert calls == ["https://public.example/"]
-
-
 def test_search_result_is_marked_untrusted(monkeypatch):
     class FakeDDGS:
         def __init__(self, **kwargs): pass

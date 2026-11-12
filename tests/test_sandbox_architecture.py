@@ -92,7 +92,7 @@ def _fake_db(monkeypatch, record=None):
 def test_tool_catalog_uses_terminal_and_keeps_only_non_duplicate_capabilities():
     names = {item["function"]["name"] for item in TOOL_DEFINITIONS}
     assert names == {"get_tool_result", "terminal", "publish_file",
-                     "web_search", "open_web_page", "open_browser_page", "self_test_tools",
+                     "web_search", "open_browser_page",
                      "load_file_for_model"}
     assert not names.intersection({"read_file", "write_file", "run_python", "read_excel",
                                    "write_excel", "sqlite_query", "copy_file"})
@@ -480,23 +480,62 @@ def test_download_route_rejects_traversal_and_symlinks(tmp_path, monkeypatch):
         web.download_published_file("link.txt")
 
 
-def test_publish_file_transfers_only_bounded_files_to_downloads(tmp_path, monkeypatch):
+def test_publish_file_chooses_unique_non_overwriting_download_names(tmp_path, monkeypatch):
     import base64
     from agent import tools
     from agent import sandbox_manager as sandbox_manager_module
 
-    monkeypatch.setattr(sandbox_manager_module, "sandbox_manager", SimpleNamespace(execute=lambda cid, command, timeout=120, output_limit=60000: (
-        {"stdout": "5", "stderr": "", "exit_code": 0, "timed_out": False}
-        if command.startswith("test -f") else
-        {"stdout": base64.b64encode(b"hello").decode(), "stderr": "", "exit_code": 0, "timed_out": False}
-    )))
-    # publish_file_from_sandbox imports settings from agent.config; replace the module object for this test.
+    def fake_execute(cid, command, timeout=120, output_limit=60000):
+        if command.startswith("test -f"):
+            return {"stdout": "5", "stderr": "", "exit_code": 0, "timed_out": False}
+        return {"stdout": base64.b64encode(b"hello").decode(), "stderr": "", "exit_code": 0, "timed_out": False}
+
+    monkeypatch.setattr(sandbox_manager_module, "sandbox_manager", SimpleNamespace(execute=fake_execute))
     config_module = sys.modules["agent.config"]
     monkeypatch.setattr(config_module, "settings", SimpleNamespace(workspace_path=tmp_path))
-    result = tools.publish_file_from_sandbox("conversation-publish", "/tmp/hello.txt", "nested/hello.txt")
-    target = tmp_path / "downloads" / "nested" / "hello.txt"
-    assert target.read_bytes() == b"hello"
-    assert result["published"] is True and result["bytes_written"] == 5
-    assert result["download_url"] == "/api/files/nested/hello.txt"
-    with pytest.raises(ValueError):
-        tools.publish_file_from_sandbox("conversation-publish", "/tmp/hello.txt", "../escape.txt")
+    first = tools.publish_file_from_sandbox("conversation-publish", "/tmp/hello.txt")
+    second = tools.publish_file_from_sandbox("conversation-publish", "/tmp/hello.txt")
+    first_target = tmp_path / first["path"]
+    second_target = tmp_path / second["path"]
+    assert first_target.read_bytes() == b"hello"
+    assert second_target.read_bytes() == b"hello"
+    assert first_target != second_target
+    assert first["filename"] == "hello.txt"
+    assert second["filename"] == "hello (1).txt"
+    assert first["download_url"] == "/api/files/hello.txt"
+
+
+def test_container_file_download_uses_bounded_chunks_and_checksum(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+    import re
+    from contextlib import nullcontext
+    from agent import sandbox_manager as sandbox_manager_module
+
+    manager = sandbox_manager_module.sandbox_manager
+    data = bytes(range(256)) * 8192
+    commands = []
+
+    class FakeRuntime:
+        def run(self, command, *, session="main", timeout=120):
+            commands.append(command)
+            if "stat -c" in command:
+                return {"stdout": str(len(data)), "stderr": "", "exit_code": 0}
+            if command.startswith("dd if="):
+                match = re.search(r"skip=(\d+) count=(\d+)", command)
+                start, count = int(match.group(1)), int(match.group(2))
+                return {"stdout": base64.b64encode(data[start:start + count]).decode(), "stderr": "", "exit_code": 0}
+            if command.startswith("sha256sum"):
+                return {"stdout": hashlib.sha256(data).hexdigest() + "  /tmp/source.bin", "stderr": "", "exit_code": 0}
+            raise AssertionError(command)
+
+    monkeypatch.setattr(manager, "_lock_for", lambda conversation_id: nullcontext())
+    monkeypatch.setattr(manager, "get_runtime", lambda conversation_id: FakeRuntime())
+    target = tmp_path / "downloaded.bin"
+    result = manager.download_file("conversation-1", "/tmp/source.bin", target, max_bytes=3 * 1024 * 1024)
+    assert result == target
+    assert target.read_bytes() == data
+    assert sum(command.startswith("dd if=") for command in commands) == 2
+
+    with pytest.raises(ValueError, match="allowed size limit"):
+        manager.download_file("conversation-1", "/tmp/source.bin", tmp_path / "too-large.bin", max_bytes=10)

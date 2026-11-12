@@ -48,14 +48,27 @@ def test_context_summary_keeps_tool_result_retrieval_id():
     assert "tr_abc123" in summary
 
 
-def test_retrieve_tool_result_fragment_is_bounded_and_reports_remaining_data():
+def test_retrieve_tool_result_fragment_honors_requested_length_without_hidden_cap():
     archive = {"tr_demo": "0123456789" * 1000}
     result = retrieve_tool_result_fragment(archive, "tr_demo", start=10, length=99999)
     assert result["ok"] is True
     assert result["start"] == 10
-    assert len(result["content"]) == 6000
-    assert result["has_more"] is True
+    assert len(result["content"]) == 9990
+    assert result["has_more"] is False
+    assert result["next_start"] is None
     assert result["total_chars"] == 10000
+
+
+def test_retrieve_tool_result_fragment_returns_sequential_exact_offsets():
+    archive = {"tr_demo": "0123456789" * 1000}
+    first = retrieve_tool_result_fragment(archive, "tr_demo", start=0, length=4000)
+    second = retrieve_tool_result_fragment(
+        archive, "tr_demo", start=first["next_start"], length=4000
+    )
+    assert first["content"] + second["content"] == archive["tr_demo"][:8000]
+    assert first["end"] == second["start"] == 4000
+    assert first["next_start"] == 4000
+    assert first["has_more"] is True
 
 
 def test_retrieve_tool_result_fragment_rejects_unknown_id():
@@ -158,7 +171,8 @@ def test_direct_file_load_is_rejected_when_it_would_consume_context_reserve():
     assert result["ok"] is False
     assert result["file_not_loaded"] is True
     assert "контекстное окно" in result["error"].lower()
-    assert "раздели файл" in result["error"].lower()
+    assert "меньшим length" in result["error"].lower()
+    assert "start=next_start" in result["error"].lower()
 
 
 def test_direct_file_load_fits_when_context_has_room():

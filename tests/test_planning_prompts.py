@@ -54,12 +54,20 @@ def test_planner_retries_after_invalid_plan(monkeypatch):
             "id": "step_1",
             "description": "Без ожидаемого результата",
         }]})}},
-        {"message": {"content": json.dumps({"steps": [{
-            "id": "step_1",
-            "description": "Составить план",
-            "expected_result": "План содержит конкретные этапы",
-            "success_criteria": ["Все этапы имеют ожидаемый результат"],
-        }]})}},
+        {"message": {"content": json.dumps({"steps": [
+            {
+                "id": "step_1",
+                "description": "Изучить исходные требования",
+                "expected_result": "Требования и ограничения зафиксированы",
+                "success_criteria": ["Определены основные требования"],
+            },
+            {
+                "id": "step_2",
+                "description": "Подготовить план работ",
+                "expected_result": "План содержит конкретные этапы",
+                "success_criteria": ["Все этапы имеют ожидаемый результат"],
+            },
+        ]})}},
     ]
     captured = []
 
@@ -176,9 +184,9 @@ def test_plan_context_keeps_current_focus_without_rigid_stage_lock():
     core._sync_plan_context(messages, plan)
     context = next(m["content"] for m in messages if core.PLAN_CONTEXT_MARKER in m["content"])
     assert "Current focus: stage_1" in context
-    assert "not a hard allowlist" in context
-    assert "small adjacent actions" in context
-    assert "report what was done and its evidence" in context
+    assert "not a strict allowlist" in context
+    assert "adjacent work" in context
+    assert "Report completed work and its observable evidence" in context
     assert "Do not begin, implement, or pre-empt any later step" not in context
     assert "Plan overview (orientation, not a rigid script)" in context
 
@@ -234,3 +242,20 @@ def test_plan_context_is_inserted_after_compacted_history_summary():
     summary_index = next(i for i, m in enumerate(messages) if core.CONTEXT_SUMMARY_MARKER in m.get("content", ""))
     plan_index = next(i for i, m in enumerate(messages) if core.PLAN_CONTEXT_MARKER in m.get("content", ""))
     assert plan_index == summary_index + 1
+
+
+def test_one_stage_planner_response_falls_back_instead_of_launching_a_plan(monkeypatch):
+    response = {"message": {"content": json.dumps({"steps": [{
+        "id": "step_1",
+        "description": "Complete the entire request",
+        "expected_result": "The request is complete",
+    }]})}}
+    calls = []
+    def fake_chat(messages, tools=None, reasoning=True):
+        calls.append(messages)
+        return response
+    monkeypatch.setattr(core, "_client_chat", fake_chat)
+    plan = core._create_plan_with_retries("Create a bounded output")
+    assert len(calls) == 3
+    assert len(plan["steps"]) == 1
+    assert plan.get("planner_fallback", {}).get("used") is True

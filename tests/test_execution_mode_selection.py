@@ -22,13 +22,19 @@ def test_llm_can_select_direct_mode(monkeypatch):
 
 
 def test_llm_can_select_plan_mode_for_multistage_work(monkeypatch):
-    fake = ModeClient(json.dumps({"mode": "plan", "reason": "Several dependent outputs"}))
+    fake = ModeClient(json.dumps({"mode": "plan", "reason": "The reports depend on the research stage"}))
     monkeypatch.setattr(core, "client", fake)
-    assert core.select_execution_mode_with_llm("Подготовь исследование и три файла отчёта") == "planned"
+    assert core.select_execution_mode_with_llm("Сначала исследуй источники, затем подготовь на их основе три взаимосвязанных отчёта") == "planned"
 
 
 def test_invalid_llm_mode_uses_safe_classifier_fallback(monkeypatch):
     fake = ModeClient("not json")
     monkeypatch.setattr(core, "client", fake)
     assert core.select_execution_mode_with_llm("Что такое фотосинтез") == "simple"
-    assert core.select_execution_mode_with_llm("Создай Excel и отчёт по данным") == "planned"
+    assert core.select_execution_mode_with_llm("Обработай данные, сгруппируй их и подготовь отчёт") == "planned"
+
+
+def test_llm_can_choose_direct_for_multiple_independent_files(monkeypatch):
+    fake = ModeClient(json.dumps({"mode": "direct", "reason": "Two independent outputs"}))
+    monkeypatch.setattr(core, "client", fake)
+    assert core.select_execution_mode_with_llm("Создай два независимых текстовых файла") == "simple"

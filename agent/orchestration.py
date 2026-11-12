@@ -105,17 +105,8 @@ def validate_tool_call(name: Any, arguments: Any, tool_definitions: list[dict]) 
 
 # These names describe effects, not permissions. The tool's own sandbox remains
 # the security boundary; this classification controls recovery and repeat policy.
-READ_ONLY_TOOLS = {
-    "calculate", "list_files", "read_file", "read_excel", "read_word",
-    "sqlite_query", "web_search", "open_web_page", "open_browser_page",
-    "read_output_file", "get_tool_result", "load_file_for_model",
-}
-MUTATING_TOOLS = {
-    "create_directory", "write_file", "edit_file", "move_file", "delete_file",
-    "delete_directory", "write_excel", "write_word", "sqlite_create_database",
-    "sqlite_execute", "sqlite_import_excel", "sqlite_export_excel", "publish_workspace_file",
-    "run_python", "copy_file", "terminal", "publish_file",
-}
+READ_ONLY_TOOLS = {"web_search", "open_browser_page", "get_tool_result", "load_file_for_model"}
+MUTATING_TOOLS = {"terminal", "publish_file"}
 
 
 def classify_failure(tool_name: str, arguments: dict, error_text: str) -> dict:
@@ -294,49 +285,24 @@ def _successful_action_repairs_failure(failure: dict, success: dict) -> bool:
                         and any(path in success_command for path in path_tokens))
         return False
 
-    # A successful write to the exact missing script is a relevant state change:
-    # retrying run_python(path=...) is now justified even though its arguments
-    # are identical to the previously failed call.
-    if failed_tool == "run_python" and success_tool in {"write_file", "copy_file", "publish_workspace_file"}:
-        failed_path = _canonical_recovery_path(failed_args.get("path"))
-        if success_tool == "write_file":
-            changed_path = _canonical_recovery_path(success_args.get("path"))
-        elif success_tool == "copy_file":
-            changed_path = _canonical_recovery_path(success_args.get("destination"))
-        else:
-            changed_path = _canonical_recovery_path(success_args.get("destination_path"))
-        # Rewriting the exact script after a Python exception is a meaningful
-        # state change and justifies retrying the same run_python call.
-        return failed_path is not None and failed_path == changed_path
-
-    # File readers can be retried after a matching file has been created/copied.
-    if failed_tool in {"read_file", "read_excel", "read_word", "load_file_for_model"} and success_tool in {
-        "write_file", "write_excel", "write_word", "copy_file", "publish_workspace_file"
-    }:
+    # A terminal action can create or repair a file that a later model-inspection
+    # call needs. Only clear the failure when the command visibly targets that path.
+    if failed_tool == "load_file_for_model" and success_tool == "terminal":
         if not any(token in error for token in ("not found", "no such file", "file not found")):
             return False
         failed_path = _canonical_recovery_path(failed_args.get("path"))
-        if success_tool in {"write_file", "write_excel", "write_word"}:
-            changed_path = _canonical_recovery_path(success_args.get("path"))
-        elif success_tool == "copy_file":
-            changed_path = _canonical_recovery_path(success_args.get("destination"))
-        else:
-            changed_path = _canonical_recovery_path(success_args.get("destination_path"))
-        return failed_path is not None and failed_path == changed_path
+        command = str(success_args.get("command", ""))
+        mutating = re.search(r"\b(mkdir|touch|cp|mv|tee|install|chmod|chown|curl|wget)\b|(?:>|>>)", command)
+        return bool(failed_path and mutating and failed_path in command)
 
-    if failed_tool == "list_files" and success_tool == "create_directory":
-        if "directory not found" not in error.lower() and "not found" not in error.lower():
-            return False
-        return failed_args.get("path") == success_args.get("path")
     return False
 
 
 def should_block_repeated_call(tool_name: str, arguments: dict[str, Any], history: Any) -> dict[str, Any] | None:
     """Block an exact repeat unless a later successful action repaired its cause.
 
-    An unrelated success never clears a failure. A narrowly matched state change
-    (for example write_file('/work/x.py') after run_python('/work/x.py') failed
-    because the script did not exist) does clear it.
+    An unrelated success never clears a failure. A narrowly matched terminal
+    state change can clear a missing-file error before model inspection is retried.
     """
     if not isinstance(history, list):
         return None

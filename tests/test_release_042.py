@@ -18,7 +18,7 @@ def test_all_tools_remain_visible_and_domains_are_grouped_by_scope():
     excel_names = {x["function"]["name"] for x in core.tools_for_task("Сгруппируй данные Excel по товару")}
     assert "terminal" in excel_names
     assert "publish_file" in excel_names
-    assert "open_web_page" in excel_names
+    assert "open_browser_page" in excel_names
     assert not {"excel_aggregate", "read_excel", "write_excel"} & excel_names
     web_names = {x["function"]["name"] for x in core.tools_for_task("Найди в интернете документацию")}
     assert "web_search" in web_names

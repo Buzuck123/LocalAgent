@@ -3,7 +3,6 @@ from types import SimpleNamespace
 from openpyxl import Workbook
 
 from agent import tools
-from agent.tools import dispatch_tool
 
 
 def _workspace(tmp_path, monkeypatch):
@@ -30,7 +29,7 @@ def test_read_excel_returns_compact_overview_and_sheet_dimensions(tmp_path, monk
     root = _workspace(tmp_path, monkeypatch)
     _make_book(root / "book.xlsx", rows=14)
 
-    result = dispatch_tool("read_excel", {"path": "book.xlsx"})
+    result = tools.read_excel("book.xlsx")
 
     assert result["mode"] == "overview"
     assert result["available_sheets"] == ["Packers", "Scales"]
@@ -43,18 +42,16 @@ def test_read_excel_can_read_next_chunk_by_start_row(tmp_path, monkeypatch):
     root = _workspace(tmp_path, monkeypatch)
     _make_book(root / "book.xlsx", rows=8)
 
-    first = dispatch_tool("read_excel", {
-        "path": "book.xlsx", "sheet_name": "Packers",
-        "start_row": 4, "max_rows": 3, "max_cols": 3,
-    })["sheets"][0]
+    first = tools.read_excel(
+        "book.xlsx", "Packers", start_row=4, max_rows=3, max_cols=3,
+    )["sheets"][0]
     assert first["preview"] == [["Part 4", 4, 6.0], ["Part 5", 5, 7.5], ["Part 6", 6, 9.0]]
     assert first["next_start_row"] == 7
     assert first["has_more_rows"] is True
 
-    second = dispatch_tool("read_excel", {
-        "path": "book.xlsx", "sheet_name": "Packers",
-        "start_row": first["next_start_row"], "max_rows": 3, "max_cols": 3,
-    })["sheets"][0]
+    second = tools.read_excel(
+        "book.xlsx", "Packers", start_row=first["next_start_row"], max_rows=3, max_cols=3,
+    )["sheets"][0]
     assert second["preview"] == [["Part 7", 7, 10.5], ["Part 8", 8, 12.0]]
     assert second["next_start_row"] is None
     assert second["has_more_rows"] is False
@@ -70,9 +67,9 @@ def test_read_excel_caps_cells_per_selected_sheet(tmp_path, monkeypatch):
     wb.save(root / "large.xlsx")
     wb.close()
 
-    sheet = dispatch_tool("read_excel", {
-        "path": "large.xlsx", "sheet_name": "Large", "max_rows": 500, "max_cols": 50,
-    })["sheets"][0]
+    sheet = tools.read_excel(
+        "large.xlsx", "Large", max_rows=500, max_cols=50,
+    )["sheets"][0]
     assert sheet["rows_read"] <= 200
     assert sum(len(row) for row in sheet["preview"]) <= 10_000
     assert sheet["has_more_rows"] is True
@@ -90,12 +87,11 @@ def test_terminal_is_the_computer_tool_for_excel_and_document_work():
     assert "Do not manually parse XLSX ZIP/XML" in PLAN_SYSTEM_PROMPT
 
 
-def test_office_input_size_limit_is_50_mb(tmp_path, monkeypatch):
+def test_office_input_size_limit_is_enforced(tmp_path, monkeypatch):
     root = _workspace(tmp_path, monkeypatch)
-    path = root / "oversized.xlsx"
-    path.write_bytes(b"x" * 32)
+    (root / "oversized.xlsx").write_bytes(b"x" * 32)
     monkeypatch.setattr(tools, "MAX_OFFICE_FILE_BYTES", 16)
 
     import pytest
-    with pytest.raises(ValueError, match="50 MB"):
-        dispatch_tool("read_excel", {"path": "oversized.xlsx"})
+    with pytest.raises(ValueError):
+        tools.read_excel("oversized.xlsx")

@@ -62,10 +62,13 @@ def _valid_image_signature(mime_type: str, raw: bytes) -> bool:
     return False
 
 
-def _extract_document(name: str, mime_type: str, raw: bytes) -> str:
+def _extract_document(name: str, mime_type: str, raw: bytes, *, max_chars: int = MAX_EXTRACTED_CHARS) -> str:
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 1:
+        raise ValueError("max_chars must be a positive integer")
+    max_chars = min(max_chars, 1_000_000)
     ext = Path(name).suffix.lower()
     if ext in TEXT_EXTENSIONS or mime_type.startswith("text/"):
-        return raw.decode("utf-8-sig", errors="replace")[:MAX_EXTRACTED_CHARS]
+        return raw.decode("utf-8-sig", errors="replace")[:max_chars]
     if ext == ".pdf" or mime_type == "application/pdf":
         try:
             from pypdf import PdfReader
@@ -74,8 +77,8 @@ def _extract_document(name: str, mime_type: str, raw: bytes) -> str:
             for index, page in enumerate(reader.pages[:80], 1):
                 text = page.extract_text() or ""
                 if text.strip(): parts.append(f"[Страница {index}]\n{text}")
-                if sum(map(len, parts)) >= MAX_EXTRACTED_CHARS: break
-            return "\n\n".join(parts)[:MAX_EXTRACTED_CHARS] or "[PDF: текст не извлечён; возможно, документ содержит только сканы.]"
+                if sum(map(len, parts)) >= max_chars: break
+            return "\n\n".join(parts)[:max_chars] or "[PDF: текст не извлечён; возможно, документ содержит только сканы.]"
         except Exception as exc:
             raise ValueError(f"Не удалось прочитать PDF: {type(exc).__name__}: {str(exc)[:200]}") from exc
     if ext == ".docx":
@@ -86,7 +89,7 @@ def _extract_document(name: str, mime_type: str, raw: bytes) -> str:
             parts = [p.text for p in doc.paragraphs if p.text.strip()]
             for table in doc.tables[:30]:
                 parts.append("\n[Таблица]\n" + "\n".join(" | ".join(c.text for c in row.cells) for row in table.rows[:200]))
-            return "\n".join(parts)[:MAX_EXTRACTED_CHARS]
+            return "\n".join(parts)[:max_chars]
         except Exception as exc:
             raise ValueError(f"Не удалось прочитать DOCX: {type(exc).__name__}: {str(exc)[:200]}") from exc
     if ext == ".xlsx":
@@ -101,9 +104,9 @@ def _extract_document(name: str, mime_type: str, raw: bytes) -> str:
                     for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row or 1, 12), max_col=min(ws.max_column or 1, 20), values_only=True):
                         parts.append(" | ".join("" if v is None else str(v)[:300] for v in row))
                     parts.append("[Показаны первые 12 строк листа; для полной обработки используй инструменты Excel агента.]\n")
-                    if sum(map(len, parts)) >= MAX_EXTRACTED_CHARS: break
+                    if sum(map(len, parts)) >= max_chars: break
             finally: wb.close()
-            return "\n".join(parts)[:MAX_EXTRACTED_CHARS]
+            return "\n".join(parts)[:max_chars]
         except Exception as exc:
             raise ValueError(f"Не удалось прочитать XLSX: {type(exc).__name__}: {str(exc)[:200]}") from exc
     if ext == ".doc":
@@ -119,7 +122,8 @@ def extract_video_frames(path: str | Path, *, max_frames: int = MAX_VIDEO_FRAMES
 
     Ollama's chat API accepts images but not native video payloads. This bounded
     adapter samples frames across the whole clip and sends them as ordered images
-    with timestamps in the accompanying text. Audio is not extracted or analysed.
+    with timestamps in the accompanying text. The caller may separately extract a
+    short audio segment when the source contains an audio stream.
     """
     source = Path(path).resolve()
     if not source.is_file():
@@ -190,7 +194,7 @@ def extract_video_frames(path: str | Path, *, max_frames: int = MAX_VIDEO_FRAMES
         ],
         "frame_count": len(frames),
         "audio_included": False,
-        "note": "Видео передано как последовательность выборочных кадров; звуковая дорожка не анализируется.",
+        "note": "Видео передано как последовательность выборочных кадров; звуковая дорожка обрабатывается отдельным этапом.",
     }
 
 
@@ -316,7 +320,7 @@ def save_attachments(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]
         else:
             text = _extract_document(name, mime, raw)
             # Keep an original copy in a dedicated workspace subdirectory so
-            # specialised tools (read_excel/read_word/run_python) can inspect it.
+            # the container terminal and its Python libraries can inspect it.
             workspace_root = settings.workspace_path.resolve()
             document_dir = workspace_root / ".attachments"
             if document_dir.is_symlink():

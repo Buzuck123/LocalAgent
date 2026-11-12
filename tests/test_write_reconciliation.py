@@ -11,10 +11,7 @@ def test_write_file_creates_new_file(tmp_path, monkeypatch):
         SimpleNamespace(workspace_path=tmp_path.resolve()),
     )
 
-    result = tools.dispatch_tool(
-        "write_file",
-        {"path": "result.txt", "content": "expected", "overwrite": False},
-    )
+    result = tools.write_workspace_file("result.txt", "expected", overwrite=False)
 
     assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "expected"
     assert result["path"] == "result.txt"
@@ -31,10 +28,7 @@ def test_write_file_does_not_overwrite_existing_file(tmp_path, monkeypatch):
     target.write_text("original", encoding="utf-8")
 
     with pytest.raises(FileExistsError):
-        tools.dispatch_tool(
-            "write_file",
-            {"path": "result.txt", "content": "expected", "overwrite": False},
-        )
+        tools.write_workspace_file("result.txt", "expected", overwrite=False)
 
     assert target.read_text(encoding="utf-8") == "original"
 

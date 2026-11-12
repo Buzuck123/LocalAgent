@@ -764,6 +764,77 @@ print(json.dumps(result))
             result["command"] = command
             return result
 
+    def download_file(self, conversation_id: str, source_path: str, target_path: str | Path, *, max_bytes: int | None = None) -> Path:
+        """Copy a readable regular container file through bounded base64 chunks."""
+        import base64
+
+        if not isinstance(source_path, str) or not source_path.startswith("/") or "\x00" in source_path:
+            raise ValueError("source_path must be an absolute container path")
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        quoted = shlex.quote(source_path)
+        chunk_bytes = 1024 * 1024
+        with self._lock_for(conversation_id):
+            runtime = self.get_runtime(conversation_id)
+            probe = runtime.run(
+                "test -f " + quoted + " && test -r " + quoted + " && stat -c '%s' -- " + quoted,
+                session="main", timeout=20,
+            )
+            if probe.get("exit_code") != 0:
+                raise FileNotFoundError("Container file is missing, unreadable, or not a regular file")
+            try:
+                expected_size = int(str(probe.get("stdout", "")).strip().splitlines()[-1])
+            except (ValueError, IndexError) as exc:
+                raise SandboxError("Could not determine container file size") from exc
+            if expected_size < 0 or (max_bytes is not None and expected_size > max_bytes):
+                raise ValueError(f"Container file exceeds the allowed size limit ({max_bytes} bytes)")
+            if target.exists() or target.is_symlink():
+                raise FileExistsError("Download target already exists")
+            written = 0
+            created = False
+            try:
+                with target.open("xb") as stream:
+                    created = True
+                    while written < expected_size:
+                        amount = min(chunk_bytes, expected_size - written)
+                        command = (
+                            f"dd if={quoted} iflag=skip_bytes,count_bytes skip={written} count={amount} status=none "
+                            "| base64 -w0"
+                        )
+                        chunk = runtime.run(command, session="main", timeout=45)
+                        if chunk.get("exit_code") != 0:
+                            raise SandboxError("Could not read a container file chunk")
+                        try:
+                            data = base64.b64decode(str(chunk.get("stdout", "")), validate=True)
+                        except Exception as exc:
+                            raise SandboxError("Container returned an invalid file chunk") from exc
+                        if len(data) != amount:
+                            raise SandboxError("Container file chunk was incomplete")
+                        stream.write(data)
+                        written += len(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if written != expected_size or target.stat().st_size != expected_size:
+                    raise SandboxError("Container file download failed size verification")
+                remote_hash = runtime.run(
+                    "sha256sum -- " + quoted, session="main", timeout=30,
+                )
+                if remote_hash.get("exit_code") != 0:
+                    raise SandboxError("Could not verify container file checksum")
+                expected_hash = str(remote_hash.get("stdout", "")).strip().split()[0]
+                digest = hashlib.sha256()
+                with target.open("rb") as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(block)
+                actual_hash = digest.hexdigest()
+                if not expected_hash or actual_hash != expected_hash:
+                    raise SandboxError("Container file download checksum mismatch")
+            except Exception:
+                if created:
+                    target.unlink(missing_ok=True)
+                raise
+        return target
+
     def upload_file(self, conversation_id: str, source: str | Path, display_name: str) -> str:
         """Copy an attachment into the container without mounting host paths."""
         source = Path(source)
