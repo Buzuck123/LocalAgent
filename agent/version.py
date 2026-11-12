@@ -1,0 +1,3 @@
+"""Single source of truth for the LocalAgent release version."""
+VERSION = "0.7.2"
+__version__ = VERSION

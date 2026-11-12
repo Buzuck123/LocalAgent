@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LocalAgent Autonomous</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#202124;background:#f4f5f7}*{box-sizing:border-box}
+html,body{height:100%;margin:0;overflow:hidden}
+.layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden}
+aside{height:100%;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.main{height:100%;min-height:0;overflow:hidden}
+#messages{min-height:0;overscroll-behavior:contain}
+#tasks{flex-shrink:0}
+form#send{flex-shrink:0}
+aside{background:#20242b;color:#f6f7f8;padding:16px;overflow:auto}button,select,input,textarea{font:inherit}
+button{border:0;border-radius:8px;padding:9px 12px;cursor:pointer;background:#dfe6f1;color:#17202a}
+aside button{width:100%;margin:6px 0}
+.conv-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:3px;align-items:center}
+.conv-row button{width:auto;min-width:0;margin:3px 0;padding:7px 6px}
+.conv-row .conv{width:100%;text-align:left;background:#343a44;color:#fff;overflow-wrap:anywhere}
+.conv-row .conv.active{background:#52647d}
+.conv.active{background:#52647d}.main{display:flex;flex-direction:column;min-width:0}
+header{padding:14px 20px;background:#fff;border-bottom:1px solid #ddd;display:flex;justify-content:space-between;gap:12px;align-items:center}
+#model-control{display:flex;align-items:center;gap:7px;font-size:13px;white-space:nowrap}#model-select{max-width:min(42vw,320px);padding:6px 8px;border:1px solid #ccd0d5;border-radius:7px;background:#fff}#model-refresh{padding:6px 8px}
+#messages{padding:20px;overflow:auto;flex:1}.msg{max-width:900px;margin:0 auto 12px;padding:12px 14px;border-radius:12px;background:#fff;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg.user{background:#e2ebfa}.role{font-size:12px;color:#657080;margin-bottom:5px}
+form{display:flex;gap:10px;padding:16px;background:#fff;border-top:1px solid #ddd;align-items:center}#attachment-input{display:none}#attach-button{white-space:nowrap}#attachment-list{font-size:12px;color:#4b5563;max-width:220px;overflow-wrap:anywhere}textarea{resize:vertical;min-height:54px;max-height:200px;flex:1;padding:10px;border:1px solid #ccd0d5;border-radius:8px}
+#activity-panel{flex:0 0 48px;height:48px;min-height:48px;max-height:48px;padding:7px 16px;background:#edf3fb;border-top:1px solid #d7e1ef;font-size:13px;overflow:hidden;overflow-wrap:anywhere}
+#activity-panel.expanded{flex-basis:190px;height:190px;min-height:190px;max-height:190px}
+#activity-panel,#tasks{transition:none!important;animation:none!important}
+#activity-toolbar{display:flex;align-items:center;gap:10px;min-width:0}
+#activity-heading{font-weight:700;white-space:nowrap}
+#activity-current{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#24364b;line-height:1.4}
+#activity-toggle{flex-shrink:0;padding:5px 9px;font-size:12px}
+#activity-report{white-space:pre-wrap;line-height:1.4;margin-top:7px;color:#27384c;max-height:100px;overflow:auto}
+#activity-history-details{margin-top:7px}#activity-history-details summary{cursor:pointer;font-weight:600}#activity-history{max-height:140px;overflow:auto;margin-top:5px;border-top:1px solid #d7e1ef}.operation{padding:5px 3px;border-bottom:1px solid #d7e1ef;overflow-wrap:anywhere}.operation .op-meta{font-size:11px;color:#64748b}.operation.failed{background:#fff0f0}.operation.running{background:#fff8e6}
+#activity-panel.collapsed{flex-basis:48px;height:48px;min-height:48px;max-height:48px;padding-top:6px;padding-bottom:6px}
+#activity-panel.collapsed #activity-report,#activity-panel.collapsed #activity-history-details{display:none}
+#tasks{flex:0 0 112px;height:112px;min-height:112px;max-height:112px;padding:10px 20px;overflow-y:auto;overflow-x:hidden;background:#f4f5f7;border-top:1px solid #ddd;font-size:13px}.task{padding:5px 0;border-bottom:1px solid #ddd;overflow-wrap:anywhere}
+.small{font-size:12px;color:#c3cad4}header button{white-space:nowrap}
+@media(max-width:700px){form#send{flex-wrap:wrap}#attachment-list{max-width:100%}.layout{grid-template-columns:150px 1fr}aside{padding:8px}#messages{padding:10px}form{padding:8px;flex-direction:column}#activity-panel{padding:7px 10px;flex-basis:48px;height:48px;min-height:48px;max-height:48px}#activity-panel.expanded{flex-basis:170px;height:170px;min-height:170px;max-height:170px}#activity-panel.collapsed{flex-basis:48px;height:48px;min-height:48px;max-height:48px}#tasks{flex-basis:105px;height:105px;min-height:105px;max-height:105px;padding:8px 10px}#activity-history{max-height:75px}#activity-report{max-height:60px}#activity-heading{font-size:12px}#activity-toggle{padding:5px 7px}}
+
+</style></head>
+<body><div class="layout">
+<aside><h2>LocalAgent Autonomous</h2><div class="small">Автономный локальный агент · Ollama</div>
+<button id="new">＋ Новый диалог</button><div id="conversations"></div>
+<hr><button id="refresh">Обновить задачи</button><button id="self-test">Проверить инструменты</button><button id="ollama">Статус Ollama</button>
+<label class="small" style="display:flex;gap:7px;align-items:center;margin:8px 0"><input id="debug-trace" type="checkbox"> Debug Trace</label>
+<label class="small" style="display:flex;gap:7px;align-items:center;margin:8px 0"><input id="debug-thinking" type="checkbox"> Сохранять thinking</label>
+<button id="trace-view" type="button">Просмотр трассировки задачи</button><button id="trace-export" type="button">Экспорт трассировки задачи</button>
+<div class="small">Трассировка выключена по умолчанию; секреты фильтруются перед записью.</div><div class="small">По умолчанию доступен только на этом компьютере.</div></aside>
+<section class="main"><header><strong id="title">Выберите диалог</strong><div style="display:flex;align-items:center;gap:12px;min-width:0"><span id="proxy-status" title="Состояние общего Xray/Privoxy">Интернет: —</span><div id="model-control"><span>Модель</span><select id="model-select" title="Установленные модели Ollama"><option>Загрузка…</option></select><button id="model-refresh" type="button" title="Обновить список моделей">↻</button></div><span id="status"></span></div></header>
+<div id="messages"></div>
+<div id="activity-panel" class="collapsed" aria-live="polite"><div id="activity-toolbar"><div id="activity-heading">Работа агента</div><div id="activity-current">Нет активной задачи</div><div id="generation-speed" style="font-weight:700;font-size:14px;color:#174b83;white-space:nowrap">Генерация: — tok/s</div><button id="activity-toggle" type="button" aria-expanded="false" aria-controls="activity-report activity-history-details">Развернуть</button></div><div id="activity-report"></div><details id="activity-history-details"><summary id="activity-history-summary">История вызовов инструментов</summary><div id="activity-history"><div class="operation">Нет вызовов инструментов для отображения.</div></div></details></div>
+<div id="tasks"><strong>Задачи и управление</strong><div id="tasklist"></div></div>
+<form id="send"><label style="display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:13px"><input id="reasoning" type="checkbox" checked> С рассуждением</label><textarea id="input" placeholder="Напиши сообщение..."></textarea><input id="attachment-input" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/quicktime,video/x-matroska,video/x-msvideo,video/webm,audio/wav,audio/x-wav,audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/flac,.wav,.mp3,.m4a,.aac,.ogg,.opus,.flac,.wma,.mp4,.m4v,.mov,.mkv,.avi,.webm,.flv,.wmv,.pdf,.docx,.xlsx,.txt,.md,.csv,.json,.py,.html,.xml,.yaml,.yml,.log"><button id="attach-button" type="button">📎 Файлы</button><span id="attachment-list"></span><button type="submit">Отправить</button></form>
+</section></div>
+<dialog id="trace-dialog" style="width:min(900px,94vw);max-height:85vh;border:1px solid #ccd0d5;border-radius:12px;padding:18px">
+  <h3 style="margin-top:0">Debug Trace</h3>
+  <pre id="trace-content" style="white-space:pre-wrap;overflow:auto;max-height:65vh;font:12px/1.45 ui-monospace,monospace"></pre>
+  <button id="trace-close" type="button">Закрыть</button>
+</dialog>
+<dialog id="self-test-dialog" style="width:min(760px,94vw);max-height:85vh;border:1px solid #ccd0d5;border-radius:12px;padding:18px">
+  <h3 style="margin-top:0">Проверка инструментов</h3>
+  <div id="self-test-summary"></div>
+  <pre id="self-test-results" style="white-space:pre-wrap;overflow:auto;max-height:60vh;font:12px/1.45 ui-monospace,monospace"></pre>
+  <button id="self-test-close" type="button">Закрыть</button>
+</dialog>
+<script>
+let current=null, busy=false, taskListSignature="", activityReportSignature="", activityHistorySignature="";
+const $=id=>document.getElementById(id);
+$('activity-toggle').addEventListener('click',()=>{const panel=$('activity-panel');const collapsed=panel.classList.toggle('collapsed');panel.classList.toggle('expanded',!collapsed);$('activity-toggle').textContent=collapsed?'Развернуть':'Свернуть';$('activity-toggle').setAttribute('aria-expanded',String(!collapsed));});
+async function api(url,opts={}){const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opts});let d=await r.json().catch(()=>({detail:r.statusText}));if(!r.ok)throw Error(d.detail||r.statusText);return d}
+async function loadDebugTraceSettings(){
+    try{const d=await api('/api/settings/debug-trace');$('debug-trace').checked=!!d.enabled;$('debug-thinking').checked=!!d.thinking;$('debug-thinking').disabled=!d.enabled;}
+    catch(e){$('status').textContent='Настройки трассировки недоступны: '+e.message}
+}
+async function saveDebugTraceSettings(){
+    const enabled=$('debug-trace').checked;const thinking=enabled&&$('debug-thinking').checked;
+    $('debug-thinking').disabled=!enabled;
+    try{await api('/api/settings/debug-trace',{method:'PUT',body:JSON.stringify({enabled,thinking})});}
+    catch(e){alert('Не удалось сохранить настройки трассировки: '+e.message);await loadDebugTraceSettings()}
+}
+$('debug-trace').addEventListener('change',saveDebugTraceSettings);
+$('debug-thinking').addEventListener('change',saveDebugTraceSettings);
+async function getSelectedTaskTrace(){const ts=await api('/api/tasks'+(current?'?conversation_id='+encodeURIComponent(current):''));const task=ts.find(t=>['running','queued','paused','interrupted','cancelling','completed','failed'].includes(t.status));if(!task)throw Error('В этом диалоге нет задачи');return {task,data:await api('/api/tasks/'+encodeURIComponent(task.id)+'/trace')}}
+$('trace-view').addEventListener('click',async()=>{try{const {data}=await getSelectedTaskTrace();$('trace-content').textContent=JSON.stringify(data,null,2);$('trace-dialog').showModal()}catch(e){alert('Не удалось открыть трассировку: '+e.message)}});
+$('trace-close').addEventListener('click',()=>$('trace-dialog').close());
+$('trace-export').addEventListener('click',async()=>{
+    try{const {task,data}=await getSelectedTaskTrace();const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='localagent-trace-'+task.id+'.json';a.click();URL.revokeObjectURL(url)}catch(e){alert('Не удалось экспортировать трассировку: '+e.message)}
+});
+async function loadOllamaModels(){
+    const select=$('model-select');
+    try{
+        const data=await api('/api/ollama/models');
+        const models=Array.isArray(data.models)?data.models:[];
+        select.replaceChildren();
+        for(const item of models){const option=document.createElement('option');option.value=item.name;option.textContent=item.name;select.append(option)}
+        if(data.selected_model&&!models.some(item=>item.name===data.selected_model)){
+            const option=document.createElement('option');option.value=data.selected_model;option.textContent=data.selected_model+' (текущая)';select.append(option)
+        }
+        select.value=data.selected_model||'';select.dataset.current=select.value;select.disabled=models.length===0;refreshSelectedModelProfile();
+        if(!models.length){const option=document.createElement('option');option.textContent='Нет установленных моделей';option.value='';select.append(option)}
+    }catch(error){select.replaceChildren();const option=document.createElement('option');option.textContent='Ollama недоступна';option.value='';select.append(option);select.disabled=true;select.title=error.message}
+}
+async function refreshSelectedModelProfile(){
+    try{const p=await api('/api/ollama/model-profile');$('status').textContent=`${p.model} · контекст ${Number(p.num_ctx).toLocaleString('ru-RU')} · генерация до ${Number(p.num_predict).toLocaleString('ru-RU')}`;}
+    catch(_){$('status').textContent='Параметры модели недоступны'}
+}
+$('model-refresh').addEventListener('click',async()=>{await loadOllamaModels();await refreshSelectedModelProfile()});
+async function refreshGenerationSpeed(){
+    try{
+        const data=await api('/api/ollama/generation');
+        const speed=data.tokens_per_second;
+        const generationLabel=data.active?'≈':' ';
+        const inputRate=Number.isFinite(data.prompt_tokens_per_second)?` · Вход: ${data.prompt_tokens_per_second.toFixed(0)} tok/s`:'';
+        if(data.active){$('generation-speed').textContent=`Генерация: ≈${Number.isFinite(speed)?speed.toFixed(1):'…'} tok/s`}
+        else{$('generation-speed').textContent=`Генерация: ${Number.isFinite(speed)?speed.toFixed(1):'—'} tok/s${inputRate}`}
+        const details=[data.model||'модель неизвестна',`${data.eval_count||0} выходных токенов`];
+        if(Number.isFinite(data.prompt_tokens_per_second))details.push(`скорость обработки входа: ${data.prompt_tokens_per_second.toFixed(0)} tok/s`);
+        if(data.num_ctx)details.push(`контекст: ${data.num_ctx}`);
+        if(data.estimated)details.push('скорость предварительная');
+        $('generation-speed').title=details.join(' · ');
+    }catch(_){$('generation-speed').textContent='Генерация: — tok/s'}
+}
+setInterval(refreshGenerationSpeed,1000);refreshGenerationSpeed();
+$('model-select').addEventListener('change',async()=>{
+    const select=$('model-select');const previous=select.dataset.current||select.value;select.disabled=true;
+    try{const result=await api('/api/ollama/model',{method:'POST',body:JSON.stringify({model:select.value})});select.dataset.current=result.selected_model;select.value=result.selected_model;await refreshSelectedModelProfile()}
+    catch(error){alert('Не удалось сменить модель: '+error.message);select.value=previous;await loadOllamaModels()}
+    finally{select.disabled=false}
+});
+function addMsg(role,content){let d=document.createElement('div');d.className='msg '+role;let r=document.createElement('div');r.className='role';r.textContent=role;let c=document.createElement('div');c.textContent=content;d.append(r,c);$('messages').append(d)}
+async function loadConversations(){
+    let list=await api('/api/conversations');
+    $('conversations').replaceChildren();
+    for(const c of list){
+        let row=document.createElement('div');
+        row.className='conv-row';
+
+        let b=document.createElement('button');
+        b.className='conv'+(c.id===current?' active':'');
+        b.textContent=c.title;
+        b.title=c.title;
+        b.onclick=()=>selectConversation(c.id);
+        row.append(b);
+
+        let rename=document.createElement('button');
+        rename.textContent='✏️';
+        rename.title='Переименовать диалог';
+        rename.setAttribute('aria-label','Переименовать '+c.title);
+        rename.onclick=()=>renameConversation(c);
+        row.append(rename);
+
+        let del=document.createElement('button');
+        del.textContent='🗑️';
+        del.title='Удалить диалог';
+        del.setAttribute('aria-label','Удалить '+c.title);
+        del.onclick=()=>deleteConversation(c);
+        row.append(del);
+
+        $('conversations').append(row);
+    }
+}
+
+async function renameConversation(c){
+    const value=prompt('Новое название диалога:',c.title);
+    if(value===null)return;
+    const title=value.trim();
+    if(!title){alert('Название не может быть пустым.');return}
+    try{
+        await api('/api/conversations/'+encodeURIComponent(c.id),{
+            method:'PATCH',
+            body:JSON.stringify({title})
+        });
+        await loadConversations();
+        if(current===c.id)$('title').textContent=title;
+    }catch(e){alert('Не удалось переименовать диалог: '+e.message)}
+}
+
+async function deleteConversation(c){
+    if(!confirm('Удалить диалог «'+c.title+'»?\\n\\nВсе его сообщения и завершённые задачи будут удалены без возможности восстановления.'))return;
+    try{
+        await api('/api/conversations/'+encodeURIComponent(c.id),{
+            method:'DELETE'
+        });
+        if(current!==c.id){
+            await loadConversations();
+            return;
+        }
+
+        current=null;
+        $('messages').replaceChildren();
+        $('tasklist').replaceChildren();
+        $('title').textContent='Выберите диалог';
+
+        const list=await api('/api/conversations');
+        if(list.length){
+            await selectConversation(list[0].id);
+        }else{
+            const created=await api('/api/conversations',{
+                method:'POST',
+                body:JSON.stringify({title:'Новый диалог'})
+            });
+            await selectConversation(created.id);
+        }
+    }catch(e){
+        alert('Не удалось удалить диалог: '+e.message);
+    }
+}
+async function selectConversation(id){current=id;await loadConversations();let c=(await api('/api/conversations')).find(x=>x.id===id);$('title').textContent=c?.title||'Диалог';let ms=await api('/api/conversations/'+id+'/messages');$('messages').replaceChildren();for(const m of ms)addMsg(m.role,m.content);$('messages').scrollTop=$('messages').scrollHeight;await loadTasks()}
+async function loadActivity(task){
+    const report=$('activity-report');
+    const reportSig=JSON.stringify(task?{
+        id:task.id,status:task.status,pause_report:task.pause_report,error:task.error,result:task.result
+    }:null);
+    if(reportSig!==activityReportSignature){
+        const fragment=document.createDocumentFragment();
+        if(task?.status==='paused' && task.pause_report){
+            const heading=document.createElement('strong');heading.textContent='Промежуточный отчёт';fragment.append(heading,document.createElement('br'));
+            const body=document.createElement('span');body.textContent=task.pause_report;fragment.append(body);
+        }else if(task?.status==='failed' && task.error){
+            const heading=document.createElement('strong');heading.textContent='Задача завершилась с ошибкой';fragment.append(heading,document.createElement('br'));
+            const body=document.createElement('span');body.textContent=task.error;fragment.append(body);
+        }else if(task?.status==='completed' && task.result){
+            const heading=document.createElement('strong');heading.textContent='Итог';fragment.append(heading,document.createElement('br'));
+            const body=document.createElement('span');body.textContent=task.result;fragment.append(body);
+        }
+        report.replaceChildren(fragment);
+        report.style.whiteSpace='';
+        report.style.maxHeight='';
+        activityReportSignature=reportSig;
+    }
+    const history=$('activity-history');
+    if(!task){
+        const sig='no-task';
+        if(sig!==activityHistorySignature){history.textContent='Нет активной задачи';activityHistorySignature=sig}
+        $('activity-history-summary').textContent='История вызовов инструментов';
+        return;
+    }
+    try{
+        const [data,execution,usageData]=await Promise.all([
+            api('/api/tasks/'+encodeURIComponent(task.id)+'/operations?limit=50&offset=0'),
+            api('/api/tasks/'+encodeURIComponent(task.id)+'/execution'),
+            api('/api/tasks/'+encodeURIComponent(task.id)+'/usage')
+        ]);
+        const state=execution.task_state||{};
+        const counts=`Действия: ${state.actions_succeeded||0} успешно · ${state.actions_failed||0} ошибок`;
+        const tokenInfo = usageData ? ` · Контекст: ${usageData.current_prompt_tokens||0}/${usageData.context_limit||0} (${usageData.current_context_percent||0}%) · максимум ${usageData.max_prompt_tokens||0} (${usageData.max_context_percent||0}%) · токены всего: ${usageData.prompt_tokens_total||0} вход / ${usageData.generated_tokens_total||0} выход` : '';
+        $('activity-history-summary').textContent='Ход работы · '+counts+tokenInfo+' · операций в журнале: '+(data.total||0);
+        const historySig=JSON.stringify({id:task.id,total:data.total,operations:data.operations?.map(op=>[
+            op.operation_id,op.status,op.status_detail,op.activity,op.updated_at
+        ]),events:execution.events,task_state:state,plan:execution.plan});
+        if(historySig===activityHistorySignature)return;
+        const fragment=document.createDocumentFragment();
+        if(execution.plan){
+            const planRow=document.createElement('div');planRow.className='operation';
+            const planTitle=document.createElement('div');planTitle.textContent=`План: ${execution.plan.completed_steps}/${execution.plan.total_steps} этапов · ${execution.plan.status}`;planRow.append(planTitle);
+            if(execution.plan.remaining_steps?.length){const remaining=document.createElement('div');remaining.className='op-meta';remaining.textContent='Осталось: '+execution.plan.remaining_steps.slice(0,3).join('; ');planRow.append(remaining)}
+            fragment.append(planRow);
+        }
+        for(const event of (execution.events||[]).slice(-20).reverse()){
+            const row=document.createElement('div');row.className='operation '+(event.status==='failed'?'failed':event.status==='succeeded'?'completed':'');
+            const title=document.createElement('div');
+            const when=event.at?new Date(event.at).toLocaleTimeString():'';
+            title.textContent=[when,event.tool||'Состояние задачи',event.type||'event'].filter(Boolean).join(' · ');row.append(title);
+            if(event.detail){const detail=document.createElement('div');detail.textContent=event.detail;row.append(detail)}
+            fragment.append(row);
+        }
+        if(!data.operations?.length && !(execution.events||[]).length){
+            const empty=document.createElement('div');empty.className='operation';empty.textContent='В журнале пока нет действий.';fragment.append(empty);
+        }else{
+            for(const op of (data.operations||[]).slice(0,20)){
+                const row=document.createElement('div');row.className='operation '+(op.status||'');
+                const title=document.createElement('div');
+                const icon=op.status==='completed'?'✓':op.status==='failed'?'✕':op.status==='running'?'●':op.status==='unknown'?'?':'·';
+                title.textContent=icon+' '+(op.activity||op.tool_name||'Инструмент');row.append(title);
+                const meta=document.createElement('div');meta.className='op-meta';
+                const when=op.created_at?new Date(op.created_at).toLocaleTimeString():'';
+                meta.textContent=[when,op.status==='completed'?'завершён':op.status==='failed'?'ошибка':op.status==='unknown'?'не подтверждён':'выполняется'].filter(Boolean).join(' · ');row.append(meta);
+                if(op.status_detail){const detail=document.createElement('div');detail.textContent=op.status_detail;row.append(detail)}
+                fragment.append(row);
+            }
+        }
+        history.replaceChildren(fragment);
+        activityHistorySignature=historySig;
+    }catch(e){
+        const sig='error:'+e.message;
+        if(sig!==activityHistorySignature){history.textContent='Не удалось загрузить журнал: '+e.message;activityHistorySignature=sig}
+        $('activity-history-summary').textContent='История вызовов инструментов';
+    }
+}
+async function loadTasks(){
+    let ts=await api('/api/tasks'+(current?'?conversation_id='+encodeURIComponent(current):''));
+    const activeStatuses=['running','queued','paused','interrupted','cancelling'];
+    const active=ts.find(t=>t.status==='running')||ts.find(t=>t.status==='queued')||ts.find(t=>activeStatuses.includes(t.status))||ts[0];
+    const currentText=active?((active.status==='cancelling'?'Отмена выполняется':active.status)+' · '+(active.activity||'Состояние задачи')):'Нет задач в этом диалоге';
+    if($('activity-current').textContent!==currentText)$('activity-current').textContent=currentText;
+    await loadActivity(active||null);
+    const signature=JSON.stringify(ts.map(t=>({
+        id:t.id,status:t.status,activity:t.activity,error:t.error,result:t.result,
+        pause_report:t.pause_report,updated_at:t.updated_at
+    })));
+    if(signature===taskListSignature)return;
+    taskListSignature=signature;
+    $('tasklist').replaceChildren();
+    for(const t of ts){
+        let d=document.createElement('div');d.className='task';
+        let label=document.createElement('span');label.textContent=t.status+' · '+(t.activity||'Состояние задачи');d.append(label);
+        for(const [action,caption] of [['pause','Пауза'],['resume','Продолжить'],['cancel','Отмена']]){
+            if(['completed','failed','cancelled'].includes(t.status))continue;
+            if(t.status==='cancelling' && action!=='cancel')continue;
+            let b=document.createElement('button');b.textContent=t.status==='cancelling'&&action==='cancel'?'Отмена…':caption;b.disabled=t.status==='cancelling';b.style.margin='2px';
+            b.onclick=async()=>{try{await api('/api/tasks/'+t.id+'/'+action,{method:'POST'});await loadTasks()}catch(e){alert(e.message)}};d.append(b)
+        }
+        if(t.error && t.status!=='failed' && (!active || t.id!==active.id)){let err=document.createElement('div');err.textContent='Ошибка: '+t.error;d.append(err)}
+        if(t.result && t.status!=='paused' && (!active || t.id!==active.id)){let res=document.createElement('div');res.textContent='Результат: '+t.result;d.append(res)}
+        $('tasklist').append(d)
+    }
+}
+$('new').onclick=async()=>{try{let c=await api('/api/conversations',{method:'POST',body:JSON.stringify({title:'Новый диалог'})});await selectConversation(c.id)}catch(e){alert(e.message)}};
+$('refresh').onclick=async()=>{await loadConversations();await loadTasks()};
+$('self-test-close').onclick=()=>$('self-test-dialog').close();
+$('self-test').onclick=async()=>{
+    const button=$('self-test');button.disabled=true;button.textContent='Проверка…';
+    try{
+        const result=await api('/api/tools/self-test',{method:'POST'});
+        const lines=Object.entries(result.tools||{}).map(([name,item])=>
+            (item.status==='passed'?'✓':item.status==='failed'?'✕':'—')+' '+name+' — '+item.status+': '+(item.detail||''));
+        const report='Проверка инструментов: успешно '+result.passed+', ошибок '+result.failed+', не проверено '+result.not_tested+'\n\n'+lines.join('\n');
+        $('self-test-summary').textContent='Успешно: '+result.passed+' · Ошибки: '+result.failed+' · Не проверено: '+result.not_tested;
+        $('self-test-results').textContent=report;
+        $('self-test-dialog').showModal();
+    }catch(e){alert('Не удалось проверить инструменты: '+e.message)}
+    finally{button.disabled=false;button.textContent='Проверить инструменты'}
+};
+$('ollama').onclick=async()=>{try{let d=await api('/api/ollama/status');alert(JSON.stringify(d,null,2))}catch(e){alert(e.message)}};
+let selectedAttachments=[];
+$('attach-button').onclick=()=>$('attachment-input').click();
+$('attachment-input').onchange=async e=>{
+    const files=Array.from(e.target.files||[]);e.target.value='';
+    if(selectedAttachments.length+files.length>5){alert('Можно приложить не более 5 файлов');return}
+    try{
+        for(const file of files){
+            if(file.size>12*1024*1024){throw Error('Файл '+file.name+' превышает 12 МБ')}
+            const bytes=new Uint8Array(await file.arrayBuffer());let binary='';
+            for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
+            selectedAttachments.push({name:file.name,mime_type:file.type||'application/octet-stream',data_base64:btoa(binary)});
+        }
+        $('attachment-list').textContent=selectedAttachments.map(f=>f.name).join(', ');
+    }catch(err){alert(err.message)}
+};
+$('send').onsubmit=async e=>{e.preventDefault();if(!current){alert('Сначала создай диалог');return}let content=$('input').value.trim();if(!content&&!selectedAttachments.length)return;$('input').value='';const files=selectedAttachments;selectedAttachments=[];$('attachment-list').textContent='';addMsg('user',content+(files.length?'\n[Вложения: '+files.map(f=>f.name).join(', ')+']':''));$('status').textContent='Задача отправлена';try{await api('/api/conversations/'+current+'/messages',{method:'POST',body:JSON.stringify({content,attachments:files,reasoning:$('reasoning').checked})});await loadTasks()}catch(e){alert(e.message);selectedAttachments=files;$('attachment-list').textContent=files.map(f=>f.name).join(', ')}};
+async function poll(){try{if(current){let ms=await api('/api/conversations/'+current+'/messages');let existing=$('messages').children.length;if(ms.length!==existing){$('messages').replaceChildren();for(const m of ms)addMsg(m.role,m.content);$('messages').scrollTop=$('messages').scrollHeight}await loadTasks()}try{const p=await api('/api/sandbox/proxy-status');const online=p.state==='online';$('proxy-status').textContent=online?'Интернет: доступен':p.state==='degraded'?'Интернет: проблема':p.state==='offline'?'Прокси: недоступен':'Интернет: не проверен';$('proxy-status').title=[`container=${p.running?'running':'not-running'}`,`network=${p.network_connected?'connected':'missing'}`,`DNS=${p.dns_resolved===true?'ok':p.dns_resolved===false?'failed':'unknown'}`,`SOCKS5=${p.socks_reachable===true?'ok':p.socks_reachable===false?'failed':'unknown'}`,`Privoxy egress=${p.privoxy_egress===true?'ok':p.privoxy_egress===false?'failed':'unknown'}`,`external=${p.external_internet===true?'ok':p.external_internet===false?'failed':'unknown'}`,`failed_stage=${p.failed_stage||'none'}`,p.probe_error||p.error||p.note||''].filter(Boolean).join(' · ');}catch(_){$('proxy-status').textContent='Интернет: —'}await loadConversations();$('status').textContent='Обновлено '+new Date().toLocaleTimeString()}catch(e){$('status').textContent='Ошибка: '+e.message}}
+(async()=>{try{await loadDebugTraceSettings();await loadOllamaModels();let cs=await api('/api/conversations');if(!cs.length){let c=await api('/api/conversations',{method:'POST',body:JSON.stringify({title:'Первый диалог'})});cs=[c]}await selectConversation(cs[0].id);setInterval(poll,2500)}catch(e){$('status').textContent=e.message}})();
+
+
+// Keyboard behavior: Enter sends; Shift+Enter inserts a newline.
+(() => {
+    const input = document.getElementById('input');
+    const form = document.getElementById('send');
+    if (!input || !form || input.dataset.enterHandlerInstalled) return;
+    input.dataset.enterHandlerInstalled = '1';
+    input.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+            event.preventDefault();
+            if (input.value.trim()) form.requestSubmit();
+        }
+    });
+})();
+
+</script></body></html>

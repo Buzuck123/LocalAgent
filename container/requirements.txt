@@ -1,0 +1,40 @@
+# SWE-ReX remote runtime
+swe-rex==1.4.0
+
+# Excel and data processing
+pandas
+openpyxl
+XlsxWriter
+xlrd
+pyxlsb
+
+# Word and documents
+python-docx
+python-pptx
+odfpy
+
+# PDF
+pypdf
+PyMuPDF
+pdfplumber
+reportlab
+
+# Images and OCR
+Pillow
+pytesseract
+
+# Browser automation
+playwright
+
+# HTTP and web
+requests
+httpx
+beautifulsoup4
+lxml
+aiohttp
+
+# SQLite and data formats
+SQLAlchemy
+tabulate
+
+uvicorn

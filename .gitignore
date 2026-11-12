@@ -1,0 +1,19 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+data/*.sqlite3
+data/*.sqlite3-shm
+data/*.sqlite3-wal
+logs/*
+workspace/*
+!workspace/.gitkeep
+!data/.gitkeep
+!logs/.gitkeep
+.pytest_cache/
+
+# Internal documentation
+docs/
+
+# Local source backups
+*.before_*

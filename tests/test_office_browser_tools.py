@@ -1,0 +1,85 @@
+import pytest
+from types import SimpleNamespace
+from openpyxl import load_workbook
+from docx import Document
+
+from agent import tools
+from agent.tools import dispatch_tool
+
+
+def _settings(tmp_path, monkeypatch):
+    workspace = tmp_path.resolve()
+    workspace.mkdir(exist_ok=True)
+    monkeypatch.setattr(tools, "settings", SimpleNamespace(workspace_path=workspace))
+    return workspace
+
+
+def test_excel_write_read_and_literal_formula(tmp_path, monkeypatch):
+    workspace = _settings(tmp_path, monkeypatch)
+    created = dispatch_tool("write_excel", {
+        "path": "report.xlsx", "sheet_name": "Summary",
+        "rows": [["Name", "Value"], ["=HYPERLINK(\"https://example.invalid\")", 42]],
+    })
+    assert created["rows_written"] == 2
+    result = dispatch_tool("read_excel", {"path": "report.xlsx", "sheet_name": "Summary"})
+    assert result["sheets"][0]["preview"][0] == ["Name", "Value"]
+    assert result["sheets"][0]["preview"][1] == ['=HYPERLINK("https://example.invalid")', 42]
+    wb = load_workbook(workspace / "report.xlsx", data_only=False)
+    try:
+        assert wb["Summary"]["A2"].data_type == "s"
+    finally:
+        wb.close()
+
+
+def test_excel_existing_cells_need_overwrite(tmp_path, monkeypatch):
+    _settings(tmp_path, monkeypatch)
+    dispatch_tool("write_excel", {"path": "report.xlsx", "sheet_name": "Sheet1", "rows": [[1]]})
+    with pytest.raises(FileExistsError):
+        dispatch_tool("write_excel", {"path": "report.xlsx", "sheet_name": "Sheet1", "rows": [[2]]})
+    dispatch_tool("write_excel", {"path": "report.xlsx", "sheet_name": "Sheet1", "rows": [[2]], "overwrite": True})
+    result = dispatch_tool("read_excel", {"path": "report.xlsx", "sheet_name": "Sheet1"})
+    assert result["sheets"][0]["preview"][0][0] == 2
+
+
+def test_office_tools_reject_path_escape_and_wrong_extension(tmp_path, monkeypatch):
+    _settings(tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        dispatch_tool("read_excel", {"path": "../outside.xlsx"})
+    with pytest.raises(ValueError):
+        dispatch_tool("write_word", {"path": "bad.txt", "paragraphs": ["x"]})
+
+
+def test_word_round_trip_with_table(tmp_path, monkeypatch):
+    workspace = _settings(tmp_path, monkeypatch)
+    result = dispatch_tool("write_word", {
+        "path": "summary.docx", "paragraphs": ["Report", "Second paragraph"],
+        "tables": [[["Name", "Count"], ["Apples", 3]]],
+    })
+    assert result["tables_written"] == 1
+    read = dispatch_tool("read_word", {"path": "summary.docx"})
+    assert read["paragraphs"] == ["Report", "Second paragraph"]
+    assert read["tables"][0][1] == ["Apples", "3"]
+    doc = Document(workspace / "summary.docx")
+    assert len(doc.tables) == 1
+
+
+def test_word_existing_file_is_protected(tmp_path, monkeypatch):
+    _settings(tmp_path, monkeypatch)
+    dispatch_tool("write_word", {"path": "summary.docx", "paragraphs": ["first"]})
+    with pytest.raises(FileExistsError):
+        dispatch_tool("write_word", {"path": "summary.docx", "paragraphs": ["second"]})
+
+
+def test_public_url_validator_blocks_local_and_nonstandard_ports(monkeypatch):
+    monkeypatch.setattr(tools.socket, "getaddrinfo", lambda *a, **k: [(None, None, None, None, ("93.184.216.34", 0))])
+    with pytest.raises(ValueError):
+        tools._validate_public_url("http://127.0.0.1/")
+    with pytest.raises(ValueError):
+        tools._validate_public_url("https://example.com:8443/")
+    assert tools._validate_public_url("https://example.com/") == "https://example.com/"
+
+
+def test_browser_tool_remains_and_office_tools_are_replaced_by_terminal():
+    names = {item["function"]["name"] for item in tools.TOOL_DEFINITIONS}
+    assert {"terminal", "publish_file", "open_browser_page"} <= names
+    assert not {"read_excel", "write_excel", "read_word", "write_word"} & names

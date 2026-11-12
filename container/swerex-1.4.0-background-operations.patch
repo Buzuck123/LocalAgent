@@ -1,0 +1,1801 @@
+--- a/swerex-1.4.0/runtime/abstract.py
++++ b/swerex-1.4.0/runtime/abstract.py
+@@ -81,7 +81,7 @@
+     """
+ 
+     expect: list[str] = []
+-    """Outputs to expect in addition to the PS1"""
++    """Regular-expression patterns to expect in addition to the PS1."""
+ 
+     action_type: Literal["bash"] = "bash"
+     """Used for type discrimination. Do not change."""
+@@ -97,7 +97,7 @@
+     """How many times to retry quitting."""
+ 
+     expect: list[str] = []
+-    """Outputs to expect in addition to the PS1"""
++    """Regular-expression patterns to expect in addition to the PS1."""
+ 
+     action_type: Literal["bash_interrupt"] = "bash_interrupt"
+ 
+@@ -231,6 +231,64 @@
+     extra_info: dict[str, Any] = {}
+ 
+ 
++# Background terminal operations. Timestamps are Unix epoch seconds.
++OperationState = Literal["running", "waiting_input", "completed", "interrupted", "timed_out", "failed"]
++
++
++class StartOperationRequest(BaseModel):
++    action: BashAction
++    idempotency_key: str = Field(min_length=1, max_length=256)
++
++
++class StartOperationResponse(BaseModel):
++    operation_id: str
++    session: str
++    state: OperationState = "running"
++    created_at: float
++
++
++class GetOperationRequest(BaseModel):
++    session: str
++    operation_id: str
++    cursor: int = Field(default=0, ge=0)
++    max_output_chars: int = Field(default=65536, ge=0, le=1_048_576)
++    wait_timeout: float = Field(default=0.0, ge=0)
++
++
++class GetOperationResponse(BaseModel):
++    operation_id: str
++    session: str
++    state: OperationState
++    output: str = ""
++    next_cursor: int = 0
++    oldest_cursor: int = 0
++    output_truncated: bool = False
++    exit_code: int | None = None
++    failure_reason: str = ""
++    expect_string: str = ""
++    created_at: float
++    started_at: float
++    finished_at: float | None = None
++
++
++class InterruptOperationRequest(BaseModel):
++    session: str
++    operation_id: str
++
++
++class SendInputRequest(BaseModel):
++    session: str
++    operation_id: str
++    input: str
++    sendline: bool = True
++
++
++class ResizeTerminalRequest(BaseModel):
++    session: str
++    rows: int = Field(ge=1, le=1000)
++    cols: int = Field(ge=1, le=1000)
++
++
+ class AbstractRuntime(ABC):
+     """This is the main entry point for running stuff.
+ 
+@@ -257,6 +315,21 @@
+         """
+         pass
+ 
++    async def start_operation(self, request: StartOperationRequest) -> StartOperationResponse:
++        raise NotImplementedError("Background operations are not supported by this runtime")
++
++    async def get_operation(self, request: GetOperationRequest) -> GetOperationResponse:
++        raise NotImplementedError("Background operations are not supported by this runtime")
++
++    async def interrupt_operation(self, request: InterruptOperationRequest) -> GetOperationResponse:
++        raise NotImplementedError("Background operations are not supported by this runtime")
++
++    async def send_input(self, request: SendInputRequest) -> GetOperationResponse:
++        raise NotImplementedError("Interactive operation input is not supported by this runtime")
++
++    async def resize_terminal(self, request: ResizeTerminalRequest) -> None:
++        raise NotImplementedError("Terminal resizing is not supported by this runtime")
++
+     @abstractmethod
+     async def close_session(self, request: CloseSessionRequest) -> CloseSessionResponse:
+         """Closes a shell session (e.g., a bash shell that we started earlier)."""
+--- a/swerex-1.4.0/runtime/local.py
++++ b/swerex-1.4.0/runtime/local.py
+@@ -1,4 +1,7 @@
++import asyncio
+ import logging
++import signal
++import uuid
+ import os
+ import re
+ import shutil
+@@ -8,6 +11,7 @@
+ from copy import deepcopy
+ from pathlib import Path
+ from typing import Any
++from dataclasses import dataclass, field
+ 
+ import bashlex
+ import bashlex.ast
+@@ -48,6 +52,8 @@
+     UploadResponse,
+     WriteFileRequest,
+     WriteFileResponse,
++    StartOperationRequest, StartOperationResponse, GetOperationRequest, GetOperationResponse,
++    InterruptOperationRequest, SendInputRequest, ResizeTerminalRequest,
+ )
+ from swerex.runtime.config import LocalRuntimeConfig
+ from swerex.utils.log import get_logger
+@@ -125,6 +131,125 @@
+     async def close(self) -> CloseSessionResponse: ...
+ 
+ 
++@dataclass
++class _OutputCapture:
++    max_chars: int = 1_048_576
++    prompt: str = ""
++    exit_prefix: str = ""
++    exit_suffix: str = ""
++    chunks: list[str] = field(default_factory=list)
++    chars: int = 0
++    total_chars: int = 0
++    pending: str = ""
++    changed: asyncio.Event = field(default_factory=asyncio.Event)
++
++    def _append(self, value: str) -> None:
++        if not value:
++            return
++        self.chunks.append(value)
++        self.chars += len(value)
++        self.total_chars += len(value)
++        while self.chars > self.max_chars and self.chunks:
++            excess = self.chars - self.max_chars
++            first = self.chunks[0]
++            if len(first) <= excess:
++                self.chunks.pop(0)
++                self.chars -= len(first)
++            else:
++                self.chunks[0] = first[excess:]
++                self.chars -= excess
++        self.changed.set()
++
++    def write(self, value: str) -> int:
++        if not value:
++            return 0
++        text = self.pending + value
++        self.pending = ""
++        if self.prompt:
++            text = text.replace(self.prompt, "")
++        if self.exit_prefix and self.exit_suffix:
++            marker = re.escape(self.exit_prefix) + r"\d+" + re.escape(self.exit_suffix)
++            text = re.sub(marker, "", text)
++            marker_start = text.rfind(self.exit_prefix)
++            if marker_start >= 0 and self.exit_suffix not in text[marker_start:]:
++                text, self.pending = text[:marker_start], text[marker_start:]
++
++        # Hold a possible partial internal token at the end of a PTY chunk so
++        # markers split across reads are never leaked to the client.
++        tokens = [token for token in (self.prompt, self.exit_prefix, self.exit_suffix) if token]
++        hold_at = len(text)
++        for token in tokens:
++            upper = min(len(token) - 1, len(text))
++            for size in range(upper, 0, -1):
++                if text.endswith(token[:size]):
++                    hold_at = min(hold_at, len(text) - size)
++                    break
++        if hold_at < len(text):
++            self.pending = text[hold_at:] + self.pending
++            text = text[:hold_at]
++        self._append(text)
++        return len(value)
++
++    def finish(self) -> None:
++        pending = self.pending
++        self.pending = ""
++        # A trailing partial prompt/exit marker is internal protocol data.
++        if any(token.startswith(pending) for token in (self.prompt, self.exit_prefix, self.exit_suffix) if token):
++            return
++        if self.exit_prefix and pending.startswith(self.exit_prefix):
++            return
++        self._append(pending)
++
++    def flush(self) -> None:
++        return None
++
++    @property
++    def oldest_cursor(self) -> int:
++        return self.total_chars - self.chars
++
++    def read(self, cursor: int, limit: int) -> tuple[str, int, int, bool]:
++        oldest = self.oldest_cursor
++        truncated = cursor < oldest
++        pos = max(cursor, oldest)
++        pieces: list[str] = []
++        remaining = max(0, limit)
++        offset = oldest
++        for chunk in self.chunks:
++            end = offset + len(chunk)
++            if end > pos and remaining:
++                start = max(0, pos - offset)
++                piece = chunk[start:start + remaining]
++                pieces.append(piece)
++                remaining -= len(piece)
++                pos += len(piece)
++            offset = end
++            if not remaining:
++                break
++        return "".join(pieces), pos, oldest, truncated
++
++
++@dataclass
++class _BackgroundOperation:
++    operation_id: str
++    idempotency_key: str
++    fingerprint: str
++    created_at: float
++    started_at: float
++    state: str = "running"
++    exit_code: int | None = None
++    failure_reason: str = ""
++    expect_string: str = ""
++    finished_at: float | None = None
++    interrupt_requested: bool = False
++    interactive: bool = False
++    exit_prefix: str = ""
++    exit_suffix: str = ""
++    capture: _OutputCapture = field(default_factory=_OutputCapture)
++    input_event: asyncio.Event = field(default_factory=asyncio.Event)
++    started_event: asyncio.Event = field(default_factory=asyncio.Event)
++    task: asyncio.Task | None = None
++
++
+ class BashSession(Session):
+     _UNIQUE_STRING = "UNIQUESTRING29234"
+ 
+@@ -134,9 +259,13 @@
+         It's pretty similar to a `pexpect.REPLWrapper`.
+         """
+         self.request = request
+-        self._ps1 = "SHELLPS1PREFIX"
++        self._ps1 = f"SHELLPS1PREFIX{uuid.uuid4().hex}"
+         self._shell: pexpect.spawn | None = None
+         self.logger = logger or get_logger("rex-session")
++        self._operation: _BackgroundOperation | None = None
++        self._operations: dict[str, _BackgroundOperation] = {}
++        self._idempotency: dict[str, tuple[str, str]] = {}
++        self._operation_lock = asyncio.Lock()
+ 
+     @property
+     def shell(self) -> pexpect.spawn:
+@@ -162,22 +291,22 @@
+             echo=False,
+             env=dict(os.environ.copy(), **{"PS1": self._ps1, "PS2": "", "PS0": ""}),  # type: ignore
+         )
+-        time.sleep(0.3)
++        await asyncio.sleep(0.3)
+         cmds = []
+         if self.request.startup_source:
+             cmds += [f"source {path}" for path in self.request.startup_source] + ["sleep 0.3"]
+         cmds += self._get_reset_commands()
+         cmd = " ; ".join(cmds)
+         self.shell.sendline(cmd)
+-        self.shell.expect(self._ps1, timeout=self.request.startup_timeout)
++        await self.shell.expect(self._ps1, timeout=self.request.startup_timeout, async_=True)
+         output = _strip_control_chars(self.shell.before)  # type: ignore
+         return CreateBashSessionResponse(output=output)
+ 
+-    def _eat_following_output(self, timeout: float = 0.5) -> str:
++    async def _eat_following_output(self, timeout: float = 0.5) -> str:
+         """Return all output that happens in the next `timeout` seconds."""
+-        time.sleep(timeout)
+-        try:
+-            output = self.shell.read_nonblocking(timeout=0.1)
++        await asyncio.sleep(timeout)
++        try:
++            output = await asyncio.to_thread(self.shell.read_nonblocking, timeout=0.1)
+         except pexpect.TIMEOUT:
+             return ""
+         return _strip_control_chars(output)
+@@ -189,25 +318,25 @@
+             self.shell.sendintr()
+             expect_strings = action.expect + [self._ps1]
+             try:
+-                expect_index = self.shell.expect(expect_strings, timeout=action.timeout)  # type: ignore
++                expect_index = await self.shell.expect(expect_strings, timeout=action.timeout, async_=True)
+                 matched_expect_string = expect_strings[expect_index]
+             except Exception:
+-                time.sleep(0.2)
++                await asyncio.sleep(0.2)
+                 continue
+             output += _strip_control_chars(self.shell.before)  # type: ignore
+-            output += self._eat_following_output()
++            output += await self._eat_following_output()
+             output = output.strip()
+             return BashObservation(output=output, exit_code=0, expect_string=matched_expect_string)
+         # Fall back to putting job to background and killing it there:
+         try:
+             self.shell.sendcontrol("z")
+-            self.shell.expect(expect_strings, timeout=action.timeout)
++            await self.shell.expect(expect_strings, timeout=action.timeout, async_=True)
+             output += self.shell.before
+             self.shell.sendline("kill -9 %1")
+-            expect_index = self.shell.expect(expect_strings, timeout=action.timeout)  # type: ignore
++            expect_index = await self.shell.expect(expect_strings, timeout=action.timeout, async_=True)
+             matched_expect_string = expect_strings[expect_index]
+             output += self.shell.before
+-            output += self._eat_following_output()
++            output += await self._eat_following_output()
+             output = output.strip()
+             return BashObservation(output=output, exit_code=0, expect_string=matched_expect_string)
+         except pexpect.TIMEOUT:
+@@ -215,31 +344,25 @@
+             raise pexpect.TIMEOUT(msg)
+ 
+     async def run(self, action: BashAction | BashInterruptAction) -> BashObservation:
+-        """Run a bash action.
+-
+-        Raises:
+-            SessionNotInitializedError: If the shell is not initialized.
+-            CommandTimeoutError: If the command times out.
+-            NonZeroExitCodeError: If the command has a non-zero exit code and `action.check` is True.
+-            NoExitCodeError: If we cannot get the exit code of the command.
+-
+-        Returns:
+-            BashObservation: The observation of the command.
+-        """
+-        if self.shell is None:
+-            msg = "shell not initialized"
+-            raise SessionNotInitializedError(msg)
+-        if isinstance(action, BashInterruptAction):
+-            return await self.interrupt(action)
+-        if action.is_interactive_command or action.is_interactive_quit:
+-            return await self._run_interactive(action)
+-        r = await self._run_normal(action)
+-        if action.check == "raise" and r.exit_code != 0:
+-            msg = f"Command {action.command!r} failed with exit code {r.exit_code}. Here is the output:\n{r.output!r}"
+-            if action.error_msg:
+-                msg = f"{action.error_msg}: {msg}"
+-            raise NonZeroExitCodeError(msg)
+-        return r
++        """Run a legacy synchronous-style action without blocking the event loop."""
++        async with self._operation_lock:
++            if self._operation and self._operation.state in ("running", "waiting_input"):
++                raise RuntimeError(
++                    f"Session already has active background operation {self._operation.operation_id}"
++                )
++            if self._shell is None:
++                raise SessionNotInitializedError("shell not initialized")
++            if isinstance(action, BashInterruptAction):
++                return await self.interrupt(action)
++            if action.is_interactive_command or action.is_interactive_quit:
++                return await self._run_interactive(action)
++            result = await self._run_normal(action)
++            if action.check == "raise" and result.exit_code != 0:
++                msg = f"Command {action.command!r} failed with exit code {result.exit_code}. Here is the output:\\n{result.output!r}"
++                if action.error_msg:
++                    msg = f"{action.error_msg}: {msg}"
++                raise NonZeroExitCodeError(msg)
++            return result
+ 
+     async def _run_interactive(self, action: BashAction) -> BashObservation:
+         """Run an interactive action. This is different because we don't seek to
+@@ -249,7 +372,7 @@
+         self.shell.sendline(action.command)
+         expect_strings = action.expect + [self._ps1]
+         try:
+-            expect_index = self.shell.expect(expect_strings, timeout=action.timeout)  # type: ignore
++            expect_index = await self.shell.expect(expect_strings, timeout=action.timeout, async_=True)
+             matched_expect_string = expect_strings[expect_index]
+         except pexpect.TIMEOUT as e:
+             msg = f"timeout after {action.timeout} seconds while running command {action.command!r}"
+@@ -258,11 +381,11 @@
+         if action.is_interactive_quit:
+             assert not action.is_interactive_command
+             self.shell.setecho(False)
+-            self.shell.waitnoecho()
++            await asyncio.to_thread(self.shell.waitnoecho)
+             self.shell.sendline(f"stty -echo; echo '{self._UNIQUE_STRING}'")
+             # Might need two expects for some reason
+-            self.shell.expect(self._UNIQUE_STRING, timeout=1)
+-            self.shell.expect(self._ps1, timeout=1)
++            await self.shell.expect(self._UNIQUE_STRING, timeout=1, async_=True)
++            await self.shell.expect(self._ps1, timeout=1, async_=True)
+         else:
+             # Interactive command.
+             # For some reason, this often times enables echo mode within the shell.
+@@ -282,7 +405,7 @@
+         action = deepcopy(action)
+ 
+         assert self.shell is not None
+-        _check_bash_command(action.command)
++        await asyncio.to_thread(_check_bash_command, action.command)
+ 
+         # Part 2: Execute the command
+ 
+@@ -308,7 +431,7 @@
+         else:
+             expect_strings = [self._UNIQUE_STRING]
+         try:
+-            expect_index = self.shell.expect(expect_strings, timeout=action.timeout)  # type: ignore
++            expect_index = await self.shell.expect(expect_strings, timeout=action.timeout, async_=True)
+             matched_expect_string = expect_strings[expect_index]
+         except pexpect.TIMEOUT as e:
+             msg = f"timeout after {action.timeout} seconds while running command {action.command!r}"
+@@ -324,7 +447,7 @@
+             _exit_code_suffix = "EXITCODEEND"
+             self.shell.sendline(f"\necho {_exit_code_prefix}$?{_exit_code_suffix}")
+             try:
+-                self.shell.expect(_exit_code_suffix, timeout=1)
++                await self.shell.expect(_exit_code_suffix, timeout=1, async_=True)
+             except pexpect.TIMEOUT:
+                 msg = "timeout while getting exit code"
+                 raise NoExitCodeError(msg)
+@@ -337,7 +460,7 @@
+             exit_code = int(exit_code[0])
+             # We get at least one more PS1 here.
+             try:
+-                self.shell.expect(self._ps1, timeout=0.1)
++                await self.shell.expect(self._ps1, timeout=0.1, async_=True)
+             except pexpect.TIMEOUT:
+                 msg = "Timeout while getting PS1 after exit code extraction"
+                 raise CommandTimeoutError(msg)
+@@ -349,9 +472,284 @@
+             exit_code = None
+         return BashObservation(output=output, exit_code=exit_code, expect_string=matched_expect_string)
+ 
++    def _operation_response(
++        self, operation: _BackgroundOperation, cursor: int = 0, max_output_chars: int = 65536
++    ) -> GetOperationResponse:
++        output, next_cursor, oldest, truncated = operation.capture.read(cursor, max_output_chars)
++        return GetOperationResponse(
++            operation_id=operation.operation_id,
++            session=self.request.session,
++            state=operation.state,  # type: ignore[arg-type]
++            output=output,
++            next_cursor=next_cursor,
++            oldest_cursor=oldest,
++            output_truncated=truncated,
++            exit_code=operation.exit_code,
++            failure_reason=operation.failure_reason,
++            expect_string=operation.expect_string,
++            created_at=operation.created_at,
++            started_at=operation.started_at,
++            finished_at=operation.finished_at,
++        )
++
++    async def start_operation(self, request: StartOperationRequest) -> StartOperationResponse:
++        if self._shell is None:
++            raise SessionNotInitializedError("shell not initialized")
++        action = request.action
++        if not request.idempotency_key:
++            raise ValueError("idempotency_key must not be empty")
++        if action.timeout is not None and action.timeout <= 0:
++            raise ValueError("operation timeout must be positive or None")
++        if action.session != self.request.session:
++            raise ValueError("Action session does not match the target Bash session")
++        fingerprint = action.model_dump_json()
++        async with self._operation_lock:
++            previous = self._idempotency.get(request.idempotency_key)
++            if previous:
++                old_fingerprint, old_id = previous
++                if old_fingerprint != fingerprint:
++                    raise ValueError("Idempotency key was already used with a different action")
++                if not old_id or old_id not in self._operations:
++                    raise RuntimeError("Idempotency key is outside the retained operation history; refusing to rerun")
++                old = self._operations[old_id]
++                return StartOperationResponse(
++                    operation_id=old.operation_id, session=self.request.session,
++                    state=old.state, created_at=old.created_at,
++                )
++            if self._operation and self._operation.state in ("running", "waiting_input"):
++                raise RuntimeError(
++                    f"Session {self.request.session!r} already has active operation {self._operation.operation_id}"
++                )
++            now = time.time()
++            operation = _BackgroundOperation(
++                operation_id=str(uuid.uuid4()), idempotency_key=request.idempotency_key,
++                fingerprint=fingerprint, created_at=now, started_at=now,
++                interactive=action.is_interactive_command or bool(action.expect),
++                exit_prefix=f"REXEXIT{uuid.uuid4().hex}START",
++                exit_suffix=f"REXEXIT{uuid.uuid4().hex}END",
++            )
++            operation.capture = _OutputCapture(
++                prompt=self._ps1,
++                exit_prefix=operation.exit_prefix,
++                exit_suffix=operation.exit_suffix,
++            )
++            self._operation = operation
++            self._operations[operation.operation_id] = operation
++            self._idempotency[request.idempotency_key] = (fingerprint, operation.operation_id)
++            # Retain a bounded number of output buffers. Keep idempotency tombstones
++            # so an evicted key is rejected rather than accidentally launching again.
++            if len(self._operations) > 32:
++                for old_id, old_op in list(self._operations.items()):
++                    if old_op.state not in ("running", "waiting_input") and old_id != operation.operation_id:
++                        self._operations.pop(old_id, None)
++                        self._idempotency[old_op.idempotency_key] = (old_op.fingerprint, "")
++                        if len(self._operations) <= 24:
++                            break
++            while len(self._idempotency) > 4096:
++                self._idempotency.pop(next(iter(self._idempotency)))
++            operation.task = asyncio.create_task(self._run_background_operation(operation, action))
++            await operation.started_event.wait()
++            return StartOperationResponse(
++                operation_id=operation.operation_id, session=self.request.session,
++                state=operation.state, created_at=operation.created_at,
++            )
++
++    async def _run_background_operation(self, operation: _BackgroundOperation, action: BashAction) -> None:
++        assert self._shell is not None
++        previous_logfile = self.shell.logfile_read
++        self.shell.logfile_read = operation.capture
++        try:
++            await asyncio.to_thread(_check_bash_command, action.command)
++            self.shell.sendline(action.command)
++            operation.started_event.set()
++
++            async def execute_until_prompt() -> None:
++                while True:
++                    patterns = list(action.expect) + [self._ps1]
++                    idx = await self.shell.expect(patterns, timeout=None, async_=True)
++                    matched = patterns[idx]
++                    if idx == len(patterns) - 1:
++                        operation.expect_string = matched
++                        break
++                    operation.expect_string = matched
++                    operation.state = "waiting_input"
++                    operation.capture.changed.set()
++                    if not operation.input_event.is_set():
++                        await operation.input_event.wait()
++                    operation.input_event.clear()
++                    operation.state = "running"
++                    operation.capture.changed.set()
++
++                if action.check != "ignore":
++                    self.shell.sendline(f"echo {operation.exit_prefix}$?{operation.exit_suffix}")
++                    await self.shell.expect(operation.exit_suffix, timeout=None, async_=True)
++                    raw = self.shell.before
++                    match = re.findall(re.escape(operation.exit_prefix) + r"([0-9]+)", raw)
++                    if len(match) == 1:
++                        operation.exit_code = int(match[0])
++                    elif action.check == "raise":
++                        raise NoExitCodeError(f"Could not extract command exit code: {raw!r}")
++                    await self.shell.expect(self._ps1, timeout=None, async_=True)
++                else:
++                    operation.exit_code = None
++
++            if action.timeout is None:
++                await execute_until_prompt()
++            else:
++                try:
++                    async with asyncio.timeout(action.timeout):
++                        await execute_until_prompt()
++                except TimeoutError:
++                    await self._stop_foreground_process()
++                    operation.state = "timed_out"
++                    operation.failure_reason = f"Execution exceeded timeout of {action.timeout} seconds"
++                    operation.finished_at = time.time()
++                    operation.capture.changed.set()
++                    return
++            operation.state = "interrupted" if operation.interrupt_requested else "completed"
++        except asyncio.CancelledError:
++            operation.state = "interrupted"
++            operation.failure_reason = "Operation task was cancelled"
++            raise
++        except Exception as exc:
++            operation.state = "failed"
++            operation.failure_reason = f"{type(exc).__name__}: {exc}"
++            self.logger.exception("Background operation %s failed", operation.operation_id)
++        finally:
++            operation.capture.finish()
++            self.shell.logfile_read = previous_logfile
++            operation.started_event.set()
++            if operation.finished_at is None:
++                operation.finished_at = time.time()
++            operation.capture.changed.set()
++
++    async def _signal_foreground_process(self) -> None:
++        """Escalate signals to the foreground job, never to the persistent Bash shell."""
++        assert self._shell is not None
++        try:
++            foreground_pgid = os.tcgetpgrp(self.shell.child_fd)
++            shell_pgid = os.getpgid(self.shell.pid)
++            if foreground_pgid != shell_pgid:
++                try:
++                    os.killpg(foreground_pgid, signal.SIGTERM)
++                except ProcessLookupError:
++                    return
++                await asyncio.sleep(0.25)
++                try:
++                    os.killpg(foreground_pgid, signal.SIGKILL)
++                except ProcessLookupError:
++                    pass
++        except OSError as exc:
++            raise RuntimeError(f"Could not signal foreground process group: {exc}") from exc
++
++    async def _stop_foreground_process(self) -> None:
++        """Interrupt the foreground job and wait for the shell prompt.
++
++        This is called by the operation runner itself, after its pending expect
++        has been cancelled, so it remains the sole PTY reader.
++        """
++        assert self._shell is not None
++        try:
++            self.shell.sendintr()
++            await self.shell.expect(self._ps1, timeout=2.0, async_=True)
++            return
++        except Exception:
++            await self._signal_foreground_process()
++        try:
++            await self.shell.expect(self._ps1, timeout=3.0, async_=True)
++        except Exception as exc:
++            raise RuntimeError(f"Could not restore shell after stopping foreground process: {exc}") from exc
++
++    async def get_operation(self, request: GetOperationRequest) -> GetOperationResponse:
++        operation = self._operations.get(request.operation_id)
++        if operation is None:
++            raise ValueError(f"Unknown operation {request.operation_id!r}")
++        if request.session != self.request.session:
++            raise ValueError("Operation session does not match the target Bash session")
++        if request.wait_timeout < 0 or request.max_output_chars < 0:
++            raise ValueError("wait_timeout and max_output_chars must be non-negative")
++        if operation.state == "running" and request.wait_timeout > 0:
++            output, _, _, truncated = operation.capture.read(request.cursor, request.max_output_chars)
++            if not output and not truncated:
++                operation.capture.changed.clear()
++                output, _, _, truncated = operation.capture.read(request.cursor, request.max_output_chars)
++                if not output and not truncated and operation.state in ("running", "waiting_input"):
++                    try:
++                        await asyncio.wait_for(operation.capture.changed.wait(), timeout=request.wait_timeout)
++                    except TimeoutError:
++                        pass
++        return self._operation_response(operation, request.cursor, request.max_output_chars)
++
++    async def interrupt_operation(self, request: InterruptOperationRequest) -> GetOperationResponse:
++        operation = self._operations.get(request.operation_id)
++        if operation is None:
++            raise ValueError(f"Unknown operation {request.operation_id!r}")
++        if request.session != self.request.session:
++            raise ValueError("Operation session does not match the target Bash session")
++        if self._operation is not operation:
++            return self._operation_response(operation)
++        if operation.state in ("running", "waiting_input"):
++            if operation.task and not operation.started_event.is_set():
++                await operation.started_event.wait()
++            if operation.state not in ("running", "waiting_input"):
++                return self._operation_response(operation)
++            operation.interrupt_requested = True
++            self.shell.sendintr()
++            operation.input_event.set()
++            try:
++                if operation.task:
++                    await asyncio.wait_for(asyncio.shield(operation.task), timeout=3.0)
++            except TimeoutError:
++                # Do not start a second PTY reader: signal the foreground group and
++                # let the operation task's existing expect consume the shell prompt.
++                await self._signal_foreground_process()
++                try:
++                    await asyncio.wait_for(asyncio.shield(operation.task), timeout=3.0)
++                except TimeoutError:
++                    operation.task.cancel()
++                    await asyncio.gather(operation.task, return_exceptions=True)
++                    operation.state = "failed"
++                    operation.failure_reason = "Operation did not return to the shell after interrupt"
++                    operation.finished_at = time.time()
++                    operation.capture.changed.set()
++        return self._operation_response(operation)
++
++    async def send_operation_input(self, request: SendInputRequest) -> GetOperationResponse:
++        operation = self._operations.get(request.operation_id)
++        if operation is None or self._operation is not operation:
++            raise ValueError(f"Unknown or inactive operation {request.operation_id!r}")
++        if request.session != self.request.session:
++            raise ValueError("Operation session does not match the target Bash session")
++        if operation.state != "waiting_input" and not (
++            operation.interactive and operation.state == "running"
++        ):
++            raise RuntimeError(f"Operation is not accepting input (state={operation.state})")
++        if request.sendline:
++            self.shell.sendline(request.input)
++        else:
++            self.shell.send(request.input)
++        if operation.state == "waiting_input":
++            operation.state = "running"
++            operation.capture.changed.set()
++        operation.input_event.set()
++        return self._operation_response(operation)
++
++    async def resize_terminal(self, rows: int, cols: int) -> None:
++        if rows < 1 or cols < 1:
++            raise ValueError("Terminal rows and columns must be positive")
++        self.shell.setwinsize(rows, cols)
++
+     async def close(self) -> CloseSessionResponse:
+         if self._shell is None:
+             return CloseBashSessionResponse()
++        if self._operation and self._operation.task and not self._operation.task.done():
++            try:
++                await self.interrupt_operation(
++                    InterruptOperationRequest(session=self.request.session, operation_id=self._operation.operation_id)
++                )
++            except Exception:
++                self._operation.task.cancel()
++                await asyncio.gather(self._operation.task, return_exceptions=True)
+         self.shell.close()
+         self._shell = None
+         return CloseBashSessionResponse()
+@@ -406,6 +804,46 @@
+             raise SessionDoesNotExistError(msg)
+         return await self.sessions[action.session].run(action)
+ 
++    async def start_operation(self, request: StartOperationRequest) -> StartOperationResponse:
++        session = self.sessions.get(request.action.session)
++        if session is None:
++            raise SessionDoesNotExistError(f"session {request.action.session!r} does not exist")
++        if not isinstance(session, BashSession):
++            raise NotImplementedError("Background operations are currently supported for Bash sessions only")
++        return await session.start_operation(request)
++
++    async def get_operation(self, request: GetOperationRequest) -> GetOperationResponse:
++        session = self.sessions.get(request.session)
++        if session is None:
++            raise SessionDoesNotExistError(f"session {request.session!r} does not exist")
++        if not isinstance(session, BashSession):
++            raise NotImplementedError("Background operations are currently supported for Bash sessions only")
++        return await session.get_operation(request)
++
++    async def interrupt_operation(self, request: InterruptOperationRequest) -> GetOperationResponse:
++        session = self.sessions.get(request.session)
++        if session is None:
++            raise SessionDoesNotExistError(f"session {request.session!r} does not exist")
++        if not isinstance(session, BashSession):
++            raise NotImplementedError("Background operations are currently supported for Bash sessions only")
++        return await session.interrupt_operation(request)
++
++    async def send_input(self, request: SendInputRequest) -> GetOperationResponse:
++        session = self.sessions.get(request.session)
++        if session is None:
++            raise SessionDoesNotExistError(f"session {request.session!r} does not exist")
++        if not isinstance(session, BashSession):
++            raise NotImplementedError("Interactive input is currently supported for Bash sessions only")
++        return await session.send_operation_input(request)
++
++    async def resize_terminal(self, request: ResizeTerminalRequest) -> None:
++        session = self.sessions.get(request.session)
++        if session is None:
++            raise SessionDoesNotExistError(f"session {request.session!r} does not exist")
++        if not isinstance(session, BashSession):
++            raise NotImplementedError("Terminal resizing is currently supported for Bash sessions only")
++        await session.resize_terminal(request.rows, request.cols)
++
+     async def close_session(self, request: CloseSessionRequest) -> CloseSessionResponse:
+         """Closes a shell session."""
+         if request.session not in self.sessions:
+@@ -423,7 +861,8 @@
+             NonZeroExitCodeError: If the command has a non-zero exit code and `check` is True.
+         """
+         try:
+-            result = subprocess.run(
++            result = await asyncio.to_thread(
++                subprocess.run,
+                 command.command,
+                 shell=command.shell,
+                 timeout=command.timeout,
+@@ -470,7 +909,13 @@
+         return UploadResponse()
+ 
+     async def close(self) -> CloseResponse:
+-        """Closes the runtime."""
+-        for session in self.sessions.values():
+-            await session.close()
++        """Close all sessions and stop active foreground operations."""
++        sessions = list(self.sessions.items())
++        self._sessions.clear()
++        results = await asyncio.gather(
++            *(session.close() for _, session in sessions), return_exceptions=True
++        )
++        errors = [result for result in results if isinstance(result, BaseException)]
++        for error in errors:
++            self.logger.error("Error while closing a runtime session: %r", error)
+         return CloseResponse()
+--- a/swerex-1.4.0/runtime/remote.py
++++ b/swerex-1.4.0/runtime/remote.py
+@@ -32,6 +32,8 @@
+     UploadResponse,
+     WriteFileRequest,
+     WriteFileResponse,
++    StartOperationRequest, StartOperationResponse, GetOperationRequest, GetOperationResponse,
++    InterruptOperationRequest, SendInputRequest, ResizeTerminalRequest,
+     _ExceptionTransfer,
+ )
+ from swerex.runtime.config import RemoteRuntimeConfig
+@@ -162,7 +164,11 @@
+     async def wait_until_alive(self, *, timeout: float = 60.0):
+         return await _wait_until_alive(self.is_alive, timeout=timeout)
+ 
+-    async def _request(self, endpoint: str, payload: BaseModel | None, output_class: Any, num_retries: int = 0):
++    async def _request(
++        self, endpoint: str, payload: BaseModel | None, output_class: Any,
++        num_retries: int = 0, request_timeout: float | None = None,
++        disable_request_timeout: bool = False,
++    ):
+         """Small helper to make requests to the server and handle errors and output."""
+         request_url = f"{self._api_url}/{endpoint}"
+         request_id = str(uuid.uuid4())
+@@ -176,7 +182,12 @@
+ 
+         while retry_count <= num_retries:
+             try:
+-                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(force_close=True)) as session:
++                session_kwargs = {"connector": aiohttp.TCPConnector(force_close=True)}
++                if request_timeout is not None:
++                    session_kwargs["timeout"] = aiohttp.ClientTimeout(total=request_timeout)
++                elif disable_request_timeout:
++                    session_kwargs["timeout"] = aiohttp.ClientTimeout(total=None)
++                async with aiohttp.ClientSession(**session_kwargs) as session:
+                     async with session.post(
+                         request_url,
+                         json=payload.model_dump() if payload else None,
+@@ -204,6 +215,37 @@
+         """Runs a command in a session."""
+         return await self._request("run_in_session", action, Observation)
+ 
++    async def start_operation(self, request: StartOperationRequest) -> StartOperationResponse:
++        """Start a background terminal operation. Reuse idempotency_key on retries."""
++        return await self._request(
++            "start_operation", request, StartOperationResponse,
++            num_retries=2, disable_request_timeout=True,
++        )
++
++    async def get_operation(self, request: GetOperationRequest) -> GetOperationResponse:
++        """Get incremental output and status. wait_timeout only controls this poll."""
++        http_timeout = request.wait_timeout + 10.0 if request.wait_timeout > 0 else None
++        return await self._request(
++            "get_operation", request, GetOperationResponse,
++            request_timeout=http_timeout, disable_request_timeout=http_timeout is None,
++        )
++
++    async def interrupt_operation(self, request: InterruptOperationRequest) -> GetOperationResponse:
++        return await self._request(
++            "interrupt_operation", request, GetOperationResponse,
++            num_retries=1, disable_request_timeout=True,
++        )
++
++    async def send_input(self, request: SendInputRequest) -> GetOperationResponse:
++        return await self._request(
++            "send_input", request, GetOperationResponse, disable_request_timeout=True
++        )
++
++    async def resize_terminal(self, request: ResizeTerminalRequest) -> None:
++        await self._request(
++            "resize_terminal", request, dict, disable_request_timeout=True
++        )
++
+     async def close_session(self, request: CloseSessionRequest) -> CloseSessionResponse:
+         """Closes a shell session."""
+         return await self._request("close_session", request, CloseSessionResponse)
+--- a/swerex-1.4.0/runtime/dummy.py
++++ b/swerex-1.4.0/runtime/dummy.py
+@@ -1,4 +1,6 @@
+ import logging
++import time
++import uuid
+ from typing import Any
+ 
+ from typing_extensions import Self
+@@ -25,6 +27,8 @@
+     UploadResponse,
+     WriteFileRequest,
+     WriteFileResponse,
++    StartOperationRequest, StartOperationResponse, GetOperationRequest, GetOperationResponse,
++    InterruptOperationRequest, SendInputRequest, ResizeTerminalRequest,
+ )
+ from swerex.runtime.config import DummyRuntimeConfig
+ from swerex.utils.log import get_logger
+@@ -49,6 +53,8 @@
+         """
+         self._config = DummyRuntimeConfig(**kwargs)
+         self.logger = logger or get_logger("rex-runtime")
++        self._dummy_operations: dict[str, dict[str, Any]] = {}
++        self._dummy_idempotency: dict[str, str] = {}
+ 
+     @classmethod
+     def from_config(cls, config: DummyRuntimeConfig) -> Self:
+@@ -72,6 +78,62 @@
+                 raise DummyOutputsExhaustedError(msg) from None
+         return self.run_in_session_outputs
+ 
++    async def start_operation(self, request: StartOperationRequest) -> StartOperationResponse:
++        if request.idempotency_key in self._dummy_idempotency:
++            op_id = self._dummy_idempotency[request.idempotency_key]
++            op = self._dummy_operations[op_id]
++            if op["fingerprint"] != request.action.model_dump_json():
++                raise ValueError("Idempotency key reused with a different action")
++            return StartOperationResponse(
++                operation_id=op_id, session=request.action.session,
++                state=op["state"], created_at=op["created_at"],
++            )
++        if isinstance(self.run_in_session_outputs, list):
++            observation = await self.run_in_session(request.action)
++        else:
++            observation = self.run_in_session_outputs
++        now = time.time()
++        op_id = str(uuid.uuid4())
++        op = {
++            "fingerprint": request.action.model_dump_json(), "session": request.action.session,
++            "state": "completed", "created_at": now, "started_at": now,
++            "finished_at": now, "output": observation.output, "exit_code": observation.exit_code,
++            "failure_reason": observation.failure_reason, "expect_string": observation.expect_string,
++        }
++        self._dummy_operations[op_id] = op
++        self._dummy_idempotency[request.idempotency_key] = op_id
++        return StartOperationResponse(operation_id=op_id, session=request.action.session, state="completed", created_at=now)
++
++    async def get_operation(self, request: GetOperationRequest) -> GetOperationResponse:
++        op = self._dummy_operations.get(request.operation_id)
++        if op is None:
++            raise ValueError(f"Unknown operation {request.operation_id!r}")
++        if op["session"] != request.session:
++            raise ValueError("Operation session mismatch")
++        start = min(request.cursor, len(op["output"]))
++        output = op["output"][start:start + request.max_output_chars]
++        next_cursor = start + len(output)
++        return GetOperationResponse(
++            operation_id=request.operation_id, session=request.session, state=op["state"],
++            output=output, next_cursor=next_cursor, oldest_cursor=0,
++            exit_code=op["exit_code"], failure_reason=op["failure_reason"],
++            expect_string=op["expect_string"], created_at=op["created_at"],
++            started_at=op["started_at"], finished_at=op["finished_at"],
++        )
++
++    async def interrupt_operation(self, request: InterruptOperationRequest) -> GetOperationResponse:
++        return await self.get_operation(GetOperationRequest(
++            session=request.session, operation_id=request.operation_id
++        ))
++
++    async def send_input(self, request: SendInputRequest) -> GetOperationResponse:
++        return await self.get_operation(GetOperationRequest(
++            session=request.session, operation_id=request.operation_id
++        ))
++
++    async def resize_terminal(self, request: ResizeTerminalRequest) -> None:
++        return None
++
+     async def close_session(self, request: CloseSessionRequest) -> CloseSessionResponse:
+         if request.session_type == "bash":
+             return CloseBashSessionResponse()
+--- a/swerex-1.4.0/server.py
++++ b/swerex-1.4.0/server.py
+@@ -1,6 +1,9 @@
+ #!/usr/bin/env python3
+ 
+ import argparse
++from contextlib import asynccontextmanager
++import asyncio
++import time
+ import shutil
+ import tempfile
+ import traceback
+@@ -18,6 +21,8 @@
+ from swerex.runtime.abstract import (
+     Action,
+     CloseResponse,
++    StartOperationRequest, GetOperationRequest, InterruptOperationRequest,
++    SendInputRequest, ResizeTerminalRequest,
+     CloseSessionRequest,
+     Command,
+     CreateSessionRequest,
+@@ -28,8 +33,18 @@
+ )
+ from swerex.runtime.local import LocalRuntime
+ 
+-app = FastAPI()
+ runtime = LocalRuntime()
++
++
++@asynccontextmanager
++async def lifespan(_app: FastAPI):
++    try:
++        yield
++    finally:
++        await runtime.close()
++
++
++app = FastAPI(lifespan=lifespan)
+ 
+ AUTH_TOKEN = ""
+ api_key_header = APIKeyHeader(name="X-API-Key")
+@@ -40,25 +55,70 @@
+ 
+ 
+ class ResponseManager:
+-    """
+-    This stores the response of the last request, and is used in retries to return
+-    already executed requests.
+-
+-    Note that in the case of multiple concurrent clients, idempotency isn't guaranteed.
+-    """
+-
+-    def __init__(self):
+-        self.last_processed_request_id = None
+-        self.last_processed_response = None
+-
+-    def get_response(self, request_id):
+-        if request_id == self.last_processed_request_id:
+-            return self.last_processed_response
+-        return None
+-
+-    def set_response(self, request_id, response):
+-        self.last_processed_request_id = request_id
+-        self.last_processed_response = response
++    """Concurrent, bounded request-response cache for X-Request-ID retries."""
++
++    def __init__(
++        self, *, ttl: float = 600.0, max_entries: int = 2048,
++        max_response_bytes: int = 1_048_576, max_cache_bytes: int = 16_777_216,
++    ):
++        self.ttl = ttl
++        self.max_entries = max_entries
++        self.max_response_bytes = max_response_bytes
++        self.max_cache_bytes = max_cache_bytes
++        self._response_bytes = 0
++        self._responses: dict[str, tuple[float, int, bytes, dict[str, str], str | None]] = {}
++        self._pending: dict[str, asyncio.Event] = {}
++        self._lock = asyncio.Lock()
++
++    async def begin(self, request_id: str) -> tuple[bool, Response | None, asyncio.Event | None]:
++        while True:
++            async with self._lock:
++                now = time.monotonic()
++                for key, item in list(self._responses.items()):
++                    if now - item[0] > self.ttl:
++                        self._responses.pop(key, None)
++                        self._response_bytes -= len(item[2])
++                cached = self._responses.get(request_id)
++                if cached:
++                    _, status, body, headers, media_type = cached
++                    return False, Response(body, status_code=status, headers=headers, media_type=media_type), None
++                event = self._pending.get(request_id)
++                if event is None:
++                    event = asyncio.Event()
++                    self._pending[request_id] = event
++                    return True, None, event
++            await event.wait()
++
++    async def finish(self, request_id: str, event: asyncio.Event, response: Response) -> Response:
++        body = getattr(response, "body", None)
++        if body is None:
++            body = b""
++            async for chunk in response.body_iterator:
++                body += chunk
++        cached_response = Response(
++            content=body, status_code=response.status_code,
++            headers=dict(response.headers), media_type=response.media_type,
++        )
++        async with self._lock:
++            if response.status_code < 500 and len(body) <= self.max_response_bytes:
++                previous = self._responses.pop(request_id, None)
++                if previous is not None:
++                    self._response_bytes -= len(previous[2])
++                self._responses[request_id] = (
++                    time.monotonic(), response.status_code, body,
++                    dict(response.headers), response.media_type,
++                )
++                self._response_bytes += len(body)
++                while (
++                    len(self._responses) > self.max_entries
++                    or self._response_bytes > self.max_cache_bytes
++                ):
++                    oldest_key = next(iter(self._responses))
++                    evicted = self._responses.pop(oldest_key)
++                    self._response_bytes -= len(evicted[2])
++            self._pending.pop(request_id, None)
++            event.set()
++        return cached_response
+ 
+ 
+ response_manager = ResponseManager()
+@@ -76,30 +136,25 @@
+ 
+ @app.middleware("http")
+ async def handle_request_id(request: Request, call_next):
+-    """Handle request ID for idempotency."""
++    """Cache responses by request ID, including concurrent duplicate requests."""
+     request_id = request.headers.get("X-Request-ID")
+-    if request_id:
+-        response = response_manager.get_response(request_id)
+-        if response:
+-            return response
+-
+-    response = await call_next(request)
+-
+-    body_content = b""
+-    async for chunk in response.body_iterator:
+-        body_content += chunk
+-
+-    new_response = Response(
+-        content=body_content,
+-        status_code=response.status_code,
+-        headers=dict(response.headers),
+-        media_type=response.media_type,
+-    )
+-
+-    if request_id:
+-        response_manager.set_response(request_id, new_response)
+-
+-    return new_response
++    if not request_id:
++        return await call_next(request)
++    owner, cached, event = await response_manager.begin(request_id)
++    if not owner:
++        if cached is not None:
++            return cached
++        # Owner failed with a non-cacheable response; execute this request normally.
++        return await call_next(request)
++    assert event is not None
++    try:
++        response = await call_next(request)
++        return await response_manager.finish(request_id, event, response)
++    except BaseException:
++        async with response_manager._lock:
++            response_manager._pending.pop(request_id, None)
++            event.set()
++        raise
+ 
+ 
+ @app.exception_handler(Exception)
+@@ -137,6 +192,32 @@
+ @app.post("/run_in_session")
+ async def run(action: Action):
+     return serialize_model(await runtime.run_in_session(action))
++
++
++@app.post("/start_operation")
++async def start_operation(request: StartOperationRequest):
++    return serialize_model(await runtime.start_operation(request))
++
++
++@app.post("/get_operation")
++async def get_operation(request: GetOperationRequest):
++    return serialize_model(await runtime.get_operation(request))
++
++
++@app.post("/interrupt_operation")
++async def interrupt_operation(request: InterruptOperationRequest):
++    return serialize_model(await runtime.interrupt_operation(request))
++
++
++@app.post("/send_input")
++async def send_input(request: SendInputRequest):
++    return serialize_model(await runtime.send_input(request))
++
++
++@app.post("/resize_terminal")
++async def resize_terminal(request: ResizeTerminalRequest):
++    await runtime.resize_terminal(request)
++    return {}
+ 
+ 
+ @app.post("/close_session")
+--- /dev/null
++++ b/swerex-1.4.0/BACKGROUND_OPERATIONS.md
+@@ -0,0 +1,134 @@
++# SWE-ReX 1.4.0 — Background Bash Operations
++
++This patch adds a background-operation API while retaining the existing
++`run_in_session()` contract.
++
++## Runtime API
++
++The new methods are available on `LocalRuntime` and `RemoteRuntime`:
++
++- `start_operation(StartOperationRequest) -> StartOperationResponse`
++- `get_operation(GetOperationRequest) -> GetOperationResponse`
++- `interrupt_operation(InterruptOperationRequest) -> GetOperationResponse`
++- `send_input(SendInputRequest) -> GetOperationResponse`
++- `resize_terminal(ResizeTerminalRequest) -> None`
++
++The same operations are exposed by the HTTP endpoints:
++
++- `POST /start_operation`
++- `POST /get_operation`
++- `POST /interrupt_operation`
++- `POST /send_input`
++- `POST /resize_terminal`
++
++### Start
++
++```python
++request = StartOperationRequest(
++    action=BashAction(command="python -m pip install pandas", session="main"),
++    idempotency_key="stable-unique-key-for-this-start",
++)
++started = await runtime.start_operation(request)
++```
++
++The caller must reuse the same `idempotency_key` when retrying the same start
++request. Reusing the key with a different action is rejected. The key is scoped
++to a Bash session. The server also caches HTTP responses by `X-Request-ID` to
++make concurrent transport retries safe.
++
++A Bash session permits one active operation at a time. A new operation can be
++started after the previous operation reaches a terminal state.
++
++### Poll and incremental output
++
++```python
++cursor = 0
++while True:
++    result = await runtime.get_operation(GetOperationRequest(
++        session="main",
++        operation_id=started.operation_id,
++        cursor=cursor,
++        wait_timeout=1.0,
++    ))
++    consume(result.output)
++    cursor = result.next_cursor
++
++    if result.state not in ("running", "waiting_input"):
++        break
++```
++
++`cursor` is an absolute character offset. The server retains up to 1 MiB of
++recent output per retained operation. If a caller's cursor predates retained
++output, `output_truncated` is true and `oldest_cursor` indicates the earliest
++available position. `max_output_chars` is capped at 1 MiB per response.
++
++`wait_timeout` only controls how long a status request waits for new output.
++It never limits or cancels the command. A `waiting_input` state is returned
++immediately so the client can respond.
++
++### Interactive programs and TUI
++
++A custom `BashAction.expect` entry is treated as a regular expression. When a
++pattern matches, the operation enters `waiting_input` but keeps the same
++`operation_id`. Send the next input with `SendInputRequest`:
++
++```python
++await runtime.send_input(SendInputRequest(
++    session="main",
++    operation_id=started.operation_id,
++    input="yes",
++    sendline=True,
++))
++```
++
++For programs marked `is_interactive_command=True`, input can be sent while the
++operation is running. Set `sendline=False` to send text/control sequences
++without appending a newline. Resize the PTY with `ResizeTerminalRequest`.
++
++### Interrupt and timeout semantics
++
++`InterruptOperationRequest` requires both `session` and `operation_id`.
++A stale operation ID cannot interrupt a newer operation.
++
++`BashAction.timeout=None` means **no execution time limit**. There is no
++implicit short timeout in the runtime, HTTP server, or remote client. If a
++positive timeout is supplied, it is a wall-clock execution limit. On expiry,
++SWE-ReX sends Ctrl+C, then escalates to the foreground process group if needed,
++without intentionally killing the persistent Bash shell.
++
++The HTTP polling timeout and the command execution timeout are independent.
++
++### States
++
++- `running`
++- `waiting_input`
++- `completed`
++- `interrupted`
++- `timed_out`
++- `failed`
++
++A non-zero shell exit code is still a normally completed command; inspect
++`exit_code` rather than treating every non-zero result as a SWE-ReX failure.
++
++Operation state is held in memory by the runtime process. Graceful server
++shutdown closes sessions and interrupts active operations. Operations are not
++recoverable after an ungraceful server/process restart.
++
++The runtime retains the most recent 32 operation output records per session
++and a bounded idempotency history. A repeated key whose operation record has
++already expired is rejected rather than silently re-executed.
++
++## Tests
++
++Install the test runner (and the HTTP client used by the server tests), then
++run from the SWE-ReX package root:
++
++```bash
++python -m pip install pytest httpx
++python -m pytest tests
++```
++
++The tests cover incremental output, operation idempotency, interactive input,
++interrupts, timeout cleanup, no implicit timeout, independent sessions,
++bounded output retention, DummyRuntime compatibility, HTTP routes, and
++concurrent request-ID retries.
+--- /dev/null
++++ b/swerex-1.4.0/tests/test_background_operations.py
+@@ -0,0 +1,331 @@
++"""Tests for SWE-ReX background Bash operations.
++
++Run with: python -m pytest tests/test_background_operations.py
++"""
++import asyncio
++import uuid
++
++import pytest
++
++from swerex.runtime.abstract import (
++    BashAction,
++    CreateBashSessionRequest,
++    CloseBashSessionRequest,
++    GetOperationRequest,
++    InterruptOperationRequest,
++    ResizeTerminalRequest,
++    SendInputRequest,
++    StartOperationRequest,
++)
++from swerex.runtime.dummy import DummyRuntime
++from swerex.runtime.local import LocalRuntime, _OutputCapture
++
++
++def run(coro):
++    return asyncio.run(coro)
++
++
++async def wait_terminal(runtime, session, operation_id, cursor=0, timeout=5.0):
++    deadline = asyncio.get_running_loop().time() + timeout
++    chunks = []
++    while asyncio.get_running_loop().time() < deadline:
++        result = await runtime.get_operation(GetOperationRequest(
++            session=session, operation_id=operation_id, cursor=cursor, wait_timeout=0.2
++        ))
++        chunks.append(result.output)
++        cursor = result.next_cursor
++        if result.state not in ("running", "waiting_input"):
++            return result, "".join(chunks)
++    raise AssertionError(f"operation {operation_id} did not finish: state={result.state}, failure={result.failure_reason!r}, output={result.output!r}")
++
++
++def test_output_stream_and_idempotent_start():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="stream"))
++        key = str(uuid.uuid4())
++        request = StartOperationRequest(
++            action=BashAction(command="printf one; sleep 0.15; printf two", session="stream"),
++            idempotency_key=key,
++        )
++        first = await runtime.start_operation(request)
++        duplicate = await runtime.start_operation(request)
++        assert duplicate.operation_id == first.operation_id
++        result, output = await wait_terminal(runtime, "stream", first.operation_id)
++        assert result.state == "completed"
++        assert result.exit_code == 0
++        assert "onetwo" in output
++        assert "SHELLPS1PREFIX" not in output
++        assert "REXEXIT" not in output
++        assert "EXITCODESTART" not in output
++        await runtime.close()
++    run(scenario())
++
++
++def test_interactive_prompt_and_input():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="interactive"))
++        await runtime.resize_terminal(ResizeTerminalRequest(
++            session="interactive", rows=40, cols=120
++        ))
++        started = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(
++                command='read -p "Name? " name; echo "Hi $name"',
++                session="interactive",
++                expect=[r"Name\? "],
++            ),
++            idempotency_key=str(uuid.uuid4()),
++        ))
++        deadline = asyncio.get_running_loop().time() + 3
++        while True:
++            state = await runtime.get_operation(GetOperationRequest(
++                session="interactive", operation_id=started.operation_id
++            ))
++            if state.state == "waiting_input":
++                break
++            assert asyncio.get_running_loop().time() < deadline
++            await asyncio.sleep(0.02)
++        await runtime.send_input(SendInputRequest(
++            session="interactive", operation_id=started.operation_id, input="Ada"
++        ))
++        result, output = await wait_terminal(runtime, "interactive", started.operation_id)
++        assert result.state == "completed"
++        assert "Hi Ada" in output
++        await runtime.close()
++    run(scenario())
++
++
++def test_interrupt_is_operation_specific_and_shell_survives():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="interrupt"))
++        first = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="echo first", session="interrupt"),
++            idempotency_key=str(uuid.uuid4()),
++        ))
++        await wait_terminal(runtime, "interrupt", first.operation_id)
++        second = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="sleep 60", session="interrupt"),
++            idempotency_key=str(uuid.uuid4()),
++        ))
++        await asyncio.sleep(0.1)
++        stale = await runtime.interrupt_operation(InterruptOperationRequest(
++            session="interrupt", operation_id=first.operation_id
++        ))
++        assert stale.state == "completed"
++        active = await runtime.get_operation(GetOperationRequest(
++            session="interrupt", operation_id=second.operation_id
++        ))
++        assert active.state in ("running", "waiting_input")
++        stopped = await runtime.interrupt_operation(InterruptOperationRequest(
++            session="interrupt", operation_id=second.operation_id
++        ))
++        assert stopped.state == "interrupted"
++        assert stopped.exit_code in (130, None)
++        legacy = await runtime.run_in_session(BashAction(command="echo shell-ok", session="interrupt"))
++        assert legacy.exit_code == 0
++        assert "shell-ok" in legacy.output
++        await runtime.close()
++    run(scenario())
++
++
++def test_timeout_is_real_and_session_recovers():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="timeout"))
++        started = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="sleep 60", session="timeout", timeout=0.25),
++            idempotency_key=str(uuid.uuid4()),
++        ))
++        result, _ = await wait_terminal(runtime, "timeout", started.operation_id)
++        assert result.state == "timed_out"
++        assert "timeout" in result.failure_reason.lower()
++        legacy = await runtime.run_in_session(BashAction(command="echo recovered", session="timeout"))
++        assert legacy.exit_code == 0
++        await runtime.close()
++    run(scenario())
++
++
++def test_none_timeout_does_not_apply_a_hidden_short_limit():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="no-timeout"))
++        started = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="sleep 0.5; echo finished", session="no-timeout", timeout=None),
++            idempotency_key=str(uuid.uuid4()),
++        ))
++        await asyncio.sleep(0.15)
++        interim = await runtime.get_operation(GetOperationRequest(
++            session="no-timeout", operation_id=started.operation_id, wait_timeout=0.1
++        ))
++        assert interim.state in ("running", "waiting_input")
++        result, output = await wait_terminal(runtime, "no-timeout", started.operation_id)
++        assert result.state == "completed"
++        assert "finished" in output
++        await runtime.close()
++    run(scenario())
++
++
++def test_independent_sessions_run_concurrently():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="a"))
++        await runtime.create_session(CreateBashSessionRequest(session="b"))
++        a, b = await asyncio.gather(
++            runtime.start_operation(StartOperationRequest(
++                action=BashAction(command="sleep 0.3; echo A", session="a"),
++                idempotency_key=str(uuid.uuid4()),
++            )),
++            runtime.start_operation(StartOperationRequest(
++                action=BashAction(command="sleep 0.3; echo B", session="b"),
++                idempotency_key=str(uuid.uuid4()),
++            )),
++        )
++        ra, rb = await asyncio.gather(
++            wait_terminal(runtime, "a", a.operation_id),
++            wait_terminal(runtime, "b", b.operation_id),
++        )
++        assert "A" in ra[1] and "B" in rb[1]
++        await runtime.close()
++    run(scenario())
++
++
++def test_output_capture_is_bounded_and_reports_truncation():
++    capture = _OutputCapture(max_chars=5)
++    capture.write("abc")
++    capture.write("def")
++    output, cursor, oldest, truncated = capture.read(0, 100)
++    assert output == "bcdef"
++    assert cursor == 6
++    assert oldest == 1
++    assert truncated is True
++
++
++def test_dummy_runtime_supports_operation_contract():
++    async def scenario():
++        runtime = DummyRuntime()
++        key = str(uuid.uuid4())
++        request = StartOperationRequest(
++            action=BashAction(command="echo dummy", session="default"),
++            idempotency_key=key,
++        )
++        started = await runtime.start_operation(request)
++        duplicate = await runtime.start_operation(request)
++        assert started.operation_id == duplicate.operation_id
++        result = await runtime.get_operation(GetOperationRequest(
++            session="default", operation_id=started.operation_id
++        ))
++        assert result.state == "completed"
++        assert result.exit_code == 0
++    run(scenario())
++
++
++def test_only_one_active_operation_per_session():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="exclusive"))
++        active = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="sleep 2", session="exclusive"),
++            idempotency_key=str(uuid.uuid4()),
++        ))
++        with pytest.raises(RuntimeError):
++            await runtime.start_operation(StartOperationRequest(
++                action=BashAction(command="echo should-not-run", session="exclusive"),
++                idempotency_key=str(uuid.uuid4()),
++            ))
++        await runtime.interrupt_operation(InterruptOperationRequest(
++            session="exclusive", operation_id=active.operation_id
++        ))
++        await runtime.close()
++    run(scenario())
++
++
++def test_event_loop_remains_responsive_during_command():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="responsive"))
++        started = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="sleep 0.4; echo responsive", session="responsive"),
++            idempotency_key=str(uuid.uuid4()),
++        ))
++        ticks = 0
++
++        async def ticker():
++            nonlocal ticks
++            for _ in range(12):
++                await asyncio.sleep(0.025)
++                ticks += 1
++
++        await asyncio.gather(
++            ticker(),
++            wait_terminal(runtime, "responsive", started.operation_id),
++        )
++        assert ticks == 12
++        await runtime.close()
++    run(scenario())
++
++
++def test_close_session_interrupts_active_operation():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="close-active"))
++        started = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="sleep 60", session="close-active"),
++            idempotency_key=str(uuid.uuid4()),
++        ))
++        await asyncio.sleep(0.1)
++        await runtime.close_session(CloseBashSessionRequest(session="close-active"))
++        assert "close-active" not in runtime.sessions
++        assert started.operation_id
++    run(scenario())
++
++
++def test_immediate_interrupt_after_start_is_not_lost():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="immediate"))
++        started = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="sleep 60", session="immediate"),
++            idempotency_key=str(uuid.uuid4()),
++        ))
++        stopped = await runtime.interrupt_operation(InterruptOperationRequest(
++            session="immediate", operation_id=started.operation_id
++        ))
++        assert stopped.state == "interrupted"
++        await runtime.close()
++    run(scenario())
++
++
++def test_idempotency_key_cannot_be_reused_for_different_action():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="key-conflict"))
++        key = str(uuid.uuid4())
++        await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="echo first", session="key-conflict"),
++            idempotency_key=key,
++        ))
++        with pytest.raises(ValueError):
++            await runtime.start_operation(StartOperationRequest(
++                action=BashAction(command="echo different", session="key-conflict"),
++                idempotency_key=key,
++            ))
++        await runtime.close()
++    run(scenario())
++
++
++def test_ansi_sequences_are_preserved_in_stream():
++    async def scenario():
++        runtime = LocalRuntime()
++        await runtime.create_session(CreateBashSessionRequest(session="ansi"))
++        started = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="printf '\\033[31mRED\\033[0m'", session="ansi"),
++            idempotency_key=str(uuid.uuid4()),
++        ))
++        result, output = await wait_terminal(runtime, "ansi", started.operation_id)
++        assert result.state == "completed"
++        assert "\x1b[31m" in output
++        assert "\x1b[0m" in output
++        await runtime.close()
++    run(scenario())
+--- /dev/null
++++ b/swerex-1.4.0/tests/test_server_idempotency.py
+@@ -0,0 +1,74 @@
++import asyncio
++
++from starlette.responses import Response
++
++from swerex.server import ResponseManager
++
++
++def test_concurrent_request_id_is_executed_once():
++    async def scenario():
++        manager = ResponseManager(ttl=60, max_entries=10)
++        owner, cached, event = await manager.begin("same-request")
++        assert owner is True
++        assert cached is None
++        assert event is not None
++
++        duplicate_task = asyncio.create_task(manager.begin("same-request"))
++        await asyncio.sleep(0.02)
++        assert not duplicate_task.done()
++
++        response = await manager.finish(
++            "same-request", event, Response(content=b"stable", status_code=200)
++        )
++        assert response.body == b"stable"
++
++        duplicate_owner, duplicate_response, duplicate_event = await duplicate_task
++        assert duplicate_owner is False
++        assert duplicate_event is None
++        assert duplicate_response is not None
++        assert duplicate_response.body == b"stable"
++
++    asyncio.run(scenario())
++
++
++def test_http_background_operation_routes_and_retries():
++    from fastapi.testclient import TestClient
++
++    import swerex.server as server
++    from swerex.runtime.local import LocalRuntime
++
++    server.runtime = LocalRuntime()
++    with TestClient(server.app) as client:
++        created = client.post(
++            "/create_session", json={"session": "http-test", "session_type": "bash"}
++        )
++        assert created.status_code == 200
++        payload = {
++            "action": {"command": "echo from-http", "session": "http-test"},
++            "idempotency_key": "http-idempotency-key",
++        }
++        first = client.post("/start_operation", json=payload, headers={"X-Request-ID": "same-http-id"})
++        retry = client.post("/start_operation", json=payload, headers={"X-Request-ID": "same-http-id"})
++        assert first.status_code == 200
++        assert retry.status_code == 200
++        operation_id = first.json()["operation_id"]
++        assert retry.json()["operation_id"] == operation_id
++
++        cursor = 0
++        output = ""
++        for _ in range(20):
++            result = client.post("/get_operation", json={
++                "session": "http-test", "operation_id": operation_id,
++                "cursor": cursor, "wait_timeout": 0.2,
++            })
++            assert result.status_code == 200
++            payload_result = result.json()
++            output += payload_result["output"]
++            cursor = payload_result["next_cursor"]
++            if payload_result["state"] not in ("running", "waiting_input"):
++                break
++        assert payload_result["state"] == "completed"
++        assert "from-http" in output
++
++        closed = client.post("/close_session", json={"session": "http-test", "session_type": "bash"})
++        assert closed.status_code == 200
+--- /dev/null
++++ b/swerex-1.4.0/tests/test_remote_operation_client.py
+@@ -0,0 +1,65 @@
++import asyncio
++
++from swerex.runtime.abstract import (
++    BashAction,
++    GetOperationRequest,
++    InterruptOperationRequest,
++    ResizeTerminalRequest,
++    SendInputRequest,
++    StartOperationRequest,
++    StartOperationResponse,
++    GetOperationResponse,
++)
++from swerex.runtime.remote import RemoteRuntime
++
++
++def test_remote_runtime_operation_methods_use_expected_routes_and_wait_timeout():
++    async def scenario():
++        runtime = RemoteRuntime(host="http://127.0.0.1", port=12345, auth_token="")
++        calls = []
++
++        async def fake_request(
++            endpoint, payload, output_class, num_retries=0,
++            request_timeout=None, disable_request_timeout=False,
++        ):
++            calls.append((endpoint, payload, output_class, num_retries, request_timeout, disable_request_timeout))
++            if output_class is StartOperationResponse:
++                return StartOperationResponse(
++                    operation_id="op", session="main", state="running", created_at=1
++                )
++            if output_class is GetOperationResponse:
++                return GetOperationResponse(
++                    operation_id="op", session="main", state="completed",
++                    created_at=1, started_at=1, finished_at=2,
++                )
++            return {}
++
++        runtime._request = fake_request
++        start = await runtime.start_operation(StartOperationRequest(
++            action=BashAction(command="echo x", session="main"),
++            idempotency_key="stable-key",
++        ))
++        assert start.operation_id == "op"
++
++        await runtime.get_operation(GetOperationRequest(
++            session="main", operation_id="op", wait_timeout=37
++        ))
++        await runtime.interrupt_operation(InterruptOperationRequest(
++            session="main", operation_id="op"
++        ))
++        await runtime.send_input(SendInputRequest(
++            session="main", operation_id="op", input="y"
++        ))
++        await runtime.resize_terminal(ResizeTerminalRequest(
++            session="main", rows=40, cols=120
++        ))
++
++        assert [call[0] for call in calls] == [
++            "start_operation", "get_operation", "interrupt_operation",
++            "send_input", "resize_terminal",
++        ]
++        assert calls[0][3] == 2
++        assert calls[1][4] == 47
++        assert calls[0][5] is True
++        assert calls[2][5] is True
++    asyncio.run(scenario())
