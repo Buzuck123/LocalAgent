@@ -84,6 +84,23 @@ def test_terminal_creation_of_missing_file_unblocks_model_inspection_retry():
     assert should_block_repeated_call("load_file_for_model", failed_args, history) is None
 
 
+def test_enoent_unblocks_model_inspection_after_target_file_is_created():
+    failed_args = {"path": "/work/read_verify_files.txt"}
+    repair_args = {"command": "mkdir -p /work && touch /work/read_verify_files.txt"}
+    history = [{
+        "tool_name": "load_file_for_model",
+        "arguments": failed_args,
+        "call_fingerprint": tool_call_fingerprint("load_file_for_model", failed_args),
+        "error": "FileNotFoundError: [Errno 2] No such file or directory (ENOENT): '/work/read_verify_files.txt'",
+    }, {
+        "status": "success",
+        "tool_name": "terminal",
+        "arguments": repair_args,
+        "call_fingerprint": tool_call_fingerprint("terminal", repair_args),
+    }]
+    assert should_block_repeated_call("load_file_for_model", failed_args, history) is None
+
+
 def test_unrelated_file_creation_does_not_unblock_model_inspection_retry():
     failed_args = {"path": "/work/read_verify_files.txt"}
     repair_args = {"command": "touch /work/other.txt"}
