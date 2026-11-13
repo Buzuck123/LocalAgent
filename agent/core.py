@@ -1714,7 +1714,7 @@ def _review_step(
         except (TypeError, json.JSONDecodeError):
             result_summary = raw_summary[:900]
         review_evidence.append({
-            "tool_name": tool_name if tool_name in {"terminal", "load_file_for_model", "publish_file", "web_search", "open_browser_page", "get_tool_result"} else "legacy_result",
+            "tool_name": tool_name if tool_name in {"terminal", "load_file_for_model", "publish_file", "get_tool_result"} else "legacy_result",
             "arguments_summary": arguments_summary,
             "result_summary": result_summary,
         })
