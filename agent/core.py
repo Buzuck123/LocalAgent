@@ -933,7 +933,7 @@ def _client_chat(messages, tools=None, reasoning=True, model=None):
     if supports_model and model_override: kwargs["model"] = model_override
     response = chat_method(messages, tools, **kwargs)
     try:
-        active_model = (response.get("model") if isinstance(response, dict) else None) or getattr(client, "model", settings.model)
+        active_model = (response.get("model") if isinstance(response, dict) else None) or model or _CURRENT_MODEL_OVERRIDE.get() or getattr(client, "model", settings.model)
         db.record_model_request(_CURRENT_MODEL_TASK_ID.get(), active_model, response)
     except Exception:
         # Telemetry must never break the task itself.
