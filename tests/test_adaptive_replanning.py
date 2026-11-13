@@ -473,8 +473,7 @@ def test_agent_replans_after_three_tool_errors(tmp_path, monkeypatch):
     def fake_dispatch(name, args, **kwargs):
         dispatched.append((name, dict(args)))
         assert name == "terminal"
-        return {"command": args["command"], "stdout": "", "stderr": "Искусственная ошибка для теста",
-                "exit_code": 1, "timed_out": False}
+        raise RuntimeError("Искусственная ошибка вызова инструмента для теста")
 
     monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
 
