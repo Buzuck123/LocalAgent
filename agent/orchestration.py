@@ -258,6 +258,15 @@ def _canonical_recovery_path(value):
     return value
 
 
+def _is_missing_resource_error(error: str) -> bool:
+    """Recognize common Python/OS missing-path diagnostics."""
+    low = str(error or "").lower()
+    return any(token in low for token in (
+        "filenotfounderror", "enoent", "no such file", "file not found",
+        "directory not found", "not found",
+    ))
+
+
 def _successful_action_repairs_failure(failure: dict, success: dict) -> bool:
     """Return true only when a later mutation fixes the failed call's missing path."""
     failed_tool = str(failure.get("tool_name", ""))
@@ -275,7 +284,7 @@ def _successful_action_repairs_failure(failure: dict, success: dict) -> bool:
             module = re.search(r"no module named ['\"]?([a-zA-Z0-9_.-]+)", error)
             return bool(module and re.search(r"\b(pip|pip3|apt|apt-get)\s+install\b", success_command)
                         and module.group(1).lower() in success_command.lower())
-        if any(token in error for token in ("no such file", "file not found", "not found")):
+        if _is_missing_resource_error(error):
             path_tokens = re.findall(r"(?:/[^\s'\"]+|[\w.-]+(?:/[\w.-]+)+)", failed_command)
             mutating = re.search(r"\b(mkdir|touch|cp|mv|tee|install|chmod|chown)\b|(?:>|>>)", success_command)
             return bool(mutating and any(path in success_command for path in path_tokens))
@@ -288,7 +297,7 @@ def _successful_action_repairs_failure(failure: dict, success: dict) -> bool:
     # A terminal action can create or repair a file that a later model-inspection
     # call needs. Only clear the failure when the command visibly targets that path.
     if failed_tool == "load_file_for_model" and success_tool == "terminal":
-        if not any(token in error for token in ("not found", "no such file", "file not found")):
+        if not _is_missing_resource_error(error):
             return False
         failed_path = _canonical_recovery_path(failed_args.get("path"))
         command = str(success_args.get("command", ""))
