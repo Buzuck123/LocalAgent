@@ -40,7 +40,9 @@ def test_plan_revision_normalizes_legacy_structured_steps_to_controller_fields()
     assert step["id"] == "revised_step_1"
     assert step["description"] == "Подготовить альтернативный текстовый результат"
     assert step["expected_result"] == "Получен результат"
-    assert step["dependencies"] == []
+    # Dependencies are retained for the controller to remap, including
+    # references to previously completed stages.
+    assert step["dependencies"] == ["step_1"]
     assert "completion_mode" not in step
     assert "status" not in step
     assert "verification" not in step
@@ -136,6 +138,11 @@ def test_revision_cannot_replace_untouched_plan_with_one_stage():
         assert "one-stage plan" in str(exc)
     else:
         raise AssertionError("A one-stage revised plan must not be launched")
+
+    single_stage_original = {
+        "steps": [{"id": "step_1", "status": "in_progress"}]
+    }
+    _validate_revision_size_for_plan(single_stage_original, one_stage)
 
     progressed = {
         "steps": [
