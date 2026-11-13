@@ -9,7 +9,7 @@ from agent.orchestration import ToolContractError, validate_tool_call
 def test_model_tool_catalog_contains_no_legacy_or_self_test_tools():
     names = {item["function"]["name"] for item in TOOL_DEFINITIONS}
     assert names == {
-        "get_tool_result", "terminal", "publish_file", "load_file_for_model",
+        "get_tool_result", "terminal", "publish_file", "load_file_for_model", "ask_model",
     }
     assert not names.intersection({"read_output_file", "run_python", "self_test_tools"})
 
