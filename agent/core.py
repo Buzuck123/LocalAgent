@@ -1169,6 +1169,16 @@ def _parse_step_decision(content):
         if not isinstance(update, dict) or not isinstance(update.get("steps"), list) or not update["steps"]:
             raise ValueError("Для revise_plan требуется непустой plan_update.steps")
         normalized_steps = []
+        # The parser owns temporary step IDs. Remap dependencies that refer to
+        # model-supplied IDs at the same time, while preserving references to
+        # already-completed steps from the existing plan.
+        source_id_map = {}
+        for index, raw_step in enumerate(update["steps"], start=1):
+            if isinstance(raw_step, dict):
+                source_id = raw_step.get("id")
+                if isinstance(source_id, str) and source_id.strip():
+                    source_id_map[source_id.strip()] = f"revised_step_{index}"
+
         for index, raw_step in enumerate(update["steps"], start=1):
             temporary_id = f"revised_step_{index}"
             if isinstance(raw_step, str) and raw_step.strip():
@@ -1199,7 +1209,10 @@ def _parse_step_decision(content):
                 "description": description,
                 "expected_result": expected_result,
                 "success_criteria": success_criteria,
-                "dependencies": list(dependencies),
+                "dependencies": [
+                    source_id_map.get(dep.strip(), dep.strip())
+                    for dep in dependencies
+                ],
             }
             if isinstance(raw_step, dict):
                 for key in ("task_prompt", "acceptance_check"):
@@ -3383,9 +3396,6 @@ class Agent:
                                 task.get("user_message", ""),
                                 active_step_for_validation.get("description", "") if active_step_for_validation else "",
                             )
-                            if state.get("legacy_tool_compat") and phase == "tools_pending":
-                                from .tools import LEGACY_TOOL_DEFINITIONS
-                                available_for_validation = available_for_validation + LEGACY_TOOL_DEFINITIONS
                             result = _run_internal_tool(
                                 name, args, state.setdefault("tool_result_archive", {}),
                                 tool_definitions=available_for_validation,
