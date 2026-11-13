@@ -105,7 +105,7 @@ def validate_tool_call(name: Any, arguments: Any, tool_definitions: list[dict]) 
 
 # These names describe effects, not permissions. The tool's own sandbox remains
 # the security boundary; this classification controls recovery and repeat policy.
-READ_ONLY_TOOLS = {"web_search", "open_browser_page", "get_tool_result", "load_file_for_model"}
+READ_ONLY_TOOLS = {"get_tool_result", "load_file_for_model"}
 MUTATING_TOOLS = {"terminal", "publish_file"}
 
 
