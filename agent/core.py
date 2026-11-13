@@ -1012,7 +1012,8 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
         )
         reserve = max(1024, min(2048, int(limit * 0.20)))
         output_budget = max(0, limit - used - reserve)
-        max_visible_chars = output_budget * 3
+        # Leave room for JSON/tool-message overhead and estimation error.
+        max_visible_chars = output_budget * 2
     except Exception:
         output_budget = 1024
         max_visible_chars = 3072
@@ -1051,26 +1052,26 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
 
     message = response.get("message", {}) if isinstance(response, dict) else {}
     answer = str(message.get("content") or "").strip() if isinstance(message, dict) else ""
+    response_error = response.get("error") if isinstance(response, dict) else None
+    overflow = bool(response_error and _is_context_overflow_error(RuntimeError(str(response_error))))
+    if not answer and overflow:
+        answer = "Gemma 4 не вернула ответ из-за переполнения контекстного окна."
     if not answer:
-        error = response.get("error") if isinstance(response, dict) else None
-        if error and _is_context_overflow_error(RuntimeError(str(error))):
-            return {
-                "ok": True,
-                "answer": "Gemma 4 не вернула ответ из-за переполнения контекстного окна.",
-                "context_overflow": True,
-                "warning": "Вызов ask_model переполнил контекст Gemma 4; качество ответа может быть снижено.",
-                "file": file_info,
-                "_model_visible_limit_chars": max_visible_chars,
-            }
         raise RuntimeError("Gemma 4 вернула пустой ответ")
-    return {
+    result = {
         "ok": True,
         "answer": answer,
         "model": ASK_MODEL_NAME,
-        "context_overflow": False,
+        "context_overflow": overflow,
         "file": file_info,
         "_model_visible_limit_chars": max_visible_chars,
     }
+    if overflow:
+        result["warning"] = (
+            "Вызов ask_model переполнил контекст Gemma 4. "
+            "Ответ может быть частичным, его качество может быть снижено."
+        )
+    return result
 
 
 PLAN_CONTEXT_MARKER = "[LOCAL_AGENT_PLAN_CONTEXT]"
