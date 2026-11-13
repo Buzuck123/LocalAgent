@@ -51,9 +51,9 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
             },
         ]
     }
-    # Each stage is executed and verified before the controller advances.
-    # The two intermediate no-tool responses let the deterministic acceptance
-    # checks complete step_1 and step_2 independently.
+    # The controller may make additional LLM requests to prepare a stage
+    # prompt. Drive this fake by the purpose of each request and by commands
+    # actually executed, not by brittle absolute call numbers.
     tool_commands = [
         "printf '%s' 'VERIFIED' > first.txt",
         "grep -F -- VERIFIED first.txt",
@@ -64,48 +64,65 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
     class FakeClient:
         def __init__(self):
             self.calls = 0
+            self.plan_requests = 0
+            self.step_prompt_requests = 0
+            self.review_requests = 0
+
+        @staticmethod
+        def _message(content, tool_calls=None):
+            message = {"role": "assistant", "content": content}
+            if tool_calls is not None:
+                message["tool_calls"] = tool_calls
+            return {"message": message}
 
         def chat(self, messages, tools=None):
             self.calls += 1
-            if self.calls == 1:
-                return {
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps(planned_steps, ensure_ascii=False),
-                    }
-                }
-            if self.calls in {2, 3, 5, 6}:
-                command = tool_commands[{2: 0, 3: 1, 5: 2, 6: 3}[self.calls]]
-                assert isinstance(tools, list)
-                assert any(
-                    item.get("function", {}).get("name") == "terminal"
-                    for item in tools
+            system_text = "\\n".join(
+                str(item.get("content", ""))
+                for item in messages
+                if isinstance(item, dict) and item.get("role") == "system"
+            )
+
+            if "Create a concise execution plan" in system_text:
+                self.plan_requests += 1
+                return self._message(json.dumps(planned_steps, ensure_ascii=False))
+
+            if "Prepare a concise working instruction" in system_text:
+                self.step_prompt_requests += 1
+                return self._message(json.dumps({
+                    "task_prompt": "Создай требуемый файл и выполни указанную проверку."
+                }, ensure_ascii=False))
+
+            if "Review the current LocalAgent plan step" in system_text:
+                self.review_requests += 1
+                raise AssertionError(
+                    "Детерминированный acceptance_check должен завершить этап "
+                    "без дополнительного LLM-review"
                 )
-                return {
-                    "message": {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [{
-                            "function": {
-                                "name": "terminal", "arguments": {"command": command}
-                            }
-                        }],
-                    }
+
+            # FakeRuntime is the source of truth for which actions have run.
+            executed = set(runtime.commands)
+            if tool_commands[0] not in executed:
+                command = tool_commands[0]
+            elif tool_commands[1] not in executed:
+                command = tool_commands[1]
+            elif tool_commands[2] not in executed:
+                return self._message("Первый файл создан и проверен.")
+            elif tool_commands[3] not in executed:
+                command = tool_commands[3]
+            else:
+                return self._message("Оба файла созданы и проверены.")
+
+            assert isinstance(tools, list)
+            assert any(
+                item.get("function", {}).get("name") == "terminal"
+                for item in tools
+            )
+            return self._message("", [{
+                "function": {
+                    "name": "terminal", "arguments": {"command": command}
                 }
-            if self.calls == 4:
-                return {
-                    "message": {
-                        "role": "assistant",
-                        "content": "Первый файл создан и проверен.",
-                    }
-                }
-            assert self.calls == 7
-            return {
-                "message": {
-                    "role": "assistant",
-                    "content": "Оба файла созданы и проверены.",
-                }
-            }
+            }])
 
     fake_client = FakeClient()
     monkeypatch.setattr(core, "client", fake_client)
@@ -171,9 +188,8 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
         isinstance(step.get("verification"), str) and step["verification"].strip()
         for step in plan["steps"]
     )
-    # One plan request, two terminal calls and one stage boundary response
-    # per stage, followed by the final stage response.
-    assert fake_client.calls == 7
+    assert fake_client.plan_requests == 1
+    assert fake_client.review_requests == 0
 
 
 def test_review_reconciliation_marks_scope_leaked_future_stage_complete(tmp_path):
