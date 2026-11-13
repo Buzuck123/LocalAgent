@@ -1,5 +1,6 @@
 import json
 import subprocess
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,27 +12,25 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    # Изолируем SQLite и настройки агента от рабочей среды.
     monkeypatch.setattr(
-        core.db,
-        "settings",
-        SimpleNamespace(database_path=database_path),
+        core.db, "settings", SimpleNamespace(database_path=database_path)
     )
     monkeypatch.setattr(
-        core,
-        "settings",
+        core, "settings",
         SimpleNamespace(
             max_tool_rounds=10,
             auto_resume_tasks=False,
             workspace_path=workspace,
         ),
     )
+    # Injected clients use the deterministic route hook; this test explicitly
+    # exercises Plan rather than the unrelated Direct-vs-Plan model selector.
+    monkeypatch.setattr(core, "classify_execution_mode", lambda *args, **kwargs: "planned")
 
     core.db.init_db()
     conversation = core.db.create_conversation("Plan integration test")
     task = core.db.create_task(
-        conversation["id"],
-        "Создай два тестовых файла и проверь результат",
+        conversation["id"], "Создай два тестовых файла и проверь результат"
     )
 
     planned_steps = {
@@ -41,28 +40,20 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
                 "description": "Создать первый файл",
                 "expected_result": "first.txt содержит VERIFIED",
                 "acceptance_check": {
-                    "type": "file_contains",
-                    "path": "first.txt",
-                    "text": "VERIFIED",
+                    "type": "file_contains", "path": "first.txt", "text": "VERIFIED"
                 },
             },
             {
                 "id": "step_2",
                 "description": "Создать второй файл",
                 "expected_result": "second.txt существует",
-                "acceptance_check": {
-                    "type": "file_exists",
-                    "path": "second.txt",
-                },
+                "acceptance_check": {"type": "file_exists", "path": "second.txt"},
             },
         ]
     }
-
     tool_commands = [
         "printf '%s' 'VERIFIED' > first.txt",
-        "grep -F -- VERIFIED first.txt",
         "printf '%s' 'SECOND FILE' > second.txt",
-        "test -f second.txt",
     ]
 
     class FakeClient:
@@ -72,34 +63,80 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
         def chat(self, messages, tools=None):
             self.calls += 1
             if self.calls == 1:
+                return {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(planned_steps, ensure_ascii=False),
+                    }
+                }
+            if 2 <= self.calls <= 3:
+                command = tool_commands[self.calls - 2]
                 assert isinstance(tools, list)
                 assert any(
                     item.get("function", {}).get("name") == "terminal"
                     for item in tools
                 )
-                return {"message": {"role": "assistant", "content": json.dumps(planned_steps, ensure_ascii=False)}}
-            if 2 <= self.calls <= 5:
-                command = tool_commands[self.calls - 2]
-                return {"message": {"role": "assistant", "content": "", "tool_calls": [{
-                    "function": {"name": "terminal", "arguments": {"command": command}}
-                }]}}
-            assert self.calls == 6
-            return {"message": {"role": "assistant", "content": "Оба файла созданы и проверены."}}
+                return {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "function": {
+                                "name": "terminal", "arguments": {"command": command}
+                            }
+                        }],
+                    }
+                }
+            assert self.calls == 4
+            return {
+                "message": {
+                    "role": "assistant",
+                    "content": "Оба файла созданы и проверены.",
+                }
+            }
 
     fake_client = FakeClient()
     monkeypatch.setattr(core, "client", fake_client)
 
-    dispatched = []
+    # Exercise the actual Sandbox Manager -> SandboxRuntime boundary. Only the
+    # remote runtime is replaced; terminal orchestration and tool dispatch remain real.
+    from agent.sandbox_manager import sandbox_manager
 
-    def fake_dispatch(name, args, **kwargs):
-        assert name == "terminal"
-        dispatched.append((name, dict(args)))
-        result = subprocess.run(["bash", "-lc", args["command"]], cwd=workspace,
-                                capture_output=True, text=True, check=False)
-        return {"command": args["command"], "stdout": result.stdout, "stderr": result.stderr,
-                "exit_code": result.returncode, "timed_out": False}
+    class FakeRuntime:
+        def __init__(self):
+            self.operations = {}
+            self.commands = []
 
-    monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
+        def start_operation(self, command, *, session="main", timeout=None,
+                            idempotency_key=None):
+            operation_id = str(uuid.uuid4())
+            self.commands.append(command)
+            result = subprocess.run(
+                ["bash", "-c", command], cwd=workspace,
+                capture_output=True, text=True, check=False,
+            )
+            self.operations[operation_id] = {
+                "state": "completed",
+                "output": result.stdout + result.stderr,
+                "exit_code": result.returncode,
+                "next_cursor": len(result.stdout + result.stderr),
+            }
+            return {"operation_id": operation_id, "state": "running"}
+
+        def get_operation(self, operation_id, *, session="main", cursor=0,
+                          max_output_chars=65536, wait_timeout=0.0):
+            return dict(self.operations[operation_id])
+
+        def ensure_session(self, session="main"):
+            return False
+
+    runtime = FakeRuntime()
+    monkeypatch.setattr(sandbox_manager, "get_runtime", lambda conversation_id: runtime)
+    monkeypatch.setattr(sandbox_manager, "_active_operations", {})
+    monkeypatch.setattr(sandbox_manager, "_new_sessions", set())
+    monkeypatch.setattr(
+        sandbox_manager, "_find_persisted_active_operation", lambda conversation_id: None
+    )
 
     agent = core.Agent()
     agent._run_task(task["id"], core.TaskControl())
@@ -107,31 +144,23 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
     saved_task = core.db.get_task(task["id"])
     assert saved_task["status"] == "completed", saved_task
     assert saved_task["result"] == "Оба файла созданы и проверены."
-
-    # Проверяем, что каждый инструмент вызван ровно один раз и по порядку.
-    assert [args["command"] for _, args in dispatched] == tool_commands
+    assert runtime.commands == tool_commands
 
     assert (workspace / "first.txt").read_text(encoding="utf-8") == "VERIFIED"
     assert (workspace / "second.txt").read_text(encoding="utf-8") == "SECOND FILE"
 
-    # Проверяем не только итог задачи, но и сохранённый план.
     checkpoint = json.loads(saved_task["checkpoint_json"])
     plan = checkpoint["plan"]
-
     assert checkpoint["phase"] == "completed"
+    assert checkpoint["execution_mode"] == "planned"
     assert plan["status"] == "completed"
-    assert [step["status"] for step in plan["steps"]] == [
-        "completed",
-        "completed",
-    ]
+    assert [step["status"] for step in plan["steps"]] == ["completed", "completed"]
     assert all(
-        isinstance(step.get("verification"), str)
-        and step["verification"].strip()
+        isinstance(step.get("verification"), str) and step["verification"].strip()
         for step in plan["steps"]
     )
-
-    # Plan, two write/check command pairs, and final answer.
-    assert fake_client.calls == 6
+    # One plan request, one terminal call per stage, and one final response.
+    assert fake_client.calls == 4
 
 
 def test_review_reconciliation_marks_scope_leaked_future_stage_complete(tmp_path):
