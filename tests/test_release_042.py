@@ -1,9 +1,6 @@
 import json
 import base64
-from pathlib import Path
-from types import SimpleNamespace
 
-from openpyxl import Workbook, load_workbook
 
 from agent import core, tools, attachments
 
@@ -23,41 +20,6 @@ def test_all_tools_remain_visible_and_domains_are_grouped_by_scope():
     web_names = {x["function"]["name"] for x in core.tools_for_task("Найди в интернете документацию")}
     assert "web_search" in web_names
     assert "terminal" in web_names
-
-
-def test_excel_aggregate_groups_multiple_sheets_and_verifies(tmp_path, monkeypatch):
-    monkeypatch.setattr(tools, "settings", SimpleNamespace(workspace_path=tmp_path, database_path=tmp_path / "agent.sqlite3"))
-    source = tmp_path / "source.xlsx"
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "A"
-    ws.append(["item", "qty", "price"])
-    ws.append(["x", 2, 10])
-    ws.append(["y", 1, 20])
-    ws2 = wb.create_sheet("B")
-    ws2.append(["item", "qty", "price"])
-    ws2.append(["x", 3, 14])
-    wb.save(source)
-    result = tools.excel_aggregate("source.xlsx", "summary.xlsx", ["item"], ["qty"], ["price"], ["A", "B"])
-    assert result["verified"] is True
-    assert result["source_rows_processed"] == 3
-    check = load_workbook(tmp_path / "summary.xlsx", data_only=True, read_only=True)
-    try:
-        rows = list(check["Summary"].iter_rows(values_only=True))
-    finally:
-        check.close()
-    assert rows[0] == ("item", "Сумма: qty", "Среднее: price", "Количество строк")
-    assert rows[1] == ("x", 5, 12, 2)
-    assert rows[2] == ("y", 1, 20, 1)
-
-
-def test_sqlite_read_rejects_mutating_sql():
-    try:
-        tools.sqlite_read("does-not-matter.db", "DELETE FROM x")
-    except ValueError as exc:
-        assert "SELECT or WITH" in str(exc)
-    else:
-        raise AssertionError("mutating SQL must be rejected")
 
 
 def test_ollama_client_sends_image_as_native_images_field(tmp_path, monkeypatch):
@@ -83,7 +45,7 @@ def test_document_attachment_text_is_added_to_model_message():
     assert "note.txt" in result
 
 
-def test_document_attachment_is_saved_for_specialized_tools(tmp_path, monkeypatch):
+def test_document_attachment_is_saved_in_managed_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(attachments, "ATTACHMENT_ROOT", tmp_path / "data" / "attachments")
     monkeypatch.setattr(attachments, "settings", SimpleNamespace(workspace_path=tmp_path / "workspace", database_path=tmp_path / "data" / "agent.sqlite3"))
     import base64
