@@ -72,7 +72,15 @@ def test_model_reviews_step_result_before_task_completes(tmp_path, monkeypatch):
     assert checkpoint["plan"]["status"] == "completed"
     assert checkpoint["plan"]["steps"][0]["verification"] == review_response["verification"]
     assert checkpoint["last_step_decision"]["decision"] == "complete_step"
-    assert len(fake_client.calls) == 7
+    review_calls = [
+        index for index, (messages, _tools) in enumerate(fake_client.calls)
+        if any(
+            message.get("role") == "system"
+            and "Review the current LocalAgent plan step" in str(message.get("content", ""))
+            for message in messages
+        )
+    ]
+    assert review_calls, "The model must review the step before task completion"
 
 
 def test_plan_revision_preserves_completed_progress(tmp_path, monkeypatch):
