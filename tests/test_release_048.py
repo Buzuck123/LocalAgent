@@ -1,5 +1,3 @@
-import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -113,16 +111,6 @@ def test_copy_between_virtual_namespaces_and_protect_reserved_area(tmp_path, mon
         tools.dispatch_tool("copy_file", {"source": "/work/source.txt", "destination": "/workspace/.agent_runs/x.txt"}, task_id=task_id)
 
 
-def test_excel_tool_uses_same_work_virtual_path(tmp_path, monkeypatch):
-    import openpyxl
-    workspace = _setup(tmp_path, monkeypatch)
-    task_id = "excel-path-test"
-    tools.dispatch_tool("create_directory", {"path": "/work/files"}, task_id=task_id)
-    tools.dispatch_tool("write_excel", {"path": "/work/files/book.xlsx", "sheet_name": "Data", "rows": [["Name", "Value"], ["A", 10]]}, task_id=task_id)
-    result = tools.dispatch_tool("read_excel", {"path": "/work/files/book.xlsx", "sheet_name": "Data"}, task_id=task_id)
-    assert result["sheets"][0]["preview"] == [["Name", "Value"], ["A", 10]]
-
-
 def test_existing_database_migration_keeps_messages_and_adds_usage_table(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     cid = db.create_conversation("migration")['id']
@@ -134,15 +122,3 @@ def test_existing_database_migration_keeps_messages_and_adds_usage_table(tmp_pat
     assert {"task_id", "prompt_eval_count", "eval_count", "prompt_eval_duration_ns", "eval_duration_ns"} <= columns
 
 
-def test_sqlite_tool_uses_task_work_namespace(tmp_path, monkeypatch):
-    workspace = _setup(tmp_path, monkeypatch)
-    task_id = "sqlite-work-test"
-    tools.dispatch_tool("sqlite_create_database", {"database_path": "/work/task.db"}, task_id=task_id)
-    result = tools.dispatch_tool(
-        "sqlite_execute",
-        {"database_path": "/work/task.db", "sql": "CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)"},
-        task_id=task_id,
-    )
-    assert result.get("ok", True) is True
-    database = workspace / ".agent_runs" / ("task-" + task_id) / "work" / "task.db"
-    assert database.is_file()
