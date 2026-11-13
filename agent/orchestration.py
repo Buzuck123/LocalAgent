@@ -131,7 +131,7 @@ def classify_failure(tool_name: str, arguments: dict, error_text: str) -> dict:
         category, action = "invalid_tool_call", "correct_arguments"
     elif any(x in low for x in ("fileexistserror", "already exists", "file exists", "duplicate column", "already present")):
         category, action = "state_conflict", "inspect_state_before_retry"
-    elif any(x in low for x in ("filenotfounderror", "no such file", "not found", "no such table", "no such column")):
+    elif any(x in low for x in ("filenotfounderror", "enoent", "no such file", "not found", "no such table", "no such column")):
         category, action = "missing_resource", "discover_actual_resources"
     elif any(x in low for x in ("syntax error", "invalid sql", "malformed", "parse error")):
         category, action = "invalid_expression", "revise_expression_after_inspection"
