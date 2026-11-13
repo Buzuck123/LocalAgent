@@ -101,7 +101,7 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
     agent._run_task(task["id"], core.TaskControl())
 
     saved_task = core.db.get_task(task["id"])
-    assert saved_task["status"] == "completed"
+    assert saved_task["status"] == "completed", saved_task
     assert saved_task["result"] == "Оба файла созданы и проверены."
 
     # Проверяем, что каждый инструмент вызван ровно один раз и по порядку.
