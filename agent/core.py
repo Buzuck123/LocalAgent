@@ -1223,11 +1223,14 @@ def _validate_revision_size_for_plan(plan, decision):
     if not isinstance(decision, dict) or decision.get("decision") != "revise_plan":
         return
     steps = decision.get("plan_update", {}).get("steps", [])
-    has_terminal_work = any(
-        isinstance(step, dict) and step.get("status") in {"completed", "skipped"}
-        for step in plan.get("steps", [])
+    remaining_count = sum(
+        1 for step in plan.get("steps", [])
+        if isinstance(step, dict) and step.get("status") not in {"completed", "skipped"}
     )
-    if not has_terminal_work and len(steps) < 2:
+    # A one-stage replacement is invalid only when it would collapse an
+    # untouched multi-stage route. If the original route has zero or one
+    # remaining stage, a single alternative action is a legitimate revision.
+    if remaining_count >= 2 and len(steps) < 2:
         raise ValueError(
             "A one-stage plan is not launched. Choose retry_step/continue_step for one remaining action, "
             "or provide at least two necessary stages."
