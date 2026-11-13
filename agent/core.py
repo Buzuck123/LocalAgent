@@ -2708,6 +2708,10 @@ class Agent:
         """Single execution entry point for new and resumed tasks."""
         return self._run_unified_task(task_id, control)
 
+    def _run_autonomous_task(self, task_id: str, control: TaskControl):
+        """Compatibility alias for callers restoring older task runners."""
+        return self._run_unified_task(task_id, control)
+
     def _run_unified_task(self, task_id: str, control: TaskControl):
         token = _CURRENT_MODEL_TASK_ID.set(task_id)
         model_token = _CURRENT_MODEL_OVERRIDE.set(None)
