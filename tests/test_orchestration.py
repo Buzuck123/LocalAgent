@@ -72,10 +72,10 @@ def test_failure_classifier_marks_read_only_service_retry_policy():
 
 def test_execution_events_are_bounded_and_task_state_tracks_outcomes():
     checkpoint = {"execution_events": [{"type": "old"}] * 100}
-    append_execution_event(checkpoint, "tool_result", tool_name="read_file", detail="read ok", status="succeeded")
+    append_execution_event(checkpoint, "tool_result", tool_name="terminal", detail="terminal output", status="succeeded")
     assert len(checkpoint["execution_events"]) == 100
-    update_task_state(checkpoint, tool_name="read_file", arguments={"path": "x"}, success=True)
-    update_task_state(checkpoint, tool_name="write_file", arguments={"path": "../x"}, success=False,
+    update_task_state(checkpoint, tool_name="terminal", arguments={"command": "pwd"}, success=True)
+    update_task_state(checkpoint, tool_name="terminal", arguments={"command": "echo x"}, success=False,
                       failure={"category": "access_boundary", "error_excerpt": "outside", "recovery_action": "replan"})
     state = checkpoint["task_state"]
     assert state["actions_total"] == 2
@@ -123,15 +123,15 @@ def test_unrelated_success_does_not_resolve_missing_file_error():
     checkpoint = {}
     update_task_state(
         checkpoint,
-        tool_name="read_file",
-        arguments={"path": "inventory.csv"},
+        tool_name="load_file_for_model",
+        arguments={"path": "/work/inventory.csv"},
         success=False,
         failure={"category": "missing_resource", "error_excerpt": "FileNotFoundError: not found"},
     )
     update_task_state(
         checkpoint,
-        tool_name="write_file",
-        arguments={"path": "README.md"},
+        tool_name="terminal",
+        arguments={"command": "touch /work/README.md"},
         success=True,
     )
     assert len(checkpoint["task_state"]["unresolved_errors"]) == 1
@@ -194,3 +194,9 @@ def test_simple_action_evidence_is_migrated_to_first_planned_step_idempotently()
     assert all(item["migrated_from_step"] == "simple_action" for item in evidence["step_1"])
     assert migrate_simple_action_evidence_to_plan(plan, evidence) == 0
     assert len(evidence["step_1"]) == 2
+
+
+def test_failure_classifier_recognizes_enoent():
+    info = classify_failure("load_file_for_model", {"path": "/work/missing.txt"}, "OSError: ENOENT")
+    assert info["category"] == "missing_resource"
+    assert info["recovery_action"] == "discover_actual_resources"
