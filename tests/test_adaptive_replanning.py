@@ -110,24 +110,44 @@ def test_agent_replans_after_four_unsuccessful_step_reviews(tmp_path, monkeypatc
     conversation = core.db.create_conversation("Adaptive replanning test")
     task = core.db.create_task(conversation["id"], "Получи результат другим способом при неудаче")
 
-    initial_plan = {"steps": [{
-        "id": "step_1",
-        "description": "Первоначальный подход",
-        "expected_result": "Результат получен",
-        "success_criteria": ["Результат действительно получен"],
-        "completion_mode": "response",
-    }]}
+    initial_plan = {"steps": [
+        {
+            "id": "step_1",
+            "description": "Первоначальный подход",
+            "expected_result": "Результат получен",
+            "success_criteria": ["Результат действительно получен"],
+            "completion_mode": "response",
+        },
+        {
+            "id": "step_2",
+            "description": "Проверить полученный результат",
+            "expected_result": "Результат проверен",
+            "success_criteria": ["Результат действительно проверен"],
+            "dependencies": ["step_1"],
+            "completion_mode": "response",
+        },
+    ]}
     revised_plan = {
         "decision": "revise_plan",
         "reason": "Первоначальный подход четыре раза не дал результата; выбран альтернативный способ",
-        "plan_update": {"steps": [{
-            "id": "step_alt",
-            "description": "Выполнить альтернативный подход",
-            "expected_result": "Результат получен альтернативным способом",
-            "success_criteria": ["Альтернативный результат получен"],
-            "dependencies": [],
-            "completion_mode": "response",
-        }]},
+        "plan_update": {"steps": [
+            {
+                "id": "step_alt_1",
+                "description": "Выполнить альтернативный подход",
+                "expected_result": "Результат получен альтернативным способом",
+                "success_criteria": ["Альтернативный результат получен"],
+                "dependencies": [],
+                "completion_mode": "response",
+            },
+            {
+                "id": "step_alt_2",
+                "description": "Проверить альтернативный результат",
+                "expected_result": "Альтернативный результат проверен",
+                "success_criteria": ["Проверка пройдена"],
+                "dependencies": ["step_alt_1"],
+                "completion_mode": "response",
+            },
+        ]},
     }
 
     class FakeClient:
@@ -150,7 +170,7 @@ def test_agent_replans_after_four_unsuccessful_step_reviews(tmp_path, monkeypatc
                 if payload.get("revision_required"):
                     self.saw_forced_revision = True
                     return {"message": {"content": json.dumps(revised_plan, ensure_ascii=False)}}
-                if payload.get("current_step", {}).get("id") == "step_alt":
+                if str(payload.get("current_step", {}).get("id", "")).startswith("adaptive_1_step_"):
                     return {"message": {"content": json.dumps({
                         "decision": "complete_step",
                         "reason": "Альтернативный результат получен",
@@ -174,8 +194,10 @@ def test_agent_replans_after_four_unsuccessful_step_reviews(tmp_path, monkeypatc
     assert saved["status"] == "completed", saved
     assert fake.saw_forced_revision is True
     assert checkpoint["plan_revision_count"] == 1
-    assert [step["id"] for step in checkpoint["plan"]["steps"]] == ["step_alt"]
-    assert checkpoint["plan"]["steps"][0]["status"] == "completed"
+    assert [step["id"] for step in checkpoint["plan"]["steps"]] == [
+        "adaptive_1_step_1", "adaptive_1_step_2"
+    ]
+    assert all(step["status"] == "completed" for step in checkpoint["plan"]["steps"])
     assert checkpoint["last_plan_revision_reason"] == revised_plan["reason"]
 
 
@@ -331,25 +353,45 @@ def test_agent_replans_after_three_tool_errors(tmp_path, monkeypatch):
         "Получи результат и смени подход при ошибках",
     )
 
-    initial_plan = {"steps": [{
-        "id": "step_1",
-        "description": "Первоначальный подход",
-        "expected_result": "Получен результат",
-        "success_criteria": ["Результат получен"],
-        "completion_mode": "response",
-    }]}
+    initial_plan = {"steps": [
+        {
+            "id": "step_1",
+            "description": "Первоначальный подход",
+            "expected_result": "Получен результат",
+            "success_criteria": ["Результат получен"],
+            "completion_mode": "response",
+        },
+        {
+            "id": "step_2",
+            "description": "Проверить результат",
+            "expected_result": "Результат проверен",
+            "success_criteria": ["Результат проверен"],
+            "dependencies": ["step_1"],
+            "completion_mode": "response",
+        },
+    ]}
 
     revised_plan = {
         "decision": "revise_plan",
         "reason": "Три ошибки инструмента требуют другого подхода",
-        "plan_update": {"steps": [{
-            "id": "step_alt",
-            "description": "Альтернативный подход",
-            "expected_result": "Получен альтернативный результат",
-            "success_criteria": ["Альтернативный результат получен"],
-            "dependencies": [],
-            "completion_mode": "response",
-        }]},
+        "plan_update": {"steps": [
+            {
+                "id": "step_alt_1",
+                "description": "Альтернативный подход",
+                "expected_result": "Получен альтернативный результат",
+                "success_criteria": ["Альтернативный результат получен"],
+                "dependencies": [],
+                "completion_mode": "response",
+            },
+            {
+                "id": "step_alt_2",
+                "description": "Проверить альтернативный результат",
+                "expected_result": "Альтернативный результат проверен",
+                "success_criteria": ["Проверка пройдена"],
+                "dependencies": ["step_alt_1"],
+                "completion_mode": "response",
+            },
+        ]},
     }
 
     class FakeClient:
@@ -381,7 +423,7 @@ def test_agent_replans_after_three_tool_errors(tmp_path, monkeypatch):
                         "content": json.dumps(revised_plan, ensure_ascii=False)
                     }}
 
-                if payload.get("current_step", {}).get("id") == "step_alt":
+                if str(payload.get("current_step", {}).get("id", "")).startswith("adaptive_1_step_"):
                     return {"message": {
                         "content": json.dumps({
                             "decision": "complete_step",
@@ -443,8 +485,10 @@ def test_agent_replans_after_three_tool_errors(tmp_path, monkeypatch):
     assert len(dispatched) == 3, dispatched
     assert fake.tool_errors_replanned is True
     assert checkpoint["plan_revision_count"] == 1
-    assert [step["id"] for step in checkpoint["plan"]["steps"]] == ["step_alt"]
-    assert checkpoint["plan"]["steps"][0]["status"] == "completed"
+    assert [step["id"] for step in checkpoint["plan"]["steps"]] == [
+        "adaptive_1_step_1", "adaptive_1_step_2"
+    ]
+    assert all(step["status"] == "completed" for step in checkpoint["plan"]["steps"])
     assert saved["status"] == "completed", saved
 
 
