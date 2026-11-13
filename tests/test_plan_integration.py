@@ -72,7 +72,11 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
         def chat(self, messages, tools=None):
             self.calls += 1
             if self.calls == 1:
-                assert tools is None
+                assert isinstance(tools, list)
+                assert any(
+                    item.get("function", {}).get("name") == "terminal"
+                    for item in tools
+                )
                 return {"message": {"role": "assistant", "content": json.dumps(planned_steps, ensure_ascii=False)}}
             if 2 <= self.calls <= 5:
                 command = tool_commands[self.calls - 2]
