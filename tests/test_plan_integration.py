@@ -77,7 +77,7 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
 
         def chat(self, messages, tools=None):
             self.calls += 1
-            system_text = "\\n".join(
+            system_text = "\n".join(
                 str(item.get("content", ""))
                 for item in messages
                 if isinstance(item, dict) and item.get("role") == "system"
