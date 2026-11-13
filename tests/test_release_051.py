@@ -30,6 +30,10 @@ def test_ollama_audio_attachment_is_sent_as_multimodal_payload(tmp_path, monkeyp
     raw = b"RIFF" + b"test-audio-bytes"
     audio.write_bytes(raw)
     monkeypatch.setattr(core, "ATTACHMENT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        core.db, "get_app_setting",
+        lambda key, default=None: "gemma4:12b" if key == "selected_ollama_model" else default,
+    )
     client = core.OllamaClient()
     captured = {}
 
