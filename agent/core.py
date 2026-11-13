@@ -3604,7 +3604,7 @@ class Agent:
                                 result = _dispatch_tool_for_task(
                                     name, args, task_id, operation_id,
                                     context_messages=messages,
-                                    main_model=str(checkpoint.get("model") or settings.model),
+                                    main_model=str(checkpoint.get("model") or getattr(settings, "model", "")),
                                     context_limit=(
                                         _CURRENT_MODEL_CONTEXT.get()
                                         or checkpoint.get("model_num_ctx")
