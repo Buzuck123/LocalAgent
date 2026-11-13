@@ -168,6 +168,7 @@ def test_plan_revision_preserves_completed_progress(tmp_path, monkeypatch):
     assert plan["steps"][0]["status"] == "completed"
     assert "completion_mode" not in plan["steps"][0]
     assert plan["steps"][1]["status"] == "completed"
+    assert plan["steps"][1]["dependencies"] == ["step_1"]
     assert "completion_mode" not in plan["steps"][1]
     assert plan["status"] == "completed"
     assert checkpoint["last_plan_revision_reason"] == "Первоначальный подход не подходит"
