@@ -295,7 +295,8 @@ def test_review_rejects_invalid_acceptance_check_in_revised_plan(monkeypatch):
     )
 
     assert decision["decision"] == "revise_plan"
-    assert decision["plan_update"]["steps"][0]["id"] == "good_step"
+    # Step IDs are controller-owned and normalized by the parser.
+    assert decision["plan_update"]["steps"][0]["id"] == "revised_step_1"
     assert len(calls) == 2
     correction_payload = json.loads(calls[1][1]["content"])
     assert "Предыдущее решение не прошло проверку" in correction_payload["correction"]
