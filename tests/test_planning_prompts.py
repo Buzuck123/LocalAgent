@@ -163,7 +163,7 @@ def test_planning_context_snapshot_contains_all_stages_and_revision_history():
         plan, state, [
             {"role": "user", "content": "Сохрани исходный формат данных"},
             {"role": "assistant", "content": "Старое предположение: сделать все этапы сейчас"},
-            {"role": "assistant", "tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "data.csv"}}}]},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "terminal", "arguments": {"command": "cat data.csv"}}}]},
         ]
     )
     assert len(snapshot["steps"]) == 2
