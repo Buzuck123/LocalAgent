@@ -24,6 +24,12 @@ def test_failed_acceptance_check_forces_retry_even_if_reviewer_says_continue(tmp
         "expected_result": "Файл содержит точный текст",
         "success_criteria": ["Файл содержит требуемый текст"],
         "acceptance_check": {"type": "file_contains", "path": "task.txt", "text": expected},
+    }, {
+        "id": "step_2",
+        "description": "Подготовить итоговое сообщение",
+        "expected_result": "Результат работы кратко описан",
+        "completion_mode": "response",
+        "success_criteria": ["Пользователь получил краткий итог"],
     }]}
     continue_response = {
         "decision": "continue_step", "reason": "Нужно продолжить",
