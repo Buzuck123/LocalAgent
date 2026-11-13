@@ -12,15 +12,15 @@ def test_execution_mode_routes_simple_and_complex_tasks():
     assert core.classify_execution_mode("Посмотри это", attachments=[{"kind": "image"}]) == "simple"
 
 
-def test_all_tools_remain_visible_and_domains_are_grouped_by_scope():
+def test_terminal_is_the_execution_interface_and_web_tools_are_not_exposed():
     excel_names = {x["function"]["name"] for x in core.tools_for_task("Сгруппируй данные Excel по товару")}
     assert "terminal" in excel_names
     assert "publish_file" in excel_names
-    assert "open_browser_page" in excel_names
+    assert not {"web_search", "open_browser_page"} & excel_names
     assert not {"excel_aggregate", "read_excel", "write_excel"} & excel_names
     web_names = {x["function"]["name"] for x in core.tools_for_task("Найди в интернете документацию")}
-    assert "web_search" in web_names
     assert "terminal" in web_names
+    assert not {"web_search", "open_browser_page"} & web_names
 
 
 def test_ollama_client_sends_image_as_native_images_field(tmp_path, monkeypatch):
