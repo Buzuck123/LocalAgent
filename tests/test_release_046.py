@@ -23,7 +23,8 @@ def test_python_script_task_keeps_full_registry_available():
         "запусти и проверь результат."
     )
     names = _names(core.tools_for_task(goal))
-    assert {"terminal", "publish_file", "web_search"} <= names
+    assert {"terminal", "publish_file"} <= names
+    assert not {"web_search", "open_browser_page"} & names
     assert not {"write_file", "run_python", "read_file", "list_files", "read_output_file",
                 "read_excel", "write_excel", "excel_aggregate", "sqlite_query"} & names
 
