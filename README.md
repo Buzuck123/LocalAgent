@@ -27,7 +27,6 @@ LocalAgent is a local AI agent built around Ollama, a persistent conversation pl
 - Added one rootless Podman container per conversation, created lazily on the first terminal call and reused across messages.
 - Added SWE-ReX 1.4.0 `RemoteRuntime`, persistent Bash session `main`, recovery after LocalAgent restarts, and cleanup when a conversation is deleted.
 - Added a SQLite migration for sandbox metadata and a dedicated `publish_file` tool for delivering generated files to the user.
-- Kept web search, web-page reading, browser-page reading, and internal tool-result retrieval.
 - The old Bubblewrap implementation remains in the source tree for rollback/reference, but its specialized tools are no longer exposed to the model and it is not an automatic fallback.
 
 ## Architecture
