@@ -121,4 +121,4 @@ def test_ollama_chat_sends_video_frames_as_ordered_images(tmp_path, monkeypatch)
     assert response["message"]["content"] == "video understood"
     assert model_message["images"] == [base64.b64encode(b"jpeg-frame").decode("ascii")]
     assert "1.50s" in model_message["content"]
-    assert "soundtrack is included only when an audio stream was extracted" in model_message["content"]
+    assert "soundtrack is included only when the selected model supports Gemma 4 audio and an audio stream was extracted" in model_message["content"]
