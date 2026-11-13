@@ -74,18 +74,17 @@ def test_pending_tool_resumes_and_continues(monkeypatch):
                 "content": "",
                 "tool_calls": [{
                     "function": {
-                        "name": "write_file",
+                        "name": "terminal",
                         "arguments": {
-                            "path": "result.txt",
-                            "content": "test",
+                            "command": "printf test > result.txt",
                         },
                     }
                 }],
             },
         ],
         "pending_calls": [{
-            "name": "write_file",
-            "arguments": {"path": "result.txt", "content": "test"},
+            "name": "terminal",
+            "arguments": {"command": "printf test > result.txt"},
         }],
         "next_tool_index": 0,
     }
@@ -161,7 +160,8 @@ def test_pending_tool_resumes_and_continues(monkeypatch):
     agent._run_task(task["id"], core.TaskControl())
 
     assert len(dispatched) == 1
-    assert dispatched[0][0] == "write_file"
+    assert dispatched[0][0] == "terminal"
+    assert dispatched[0][1] == {"command": "printf test > result.txt"}
     assert len(chat_calls) == 1
     assert any(u.get("status") == "completed" for u in updates)
     assert any(
@@ -595,8 +595,8 @@ def test_receipt_failure_does_not_advance_checkpoint_or_repeat_tool(monkeypatch)
             {"role": "user", "content": "Создай файл"},
         ],
         "pending_calls": [{
-            "name": "write_file",
-            "arguments": {"path": "result.txt", "content": "test"},
+            "name": "terminal",
+            "arguments": {"command": "printf test > result.txt"},
         }],
         "next_tool_index": 0,
     }
@@ -654,7 +654,8 @@ def test_receipt_failure_does_not_advance_checkpoint_or_repeat_tool(monkeypatch)
     make_agent()._run_task(task["id"], core.TaskControl())
 
     assert len(dispatched) == 1
-    assert dispatched[0][0] == "write_file"
+    assert dispatched[0][0] == "terminal"
+    assert dispatched[0][1] == {"command": "printf test > result.txt"}
     assert any(
         update.get("status") == "interrupted"
         and "simulated receipt write failure" in update.get("error", "")
@@ -669,9 +670,9 @@ def test_receipt_failure_does_not_advance_checkpoint_or_repeat_tool(monkeypatch)
     assert saved_checkpoints
     last_checkpoint = saved_checkpoints[-1]
     assert last_checkpoint["phase"] == "tool_running"
-    assert last_checkpoint["current_tool"]["name"] == "write_file"
+    assert last_checkpoint["current_tool"]["name"] == "terminal"
     assert not any(
         message.get("role") == "tool"
-        and message.get("tool_name") == "write_file"
+        and message.get("tool_name") == "terminal"
         for message in last_checkpoint["messages"]
     )
