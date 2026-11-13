@@ -32,6 +32,12 @@ def test_model_reviews_step_result_before_task_completes(tmp_path, monkeypatch):
         "expected_result": "Получен краткий анализ",
         "completion_mode": "response",
         "success_criteria": ["Анализ содержит вывод по запросу"],
+    }, {
+        "id": "step_2",
+        "description": "Сформулировать итоговый вывод",
+        "expected_result": "Итоговый вывод сформулирован",
+        "completion_mode": "response",
+        "success_criteria": ["Итоговый вывод дан пользователю"],
     }]}
     review_response = {
         "decision": "complete_step",
@@ -66,7 +72,7 @@ def test_model_reviews_step_result_before_task_completes(tmp_path, monkeypatch):
     assert checkpoint["plan"]["status"] == "completed"
     assert checkpoint["plan"]["steps"][0]["verification"] == review_response["verification"]
     assert checkpoint["last_step_decision"]["decision"] == "complete_step"
-    assert len(fake_client.calls) == 3
+    assert len(fake_client.calls) == 7
 
 
 def test_plan_revision_preserves_completed_progress(tmp_path, monkeypatch):
@@ -164,7 +170,7 @@ def test_plan_revision_preserves_completed_progress(tmp_path, monkeypatch):
     checkpoint = json.loads(saved_task["checkpoint_json"])
     plan = checkpoint["plan"]
     assert saved_task["status"] == "completed", saved_task.get("error") or saved_task.get("result") or saved_task
-    assert [step["id"] for step in plan["steps"]] == ["step_1", "step_3"]
+    assert [step["id"] for step in plan["steps"]] == ["step_1", "adaptive_1_step_1"]
     assert plan["steps"][0]["status"] == "completed"
     assert "completion_mode" not in plan["steps"][0]
     assert plan["steps"][1]["status"] == "completed"
