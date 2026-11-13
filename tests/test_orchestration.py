@@ -64,7 +64,7 @@ def test_failure_classifier_distinguishes_mutating_path_error():
 
 
 def test_failure_classifier_marks_read_only_service_retry_policy():
-    info = classify_failure("web_search", {"query": "test"}, "ConnectionError: service temporarily unavailable")
+    info = classify_failure("load_file_for_model", {"path": "/workspace/file.txt"}, "ConnectionError: service temporarily unavailable")
     assert info["category"] == "transient_service"
     assert info["tool_effect"] == "read_only"
     assert info["retry_safe_without_state_check"] is True
