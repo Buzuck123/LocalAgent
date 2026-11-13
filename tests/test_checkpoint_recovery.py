@@ -137,7 +137,9 @@ def test_pending_tool_resumes_and_continues(monkeypatch):
         lambda cid, limit=100: history[-limit:],
     )
 
-    def fake_dispatch(name, args):
+    def fake_dispatch(name, args, **kwargs):
+        # Sandbox dispatch receives conversation_id and idempotency_key
+        # from the current terminal runtime adapter.
         dispatched.append((name, args))
         return {"command": args["command"], "exit_code": 0, "timed_out": False}
 
@@ -628,7 +630,8 @@ def test_receipt_failure_does_not_advance_checkpoint_or_repeat_tool(monkeypatch)
         },
     )
 
-    def dispatch(name, args):
+    def dispatch(name, args, **kwargs):
+        # Match the current sandbox dispatch contract.
         dispatched.append((name, args))
         return {
             "path": "result.txt",
