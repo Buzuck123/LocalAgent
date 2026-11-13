@@ -29,6 +29,12 @@ def test_repeated_continue_step_requests_replan_then_pauses_if_reviewer_refuses(
         "expected_result": "Короткий результат подготовлен",
         "success_criteria": ["Есть текстовый результат"],
         "completion_mode": "response",
+    }, {
+        "id": "step_2",
+        "description": "Сохранить результат и подготовить итог",
+        "expected_result": "Итоговое сообщение подготовлено",
+        "completion_mode": "response",
+        "success_criteria": ["Есть итоговое сообщение"],
     }]}
     continue_response = {
         "decision": "continue_step",
