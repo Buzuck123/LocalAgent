@@ -139,7 +139,7 @@ def test_pending_tool_resumes_and_continues(monkeypatch):
 
     def fake_dispatch(name, args):
         dispatched.append((name, args))
-        return {"path": args["path"], "bytes_written": 4}
+        return {"command": args["command"], "exit_code": 0, "timed_out": False}
 
     monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
 
