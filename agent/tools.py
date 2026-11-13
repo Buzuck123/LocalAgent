@@ -472,6 +472,16 @@ TOOL_DEFINITIONS = [
             "length": {"type": "integer", "minimum": 1, "default": 4000}},
             "required": ["result_id"], "additionalProperties": False}}},
     {"type": "function", "function": {
+        "name": "ask_model",
+        "description": ("Ask an independent Gemma 4 model a question in a clean, isolated context. "
+                        "The required prompt is the only text context. Optionally attach one file from the conversation's Linux container. "
+                        "Supported files: text/code, PDF, DOCX, XLSX, PNG/JPEG/WebP/GIF, supported audio and video. "
+                        "Oversized answers are archived and can be retrieved with get_tool_result."),
+        "parameters": {"type": "object", "properties": {
+            "prompt": {"type": "string", "minLength": 1},
+            "file": {"type": "string"}},
+            "required": ["prompt"], "additionalProperties": False}}},
+    {"type": "function", "function": {
         "name": "load_file_for_model",
         "description": ("Load a file from any readable absolute path inside this conversation's Linux container, including /workspace and /work. Text documents are delivered in sequential paragraph-aware chunks using start/length; if has_more is true, continue at next_start.  "
                         "PNG/JPEG/WebP/GIF images use native Ollama image input. WAV/MP3/M4A/AAC/OGG/FLAC audio is normalized to mono 16 kHz WAV; direct audio input is currently supported only by Gemma 4 (maximum 30 seconds). "
