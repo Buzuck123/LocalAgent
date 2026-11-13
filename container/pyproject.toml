@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localagent-web-search"
+version = "0.1.0"
+description = "Search CLI for the LocalAgent sandbox"
+requires-python = ">=3.10"
+dependencies = [
+    "ddgs==9.14.0",
+]
+
+[project.scripts]
+web-search = "web_search.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["web_search*", "localagent_http*"]

@@ -77,6 +77,13 @@ COPY swerex-1.4.0-background-operations.patch /tmp/swerex-1.4.0-background-opera
 RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
+# LocalAgent web search CLI
+COPY pyproject.toml /tmp/localagent-web-search/pyproject.toml
+COPY web_search /tmp/localagent-web-search/web_search
+
+RUN python3 -m pip install --no-cache-dir /tmp/localagent-web-search \
+    && rm -rf /tmp/localagent-web-search
+
 RUN python3 /tmp/patch_swerex_background.py \
     && rm /tmp/patch_swerex_background.py /tmp/swerex-1.4.0-background-operations.patch
 
