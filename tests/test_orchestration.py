@@ -57,7 +57,7 @@ def test_unknown_tool_is_rejected():
 
 
 def test_failure_classifier_distinguishes_mutating_path_error():
-    info = classify_failure("write_file", {"path": "/work/x.py"}, "ValueError: Path escapes the workspace directory")
+    info = classify_failure("terminal", {"command": "echo x > /work/x.py"}, "ValueError: Path escapes the workspace directory")
     assert info["category"] == "access_boundary"
     assert info["tool_effect"] == "mutating"
     assert info["retry_safe_without_state_check"] is False
@@ -86,34 +86,34 @@ def test_execution_events_are_bounded_and_task_state_tracks_outcomes():
 
 
 def test_mutating_tool_is_not_marked_safe_to_retry_after_transient_error():
-    info = classify_failure("sqlite_execute", {"sql": "INSERT INTO t VALUES (1)"},
+    info = classify_failure("terminal", {"command": "echo update"},
                             "ConnectionError: temporarily unavailable")
     assert info["category"] == "transient_service"
     assert info["tool_effect"] == "mutating"
     assert info["retry_safe_without_state_check"] is False
 
 
-def test_matching_successful_write_resolves_prior_missing_file_error():
+def test_matching_successful_terminal_action_resolves_prior_missing_file_error():
     checkpoint = {}
     update_task_state(
         checkpoint,
-        tool_name="read_file",
-        arguments={"path": "/workspace/inventory.csv"},
+        tool_name="load_file_for_model",
+        arguments={"path": "/work/inventory.csv"},
         success=False,
         failure={
             "category": "missing_resource",
-            "error_excerpt": "FileNotFoundError: inventory.csv not found",
+            "error_excerpt": "FileNotFoundError: [Errno 2] No such file or directory (ENOENT): '/work/inventory.csv'",
             "recovery_action": "discover_actual_resources",
         },
     )
     unresolved = checkpoint["task_state"]["unresolved_errors"]
     assert len(unresolved) == 1
-    assert unresolved[0]["arguments"] == {"path": "/workspace/inventory.csv"}
+    assert unresolved[0]["arguments"] == {"path": "/work/inventory.csv"}
 
     update_task_state(
         checkpoint,
-        tool_name="write_file",
-        arguments={"path": "inventory.csv", "content": "sku,qty"},
+        tool_name="terminal",
+        arguments={"command": "printf sku,qty > /work/inventory.csv"},
         success=True,
     )
     assert checkpoint["task_state"]["unresolved_errors"] == []
