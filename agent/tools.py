@@ -461,18 +461,6 @@ def copy_workspace_file(source: str, destination: str, overwrite: bool = False,
 
 
 
-# Web tools: public websites only, with bounded requests and responses.
-MAX_WEB_BYTES = 1_000_000
-MAX_WEB_TEXT_CHARS = 12_000
-WEB_TIMEOUT = (5, 15)
-MAX_REDIRECTS = 5
-
-WEB_USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) "
-    "AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
-)
-
-
 TOOL_DEFINITIONS = [
     {"type": "function", "function": {
         "name": "get_tool_result",
