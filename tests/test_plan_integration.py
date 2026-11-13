@@ -51,9 +51,14 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
             },
         ]
     }
+    # Each stage is executed and verified before the controller advances.
+    # The two intermediate no-tool responses let the deterministic acceptance
+    # checks complete step_1 and step_2 independently.
     tool_commands = [
         "printf '%s' 'VERIFIED' > first.txt",
+        "grep -F -- VERIFIED first.txt",
         "printf '%s' 'SECOND FILE' > second.txt",
+        "test -f second.txt",
     ]
 
     class FakeClient:
@@ -69,8 +74,8 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
                         "content": json.dumps(planned_steps, ensure_ascii=False),
                     }
                 }
-            if 2 <= self.calls <= 3:
-                command = tool_commands[self.calls - 2]
+            if self.calls in {2, 3, 5, 6}:
+                command = tool_commands[{2: 0, 3: 1, 5: 2, 6: 3}[self.calls]]
                 assert isinstance(tools, list)
                 assert any(
                     item.get("function", {}).get("name") == "terminal"
@@ -87,7 +92,14 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
                         }],
                     }
                 }
-            assert self.calls == 4
+            if self.calls == 4:
+                return {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Первый файл создан и проверен.",
+                    }
+                }
+            assert self.calls == 7
             return {
                 "message": {
                     "role": "assistant",
@@ -159,8 +171,9 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
         isinstance(step.get("verification"), str) and step["verification"].strip()
         for step in plan["steps"]
     )
-    # One plan request, one terminal call per stage, and one final response.
-    assert fake_client.calls == 4
+    # One plan request, two terminal calls and one stage boundary response
+    # per stage, followed by the final stage response.
+    assert fake_client.calls == 7
 
 
 def test_review_reconciliation_marks_scope_leaked_future_stage_complete(tmp_path):
