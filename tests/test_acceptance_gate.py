@@ -59,7 +59,7 @@ def test_model_cannot_complete_file_step_without_creating_file(tmp_path, monkeyp
     ))
     core.db.init_db()
     conversation = core.db.create_conversation("Acceptance gate test")
-    task = core.db.create_task(conversation["id"], "Создай отчёт research.md")
+    task = core.db.create_task(conversation["id"], "Разработай отчёт и создай файл research.md, затем подготовь итоговое сообщение")
 
     plan_response = {"steps": [{
         "id": "step_1",
@@ -67,6 +67,12 @@ def test_model_cannot_complete_file_step_without_creating_file(tmp_path, monkeyp
         "expected_result": "Файл research.md существует",
         "success_criteria": ["Файл создан"],
         "acceptance_check": {"type": "file_exists", "path": "reports/research.md"},
+    }, {
+        "id": "step_2",
+        "description": "Подготовить итоговое сообщение",
+        "expected_result": "Пользователь получил краткое описание отчёта",
+        "completion_mode": "response",
+        "success_criteria": ["Итоговое сообщение описывает созданный отчёт"],
     }]}
     complete_response = {
         "decision": "complete_step",
