@@ -1,5 +1,6 @@
 import json
 import base64
+from types import SimpleNamespace
 
 
 from agent import core, tools, attachments
