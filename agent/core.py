@@ -1010,6 +1010,35 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
             [*context_messages, {"role": "system", "content": json.dumps(TOOL_DEFINITIONS, ensure_ascii=False)}],
             model=main_model,
         )
+        # estimate_tokens sees text but not Ollama's native media payloads.
+        # Account for them separately so a long image/video history cannot
+        # consume the budget silently.
+        media_tokens = 0
+        for history_message in context_messages:
+            media = history_message.get("attachments", []) if isinstance(history_message, dict) else []
+            for attachment in media if isinstance(media, list) else []:
+                if not isinstance(attachment, dict):
+                    continue
+                kind = attachment.get("kind")
+                if kind == "image":
+                    image_path = Path(str(attachment.get("path") or ""))
+                    estimate = 4096
+                    try:
+                        from PIL import Image
+                        with Image.open(image_path) as image_file:
+                            estimate = max(
+                                1024,
+                                ((image_file.width + 27) // 28)
+                                * ((image_file.height + 27) // 28) * 2,
+                            )
+                    except Exception:
+                        estimate = max(4096, int(attachment.get("size_bytes") or 0) / 512)
+                    media_tokens += int(estimate)
+                elif kind == "video":
+                    media_tokens += 8 * 4096 + 3000
+                elif kind == "audio":
+                    media_tokens += max(1024, int(float(attachment.get("duration_seconds") or 30) * 100))
+        used += media_tokens
         reserve = max(1024, min(2048, int(limit * 0.20)))
         output_budget = max(0, limit - used - reserve)
         # Leave room for JSON/tool-message overhead and estimation error.
