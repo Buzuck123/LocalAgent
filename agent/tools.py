@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import time
 import shutil
 import subprocess
 import tempfile
