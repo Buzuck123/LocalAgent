@@ -38,6 +38,10 @@ from .planning import (
 
 logger = logging.getLogger(__name__)
 
+_CURRENT_MODEL_TASK_ID = contextvars.ContextVar("localagent_model_task_id", default=None)
+_CURRENT_MODEL_OVERRIDE = contextvars.ContextVar("localagent_model_override", default=None)
+_CURRENT_MODEL_CONTEXT = contextvars.ContextVar("localagent_model_context", default=None)
+
 SYSTEM_PROMPT = """You are LocalAgent, a capable local AI agent.
 
 LANGUAGE
@@ -1182,14 +1186,20 @@ def _parse_step_decision(content):
             else:
                 raise ValueError(f"Новый этап {index} в plan_update должен быть строкой или объектом")
 
+            dependencies = raw_step.get("dependencies", []) if isinstance(raw_step, dict) else []
+            if not isinstance(dependencies, list):
+                raise ValueError(f"Зависимости этапа {index} должны быть списком")
+            if any(not isinstance(dep, str) or not dep.strip() for dep in dependencies):
+                raise ValueError(f"Зависимости этапа {index} должны содержать непустые ID")
+            if len(dependencies) != len(set(dependencies)):
+                raise ValueError(f"Этап {index} содержит повторяющиеся зависимости")
+
             normalized = {
                 "id": temporary_id,
                 "description": description,
                 "expected_result": expected_result,
                 "success_criteria": success_criteria,
-                # The reviewer supplies remaining work, not controller metadata.
-                # Dependency ordering is rebuilt by the controller.
-                "dependencies": [],
+                "dependencies": list(dependencies),
             }
             if isinstance(raw_step, dict):
                 for key in ("task_prompt", "acceptance_check"):
