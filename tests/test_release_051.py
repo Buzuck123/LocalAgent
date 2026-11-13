@@ -5,13 +5,18 @@ from types import SimpleNamespace
 from agent import core, tools, attachments
 
 
-def test_all_tools_are_exposed_and_duplicate_sqlite_read_is_removed():
+def test_tool_registry_exposes_current_tools_and_excludes_retired_specialized_apis():
     names = {item["function"]["name"] for item in core.tools_for_task("Create a small text file")}
     assert names == {item["function"]["name"] for item in tools.TOOL_DEFINITIONS}
     assert "terminal" in names and "publish_file" in names
     assert "load_file_for_model" in names
-    assert not {"sqlite_query", "sqlite_read", "copy_file",
-                "run_python", "read_excel", "write_excel"} & names
+    retired = {
+        "sqlite_create_database", "sqlite_read", "sqlite_query", "sqlite_execute",
+        "sqlite_import_excel", "sqlite_export_excel", "excel_aggregate",
+        "read_excel", "write_excel", "read_word", "write_word",
+        "copy_file", "run_python",
+    }
+    assert not retired & names
 
 
 def test_terminal_description_exposes_persistent_linux_computer():
