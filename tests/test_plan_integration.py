@@ -107,7 +107,7 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
             elif tool_commands[1] not in executed:
                 command = tool_commands[1]
             elif tool_commands[2] not in executed:
-                return self._message("Первый файл создан и проверен.")
+                command = tool_commands[2]
             elif tool_commands[3] not in executed:
                 command = tool_commands[3]
             else:
