@@ -80,6 +80,7 @@ RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt \
 # LocalAgent web search CLI
 COPY pyproject.toml /tmp/localagent-web-search/pyproject.toml
 COPY web_search /tmp/localagent-web-search/web_search
+COPY localagent_http /tmp/localagent-web-search/localagent_http
 
 RUN python3 -m pip install --no-cache-dir /tmp/localagent-web-search \
     && rm -rf /tmp/localagent-web-search
