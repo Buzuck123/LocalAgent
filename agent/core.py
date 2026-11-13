@@ -3761,6 +3761,20 @@ class Agent:
                             parsed_content = json.loads(content)
                             if isinstance(parsed_content, dict):
                                 parsed_content["result_id"] = result_id
+                                if name == "ask_model" and isinstance(result, dict):
+                                    try:
+                                        limit_chars = max(0, int(result.get("_model_visible_limit_chars", 0)))
+                                    except (TypeError, ValueError):
+                                        limit_chars = 0
+                                    bounded_result = parsed_content.get("result")
+                                    if isinstance(bounded_result, dict):
+                                        answer_text = str(bounded_result.get("answer") or "")
+                                        if len(answer_text) > limit_chars:
+                                            bounded_result["answer"] = answer_text[:limit_chars].rstrip() + (
+                                                "\n\n[Ответ сокращён по бюджету контекста основного исполнителя. "
+                                                "Полный ответ сохранён в архиве; запроси его через get_tool_result.]"
+                                            )
+                                            bounded_result["answer_truncated"] = True
                                 content = json.dumps(parsed_content, ensure_ascii=False, default=str)
                         except (TypeError, json.JSONDecodeError):
                             content = json.dumps({"ok": False, "result_id": result_id, "content": content}, ensure_ascii=False)
