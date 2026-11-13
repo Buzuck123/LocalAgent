@@ -140,3 +140,43 @@ def test_load_file_for_model_delivers_sequential_paragraph_chunks(tmp_path, monk
     )
     assert second["start_char"] == first["next_start"]
     assert second["extracted_text"].startswith("B")
+
+
+
+def test_host_side_web_tools_are_not_exposed_or_executed():
+    names = {
+        item["function"]["name"]
+        for item in tools.TOOL_DEFINITIONS
+        if isinstance(item, dict) and isinstance(item.get("function"), dict)
+    }
+    assert "web_search" not in names
+    assert "open_browser_page" not in names
+
+    for retired_name in ("web_search", "open_browser_page"):
+        result = dispatch_tool(retired_name, {"query": "must not run"})
+        assert result["ok"] is False
+        assert "retired" in result["error"].lower()
+
+
+def test_system_prompt_describes_container_web_capabilities_and_permissions():
+    from agent.core import SYSTEM_PROMPT
+
+    assert "`web-search`" in SYSTEM_PROMPT
+    assert "Playwright" in SYSTEM_PROMPT
+    assert "localagent_http" in SYSTEM_PROMPT
+    assert "root INSIDE the container" in SYSTEM_PROMPT
+    assert "/host-workspace" in SYSTEM_PROMPT
+    assert "do not spend calls discovering or configuring the proxy" in SYSTEM_PROMPT
+
+
+def test_saved_checkpoint_refreshes_the_operational_system_prompt():
+    from agent.core import SYSTEM_PROMPT, _refresh_saved_system_prompt
+
+    messages = [
+        {"role": "system", "content": "obsolete host web-search instructions"},
+        {"role": "user", "content": "continue"},
+    ]
+    refreshed = _refresh_saved_system_prompt(messages)
+
+    assert refreshed[0]["content"] == SYSTEM_PROMPT
+    assert refreshed[1]["content"] == "continue"
