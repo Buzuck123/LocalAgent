@@ -196,13 +196,14 @@ def _resolve_workspace_or_work_file(path: str, task_id: str | None, label: str) 
     return target, display, namespace
 
 
-def load_file_for_model(path: str, start: int = 0, length: int = 8000, *,
+def load_file_for_model(path: str, start: int = 0, length: int = 80000, *,
                        conversation_id: str | None = None) -> dict:
     """Attach supported content from a readable container path to the next Ollama turn.
 
-    Text documents are extracted and delivered in sequential paragraph-aware
-    chunks. Images and audio use Ollama's supported multimodal input path;
-    video is represented by sampled frames and its audio track when present.
+    Text documents are extracted in sequential paragraph-aware chunks. PDF
+    pages with scans, images or vector graphics and embedded DOCX/XLSX images
+    are attached visually alongside extracted text. Audio and video are
+    normalized into the model's multimodal image/audio transport.
     """
     from .attachments import (
         ATTACHMENT_ROOT, ALLOWED_IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES,
@@ -303,7 +304,7 @@ def load_file_for_model(path: str, start: int = 0, length: int = 8000, *,
 
     if is_video:
         from .attachments import extract_video_frames
-        sampled = extract_video_frames(file_path, max_frames=8)
+        sampled = extract_video_frames(file_path, max_frames=60)
         return {
             "ok": True, "name": name, "path": display_path, "namespace": namespace,
             "kind": "video", "size_bytes": size,
@@ -339,11 +340,32 @@ def load_file_for_model(path: str, start: int = 0, length: int = 8000, *,
 
     raw = file_path.read_bytes()
     max_model_extract_chars = 1_000_000
+    from .attachments import MAX_MODEL_INPUT_TOKENS, MAX_MODEL_TEXT_CHARS
     extracted = _extract_document(name, mime, raw, max_chars=max_model_extract_chars)
     if not extracted.strip():
         raise ValueError("No readable text could be extracted from this file")
-
     total_chars = len(extracted)
+    visual_attachments = []
+    visual_warning = None
+    # A single tool call must never silently present a prefix as the complete
+    # document. 80k characters is a conservative proxy for roughly 32k tokens
+    # across Russian/English prose and code; context-aware checks run later.
+    if start == 0 and length >= MAX_MODEL_TEXT_CHARS and total_chars > MAX_MODEL_TEXT_CHARS:
+        return {
+            "ok": False,
+            "error": (
+                f"Файл «{name}» содержит {total_chars:,} символов и не помещается "
+                f"в лимит одного вложения (~{MAX_MODEL_INPUT_TOKENS:,} токенов, "
+                f"ориентир {min(length, MAX_MODEL_TEXT_CHARS):,} символов). "
+                "Содержимое не было обрезано и не передано частично. Повтори вызов с меньшим length и читай частями через next_start; "
+                "для выборочной программной обработки используй terminal."
+            ),
+            "name": name, "path": display_path, "size_bytes": size,
+            "total_chars": total_chars, "input_budget_tokens": MAX_MODEL_INPUT_TOKENS,
+        }
+    if start == 0:
+        from .attachments import _extract_document_visuals
+        visual_attachments, visual_warning = _extract_document_visuals(name, raw)
     chunk_start = min(start, total_chars)
     chunk_end = min(total_chars, chunk_start + length)
     if chunk_end < total_chars:
@@ -362,11 +384,16 @@ def load_file_for_model(path: str, start: int = 0, length: int = 8000, *,
     )
     if extraction_limit_reached:
         note += " Извлечение достигло защитного лимита 1 000 000 символов; содержимое после этого предела не включено. Для полного анализа используй terminal."
+    if visual_attachments:
+        note += f" Дополнительно передано визуальных страниц/изображений: {len(visual_attachments)}."
+    if visual_warning:
+        note += " " + visual_warning
     return {
         "ok": True, "name": name, "path": display_path, "namespace": namespace,
         "kind": "text", "size_bytes": size,
         "delivery": "extracted_text_in_model_context",
         "extracted_text": extracted[chunk_start:chunk_end],
+        "_model_attachments": visual_attachments,
         "start_char": chunk_start, "end_char": chunk_end, "total_chars": total_chars,
         "has_more": chunk_end < total_chars,
         "next_start": chunk_end if chunk_end < total_chars else None,
@@ -476,23 +503,24 @@ TOOL_DEFINITIONS = [
         "description": ("Ask an independent Gemma 4 model a question in a clean, isolated context. "
                         "The required prompt is the only text context. Optionally attach one file from the conversation's Linux container. "
                         "Supported files: text/code, PDF, DOCX, XLSX, PNG/JPEG/WebP/GIF, supported audio and video. "
-                        "Oversized answers are archived and can be retrieved with get_tool_result."),
+                        "The input budget is about 32k tokens. Oversized answers are archived and can be retrieved with get_tool_result."),
         "parameters": {"type": "object", "properties": {
             "prompt": {"type": "string", "minLength": 1},
             "file": {"type": "string"}},
             "required": ["prompt"], "additionalProperties": False}}},
     {"type": "function", "function": {
         "name": "load_file_for_model",
-        "description": ("Load a file from any readable absolute path inside this conversation's Linux container, including /workspace and /work. Text documents are delivered in sequential paragraph-aware chunks using start/length; if has_more is true, continue at next_start.  "
-                        "PNG/JPEG/WebP/GIF images use native Ollama image input. WAV/MP3/M4A/AAC/OGG/FLAC audio is normalized to mono 16 kHz WAV; direct audio input is currently supported only by Gemma 4 (maximum 30 seconds). "
-                        "Video is represented by sampled timestamped frames; its first 30 seconds of audio are attached only when the selected model supports Gemma 4 audio and an audio stream is present. PDF/DOCX/XLSX are converted to bounded extracted text because Ollama chat does not accept these binary formats natively. "
-                        "Use this when the model itself should inspect a file; use terminal and installed libraries for programmatic processing. "
-                        "Images and audio files are limited to 12 MB; documents to 50 MB; videos to 100 MB and 30 minutes. Video sampling requires ffmpeg; extracted document text is bounded to 1,000,000 characters. "
+        "description": ("Load a file from any readable absolute path in this conversation's Linux container, including /workspace, /work and /host-workspace. "
+                        "The default text budget is about 32k tokens (roughly 80k characters); oversized default loads fail clearly instead of silently truncating. Explicit start/length reads remain available for sequential chunks. "
+                        "Images use native image input. Audio is normalized to mono 16 kHz 32-bit float WAV and limited to 30 seconds; if the active model does not support audio, use ask_model (Gemma 4). "
+                        "Video is limited to 60 seconds and 100 MB, sampled at up to 1 frame/second as compact 320px JPEGs; its first 30 seconds of soundtrack are attached only for Gemma 4. "
+                        "PDF/DOCX/XLSX provide extracted text plus selected rendered PDF pages or embedded Office images when available; use terminal for full programmatic processing. "
+                        "Image/audio files are limited to 12 MB; documents to 50 MB. Video sampling and audio normalization require ffmpeg. "
                         "The path is resolved inside the container, never on the host."),
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
             "start": {"type": "integer", "minimum": 0, "default": 0},
-            "length": {"type": "integer", "minimum": 1, "default": 8000}},
+            "length": {"type": "integer", "minimum": 1, "default": 80000}},
             "required": ["path"], "additionalProperties": False}}},
 
 ]
@@ -607,7 +635,7 @@ def _dispatch_tool_impl(name: str, arguments: dict[str, Any], *, task_id: str | 
         return publish_file_from_sandbox(conversation_id, arguments.get("source_path"))
     if name == "load_file_for_model":
         return load_file_for_model(
-            arguments.get("path"), arguments.get("start", 0), arguments.get("length", 8000),
+            arguments.get("path"), arguments.get("start", 0), arguments.get("length", 80000),
             conversation_id=conversation_id,
         )
     raise ValueError(f"Unknown tool: {name}")

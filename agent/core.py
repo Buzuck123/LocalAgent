@@ -634,9 +634,49 @@ def _guard_loaded_file_context(result: dict[str, Any], messages: list[dict[str, 
         safety_margin = max(512, int(limit * 0.05))
         tool_schema = {"role": "system", "content": json.dumps(TOOL_DEFINITIONS, ensure_ascii=False, default=str)}
         base_tokens = estimate_tokens([*messages, tool_schema], model=model)
+        from .attachments import MAX_MODEL_INPUT_TOKENS
+        # Text estimation does not see Ollama's images[] payloads. Count media
+        # already present in the conversation and prior load_file_for_model receipts.
+        prior_media_tokens = 0
+        prior_file_text_tokens = 0
+        for history_message in messages:
+            if not isinstance(history_message, dict):
+                continue
+            if history_message.get("role") == "tool" and history_message.get("tool_name") == "load_file_for_model":
+                try:
+                    receipt = json.loads(history_message.get("content") or "{}")
+                    loaded_result = receipt.get("result", {}) if isinstance(receipt, dict) else {}
+                    if isinstance(loaded_result, dict) and loaded_result.get("kind") == "text":
+                        prior_file_text_tokens += estimate_tokens(
+                            [{"role": "user", "content": str(loaded_result.get("extracted_text") or "")}],
+                            model=model,
+                        )
+                except Exception:
+                    pass
+            history_attachments = history_message.get("attachments", [])
+            for history_attachment in history_attachments if isinstance(history_attachments, list) else []:
+                if not isinstance(history_attachment, dict):
+                    continue
+                history_kind = history_attachment.get("kind")
+                if history_kind == "image":
+                    history_path = Path(str(history_attachment.get("path") or ""))
+                    try:
+                        from PIL import Image
+                        with Image.open(history_path) as image_file:
+                            prior_media_tokens += max(1024, ((image_file.width + 27) // 28) * ((image_file.height + 27) // 28) * 2)
+                    except Exception:
+                        prior_media_tokens += 1120
+                elif history_kind == "audio":
+                    prior_media_tokens += max(1024, int(float(history_attachment.get("duration_seconds") or 30) * 100))
+                elif history_kind == "video":
+                    prior_media_tokens += int(history_attachment.get("frame_count") or 60) * 300 + 3000
+        base_tokens += prior_media_tokens
         kind = result.get("kind")
         if kind == "text":
             loaded_tokens = estimate_tokens([{"role": "user", "content": str(result.get("extracted_text") or "")}], model=model)
+            visuals = result.get("_model_attachments", [])
+            if isinstance(visuals, list):
+                loaded_tokens += sum(1120 for item in visuals if isinstance(item, dict) and item.get("kind") == "image")
         elif kind == "image":
             attachment = result.get("_model_attachment") if isinstance(result.get("_model_attachment"), dict) else {}
             image_path = Path(str(attachment.get("path") or ""))
@@ -654,9 +694,24 @@ def _guard_loaded_file_context(result: dict[str, Any], messages: list[dict[str, 
         elif kind == "audio":
             loaded_tokens = max(1024, int(float(result.get("duration_seconds") or 0) * 100))
         elif kind == "video":
-            loaded_tokens = max(4096, int(result.get("frame_count") or 1) * 4096 + 3000)
+            loaded_tokens = max(4096, int(result.get("frame_count") or 1) * 300 + 3000)
         else:
             loaded_tokens = estimate_tokens([{"role": "user", "content": json.dumps(result, ensure_ascii=False, default=str)}], model=model)
+        if prior_file_text_tokens + prior_media_tokens + loaded_tokens > MAX_MODEL_INPUT_TOKENS:
+            return {
+                "ok": False,
+                "error": (
+                    f"Новое вложение требует примерно {loaded_tokens:,} токенов; ранее загруженные файлы/медиа требуют около {prior_file_text_tokens + prior_media_tokens:,}. "
+                    f"Суммарно это превышает бюджет входа файлов в {MAX_MODEL_INPUT_TOKENS:,} токенов. "
+                    + (
+                        "Файл не был передан частично; уменьши length и читай текст последовательными фрагментами через next_start."
+                        if kind == "text" else
+                        "Файл не был передан; уменьши визуальный/мультимодальный объём или раздели материалы на несколько запросов."
+                    )
+                ),
+                "input_budget_tokens": MAX_MODEL_INPUT_TOKENS,
+                "estimated_input_tokens": loaded_tokens,
+            }
         projected = base_tokens + loaded_tokens + reserve
         # Estimates for multimodal tokens are approximate. Reject only a clear
         # overrun; near-boundary loads are attempted and handled by the real
@@ -979,15 +1034,69 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
             "kind": loaded.get("kind"),
             "name": loaded.get("name"),
             "size_bytes": loaded.get("size_bytes"),
+            "duration_seconds": loaded.get("duration_seconds"),
         }
         attachment = loaded.get("_model_attachment")
         if isinstance(attachment, dict):
             attachments.append(attachment)
-        elif loaded.get("kind") == "text":
+        extra_attachments = loaded.get("_model_attachments")
+        if isinstance(extra_attachments, list):
+            attachments.extend(item for item in extra_attachments if isinstance(item, dict))
+        if loaded.get("kind") == "text":
             user_content += "\n\n--- Содержимое файла: " + str(loaded.get("name") or file_path) + " ---\n"
             user_content += str(loaded.get("extracted_text") or "")
-        else:
+        elif not attachments:
             raise ValueError("Не удалось подготовить содержимое файла для Gemma 4")
+
+    # Keep ask_model input bounded independently of the parent agent's context.
+    # Text tokenization is model-specific; estimate_tokens uses the selected
+    # Gemma tokenizer approximation, while media is budgeted conservatively.
+    try:
+        input_tokens = estimate_tokens(
+            [{"role": "user", "content": user_content}], model=ASK_MODEL_NAME
+        )
+        for attachment in attachments:
+            kind = attachment.get("kind")
+            if kind == "image":
+                try:
+                    from PIL import Image
+                    with Image.open(Path(str(attachment.get("path") or ""))) as image_file:
+                        input_tokens += max(
+                            1024,
+                            ((image_file.width + 27) // 28) * ((image_file.height + 27) // 28) * 2,
+                        )
+                except Exception:
+                    input_tokens += 1120
+            elif kind == "audio":
+                input_tokens += max(1024, int(float(file_info.get("duration_seconds") or 30) * 100))
+            elif kind == "video":
+                input_tokens += 60 * 300 + 3000
+        if input_tokens > 32000:
+            return {
+                "ok": False,
+                "error": (
+                    f"Вложения и запрос требуют примерно {input_tokens:,} токенов, "
+                    "что превышает бюджет входа ask_model в 32 000 токенов. "
+                    "Файл не был передан частично; сократи запрос/вложения или раздели материал."
+                ),
+                "file": file_info,
+                "estimated_input_tokens": input_tokens,
+                "input_budget_tokens": 32000,
+            }
+    except Exception:
+        input_tokens = (len(user_content) + 1) // 2
+        if input_tokens > 32000:
+            return {
+                "ok": False,
+                "error": (
+                    f"Оценка объёма запроса составляет около {input_tokens:,} токенов "
+                    "и превышает бюджет входа ask_model в 32 000 токенов. "
+                    "Содержимое не было передано частично."
+                ),
+                "file": file_info,
+                "estimated_input_tokens": input_tokens,
+                "input_budget_tokens": 32000,
+            }
 
     isolated_messages = [
         {
@@ -1035,7 +1144,7 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
                         estimate = max(4096, int(attachment.get("size_bytes") or 0) / 512)
                     media_tokens += int(estimate)
                 elif kind == "video":
-                    media_tokens += 8 * 4096 + 3000
+                    media_tokens += 60 * 300 + 3000
                 elif kind == "audio":
                     media_tokens += max(1024, int(float(attachment.get("duration_seconds") or 30) * 100))
         used += media_tokens
@@ -1642,26 +1751,36 @@ def _build_tool_messages(tool_name: str, content: str) -> list[dict]:
                 "use get_tool_result with this result_id and start/length to retrieve more.]"
             )
         return [message]
-    attachment = result.pop("_model_attachment", None) if isinstance(result, dict) else None
-    if isinstance(attachment, dict) and attachment.get("kind") in {"image", "video", "audio"}:
+    model_attachments = []
+    if isinstance(result, dict):
+        single_attachment = result.pop("_model_attachment", None)
+        extra_attachments = result.pop("_model_attachments", [])
+        if isinstance(single_attachment, dict):
+            model_attachments.append(single_attachment)
+        if isinstance(extra_attachments, list):
+            model_attachments.extend(item for item in extra_attachments if isinstance(item, dict))
+    model_attachments = [
+        item for item in model_attachments
+        if item.get("kind") in {"image", "video", "audio"}
+    ]
+    if model_attachments:
         message["content"] = json.dumps(payload, ensure_ascii=False, default=str)
-        kind = attachment.get("kind")
+        kinds = {item.get("kind") for item in model_attachments}
         media_note = (
-            "Video is represented by sampled frames; its first 30 seconds of soundtrack are attached only when the selected model supports Gemma 4 audio and an audio stream is present."
-            if kind == "video" else
-            "Audio is attached only when the selected model supports the Gemma 4 audio input path."
-            if kind == "audio" else
-            "The image is attached through the model's native vision input."
+            "The document includes rendered visual pages or embedded images, attached in addition to its extracted text."
+            if kinds == {"image"} else
+            "The file includes media attachments; images use native vision input, video is represented by sampled frames, and audio is sent only when supported by the selected model."
         )
+        names = ", ".join(str(item.get("name") or "media file") for item in model_attachments[:12])
         return [
             message,
             {
                 "role": "user",
                 "content": (
-                    f"File {attachment.get('name', 'media file')} has been supplied to the model. "
+                    f"Media extracted from {names} has been supplied alongside the tool result. "
                     f"{media_note} Продолжай выполнение исходного запроса пользователя."
                 ),
-                "attachments": [attachment],
+                "attachments": model_attachments,
             },
         ]
     return [message]
@@ -2454,9 +2573,26 @@ class OllamaClient:
             image_count = sum(item.get("kind") == "image" for item in media_items)
             video_count = sum(item.get("kind") == "video" for item in media_items)
             audio_count = sum(item.get("kind") == "audio" for item in media_items) if audio_supported else 0
-            if image_count + audio_count + video_count * 4 > 12:
-                raise ValueError("В одном сообщении можно передать не более 12 изображений/кадров; для нескольких видео сократите число файлов.")
-            frames_per_video = min(8, max(3, (12 - image_count - audio_count - video_count) // video_count)) if video_count else 0
+            # Reserve roughly 8k tokens for text/instructions and use the
+            # remaining 24k-token media budget for images, audio and sampled
+            # video frames. Frames are normalized to 320px JPEGs (~300 tokens
+            # each as a conservative planning estimate).
+            media_budget_tokens = 24000
+            fixed_media_tokens = image_count * 1120 + audio_count * 3000 + (video_count * 3000 if audio_supported else 0)
+            if fixed_media_tokens >= media_budget_tokens and video_count:
+                raise ValueError(
+                    "Изображения и аудио уже исчерпали мультимодальный бюджет; "
+                    "сократите число вложений или отправьте видео отдельно."
+                )
+            frames_per_video = (
+                min(60, max(1, (media_budget_tokens - fixed_media_tokens) // (300 * video_count)))
+                if video_count else 0
+            )
+            if image_count * 1120 + audio_count * 3000 + (video_count * 3000 if audio_supported else 0) + video_count * frames_per_video * 300 > media_budget_tokens:
+                raise ValueError(
+                    "Суммарные мультимодальные вложения превышают бюджет 32k токенов. "
+                    "Сократите количество файлов или разделите их на несколько сообщений."
+                )
             for attachment in attachments if isinstance(attachments, list) else []:
                 if not isinstance(attachment, dict) or attachment.get("kind") not in {"image", "video", "audio"}:
                     continue
@@ -2517,7 +2653,7 @@ class OllamaClient:
                     else:
                         reason = (
                             f"Video soundtrack was not attached: selected model {selected_model!r} "
-                            "does not support the configured Gemma 4 audio input. Sampled video frames are attached."
+                            "does not support the configured Gemma 4 audio input. Sampled video frames are attached, but soundtrack content is unavailable; if the task depends on audio, call ask_model with the original file."
                         )
                         _mark_loaded_media_not_attached(model_messages, "video", reason)
                         frame_notes.append(f"{attachment.get('name', path.name)}: soundtrack not attached for this model")
@@ -3643,10 +3779,23 @@ class Agent:
                             content = json.dumps(failure, ensure_ascii=False)
                         else:
                             if name == "load_file_for_model" and isinstance(result, dict):
-                                result = _guard_loaded_file_context(
-                                    result, messages, checkpoint,
-                                    str(checkpoint.get("model") or ""),
-                                )
+                                selected_model = str(checkpoint.get("model") or "").lower()
+                                if result.get("ok") is True and result.get("kind") == "audio" and "gemma" not in selected_model:
+                                    result = {
+                                        "ok": False,
+                                        "error": (
+                                            f"Текущая модель ({checkpoint.get('model') or 'неизвестна'}) "
+                                            "не поддерживает прямой анализ аудио. Файл не был передан этой модели. "
+                                            "Для анализа аудио используй ask_model: он отправит файл в Gemma 4."
+                                        ),
+                                        "suggested_tool": "ask_model",
+                                        "file": {key: result.get(key) for key in ("name", "path", "size_bytes", "duration_seconds")},
+                                    }
+                                else:
+                                    result = _guard_loaded_file_context(
+                                        result, messages, checkpoint,
+                                        str(checkpoint.get("model") or ""),
+                                    )
                             _update_pending_terminal_operations(state, name, result)
                             if not _tool_result_is_successful(result):
                                 try:

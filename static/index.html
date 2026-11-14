@@ -322,7 +322,7 @@ $('attachment-input').onchange=async e=>{
     if(selectedAttachments.length+files.length>5){alert('Можно приложить не более 5 файлов');return}
     try{
         for(const file of files){
-            if(file.size>12*1024*1024){throw Error('Файл '+file.name+' превышает 12 МБ')}
+            const extVideo=/\.(mp4|m4v|mov|mkv|avi|webm|flv|wmv)$/i.test(file.name);const extAudio=/\.(wav|mp3|m4a|aac|ogg|opus|flac|wma)$/i.test(file.name);const extImage=/\.(png|jpe?g|webp|gif)$/i.test(file.name);const isVideo=(file.type||'').startsWith('video/')||extVideo;const isSmallMedia=isVideo||(file.type||'').startsWith('audio/')||(file.type||'').startsWith('image/')||extAudio||extImage;const limit=isVideo?100*1024*1024:isSmallMedia?12*1024*1024:50*1024*1024;if(file.size>limit){throw Error('Файл '+file.name+' превышает '+(isVideo?'100 МБ':isSmallMedia?'12 МБ':'50 МБ'))}
             const bytes=new Uint8Array(await file.arrayBuffer());let binary='';
             for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
             selectedAttachments.push({name:file.name,mime_type:file.type||'application/octet-stream',data_base64:btoa(binary)});

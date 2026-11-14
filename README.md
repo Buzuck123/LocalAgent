@@ -264,3 +264,17 @@ These values control when LocalAgent returns control to the LLM; they are not th
 - Ordinary stages do not require a fresh tool call solely to become completed. A declared machine-checkable `acceptance_check` remains a hard gate.
 - Context budgeting counts the active tool schema and reserves output tokens. Around 50%, only exact event-ID duplicates are removed from the working context; around 60%, the controller records a deterministic growth forecast; around 70%, the LLM compacts a factual summary. Original messages and tool results remain archived.
 - `load_file_for_model` estimates text and multimodal context cost before attaching content. If Ollama still reports context overflow, the failed payload is removed from the next model request and a clear retry/splitting instruction is returned.
+
+
+## Model file input
+
+load_file_for_model and ask_model share the same container-file preparation path. The default text allowance is approximately 32k input tokens (a conservative 80,000-character ceiling); a default load refuses oversized text instead of silently returning a prefix. Explicit start/length reads remain available for deliberate sequential inspection. The context guard also counts previously attached media and reserves space for the model response.
+
+- Images: PNG, JPEG, WebP and GIF; 12 MB per file.
+- Audio: mono 16 kHz, 32-bit float WAV after FFmpeg normalization; maximum 30 seconds and 12 MB source file.
+- Video: maximum 60 seconds and 100 MB source file; sampled at up to 1 frame/second, no more than 60 frames, normalized to compact 320 px JPEG frames. For Gemma 4, up to 30 seconds of soundtrack is separately normalized as audio.
+- Documents: up to 50 MB. PDF text is extracted and pages containing scans, embedded images or substantial vector graphics are rendered as visual attachments. DOCX/XLSX text is extracted and embedded images are attached when available. Visual extraction is capped at 12 images per document; all text and visuals share the 32k-token input budget. Native XLSX chart objects are currently reported but not rasterized, so use terminal/LibreOffice for their visual rendering.
+
+Browser uploads are stored unchanged under workspace/work and are exposed inside the conversation container as /host-workspace/<filename>. The user message tells the agent to load each file with load_file_for_model; the original prompt is included only once, and the file is not also duplicated as a direct attachment. Unsupported formats and over-budget files are reported explicitly.
+
+Ollama adapter compatibility is intentionally not probed by this implementation; media transport is based on the configured model-family assumptions and should be validated separately.

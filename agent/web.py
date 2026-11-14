@@ -9,7 +9,7 @@ from . import db
 from .config import settings, PROJECT_ROOT
 from .core import agent, initialize
 from .version import VERSION
-from .attachments import save_attachments, model_message_content, cleanup_conversation_attachments
+from .attachments import save_uploads_to_host_workspace, cleanup_conversation_attachments
 from .sandbox_manager import sandbox_manager, SandboxError
 
 app = FastAPI(title="LocalAgent", version=VERSION)
@@ -25,7 +25,7 @@ class ConversationRename(BaseModel):
 class AttachmentInput(BaseModel):
     name: str = Field(min_length=1, max_length=180)
     mime_type: str = Field(default="application/octet-stream", max_length=120)
-    data_base64: str = Field(min_length=1, max_length=16_800_000)
+    data_base64: str = Field(min_length=1, max_length=140_000_000)
 
 class MessageCreate(BaseModel):
     content: str = Field(default="", max_length=20000)
@@ -140,13 +140,21 @@ def send_message(cid: str, payload: MessageCreate):
     if not db.get_conversation(cid):
         raise HTTPException(404, "Conversation not found")
     try:
-        attachments = save_attachments([item.model_dump() for item in payload.attachments])
+        uploads = save_uploads_to_host_workspace([item.model_dump() for item in payload.attachments])
         content = payload.content.strip()
-        if not content and not attachments:
+        if not content and not uploads:
             raise ValueError("Напишите сообщение или прикрепите файл")
         display_content = content or "Проанализируй прикреплённые материалы."
-        display_content += "".join(f"\n[Вложение: {item['name']}]" for item in attachments)
-        task = agent.submit(cid, display_content, reasoning=payload.reasoning, attachments=attachments)
+        for item in uploads:
+            display_content += (
+                f"\n\n[Файл пользователя: {item['name']}; размер: {item['size_bytes']} байт. "
+                f"Оригинал сохранён в workspace/work и доступен в контейнере по пути "
+                f"{item['container_path']}. Перед анализом вызови load_file_for_model "
+                "для этого пути. Текст запроса пользователя уже передан выше — не добавляй его повторно.]"
+            )
+        # The file itself is loaded through load_file_for_model on the agent's
+        # next turn; do not also attach a second copy to the same Ollama request.
+        task = agent.submit(cid, display_content, reasoning=payload.reasoning)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return task

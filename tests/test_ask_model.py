@@ -126,3 +126,26 @@ def test_ask_model_is_advertised_with_only_prompt_and_optional_file():
     )
     assert schema["parameters"]["required"] == ["prompt"]
     assert set(schema["parameters"]["properties"]) == {"prompt", "file"}
+
+
+def test_ask_model_rejects_input_above_shared_32k_budget(monkeypatch):
+    monkeypatch.setattr(core, "estimate_tokens", lambda messages, model=None: 33001)
+    monkeypatch.setattr(
+        tools, "load_file_for_model",
+        lambda path, *, conversation_id: {
+            "ok": True, "kind": "text", "name": "notes.txt",
+            "extracted_text": "some text", "size_bytes": 9,
+        },
+    )
+    called = []
+    monkeypatch.setattr(core, "_client_chat", lambda *args, **kwargs: called.append(True))
+    result = core._ask_model_tool(
+        {"prompt": "Review", "file": "/tmp/notes.txt"},
+        conversation_id="conversation-budget",
+        context_messages=[],
+        main_model="qwen3.5:9b",
+        context_limit=32768,
+    )
+    assert result["ok"] is False
+    assert result["input_budget_tokens"] == 32000
+    assert not called

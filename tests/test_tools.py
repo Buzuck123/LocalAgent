@@ -180,3 +180,24 @@ def test_saved_checkpoint_refreshes_the_operational_system_prompt():
 
     assert refreshed[0]["content"] == SYSTEM_PROMPT
     assert refreshed[1]["content"] == "continue"
+
+
+def test_load_file_for_model_rejects_oversized_default_text_without_truncating(tmp_path, monkeypatch):
+    from agent import attachments, sandbox_manager as sandbox_manager_module
+
+    monkeypatch.setattr(attachments, "ATTACHMENT_ROOT", tmp_path / "attachments")
+    text = "я" * 80001
+
+    def fake_download(conversation_id, source_path, target_path, *, max_bytes=None):
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(text, encoding="utf-8")
+        return target_path
+
+    monkeypatch.setattr(
+        sandbox_manager_module, "sandbox_manager",
+        SimpleNamespace(download_file=fake_download),
+    )
+    result = tools.load_file_for_model("/tmp/large.txt", conversation_id="conversation-large")
+    assert result["ok"] is False
+    assert result["total_chars"] == 80001
+    assert "не было обрезано" in result["error"]

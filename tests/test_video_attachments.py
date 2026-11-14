@@ -29,7 +29,7 @@ def test_extract_video_frames_samples_video_and_caches(tmp_path, monkeypatch):
     assert result["frame_count"] == 4
     assert result["duration_seconds"] == 10.0
     assert result["audio_included"] is False
-    assert [item["timestamp_seconds"] for item in result["frames"]] == [0.0, 0.83, 1.67, 2.5]
+    assert [item["timestamp_seconds"] for item in result["frames"]] == [0.0, 1.0, 2.0, 3.0]
     assert len(calls) == 2
 
     second = attachments.extract_video_frames(video)
@@ -59,7 +59,7 @@ def test_uploaded_video_is_stored_as_video_attachment(tmp_path, monkeypatch):
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    monkeypatch.setattr(attachments, "settings", SimpleNamespace(database_path=data_dir / "agent.sqlite3"))
+    monkeypatch.setattr(attachments, "settings", SimpleNamespace(database_path=data_dir / "agent.sqlite3", workspace_path=data_dir / "workspace"))
     monkeypatch.setattr(attachments, "ATTACHMENT_ROOT", data_dir / "attachments")
     monkeypatch.setattr(attachments.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
@@ -75,8 +75,11 @@ def test_uploaded_video_is_stored_as_video_attachment(tmp_path, monkeypatch):
     assert saved[0]["kind"] == "video"
     assert Path(saved[0]["path"]).is_file()
     text = attachments.model_message_content("Посмотри клип", saved)
+    assert text.count("Посмотри клип") == 1
     assert "Video attached" in text
     assert "audio is handled separately" in text
+    assert saved[0]["host_workspace_path"].startswith("/host-workspace/")
+    assert Path(attachments.settings.workspace_path / "work" / Path(saved[0]["host_workspace_path"]).name).is_file()
 
 
 def test_ollama_chat_sends_video_frames_as_ordered_images(tmp_path, monkeypatch):
@@ -122,3 +125,25 @@ def test_ollama_chat_sends_video_frames_as_ordered_images(tmp_path, monkeypatch)
     assert model_message["images"] == [base64.b64encode(b"jpeg-frame").decode("ascii")]
     assert "1.50s" in model_message["content"]
     assert "soundtrack is included only when the selected model supports Gemma 4 audio and an audio stream was extracted" in model_message["content"]
+
+
+def test_web_upload_saves_original_in_host_workspace_without_preprocessing(tmp_path, monkeypatch):
+    import base64
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(
+        attachments, "settings",
+        SimpleNamespace(database_path=data_dir / "agent.sqlite3", workspace_path=workspace),
+    )
+    raw = b"original bytes"
+    saved = attachments.save_uploads_to_host_workspace([{
+        "name": "source.txt",
+        "mime_type": "text/plain",
+        "data_base64": base64.b64encode(raw).decode("ascii"),
+    }])
+    assert len(saved) == 1
+    assert saved[0]["container_path"].startswith("/host-workspace/")
+    target = workspace / "work" / Path(saved[0]["container_path"]).name
+    assert target.read_bytes() == raw
