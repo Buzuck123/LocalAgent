@@ -597,7 +597,7 @@ def _is_safe_terminal_recovery_call(tool_name, arguments, conversation_id):
     if not command.strip():
         # Empty terminal calls only poll; repeating a poll is safe and necessary.
         return True
-    if command in {"\\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}:
+    if command in {"\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}:
         from .sandbox_manager import sandbox_manager
         return sandbox_manager.get_active_operation(conversation_id) is not None
     return False
