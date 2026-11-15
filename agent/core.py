@@ -599,7 +599,11 @@ def _active_terminal_operation_blocker(conversation_id, *, terminal_command=None
     operation_id = str(active.get("operation_id") or "неизвестен")
     state = str(active.get("state") or "running")
     interrupt = terminal_command in {"\\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}
-    if terminal_command is not None and str(terminal_command).strip() and not interrupt and state != "waiting_input":
+    if terminal_command is not None:
+        # An empty command polls; Ctrl+C interrupts; ordinary text is input only
+        # after the runtime explicitly reports that the process awaits input.
+        if not str(terminal_command).strip() or interrupt or state == "waiting_input":
+            return None
         error = (
             f"Новая shell-команда не запущена: операция {operation_id} всё ещё выполняется "
             f"(состояние: {state}) и не ожидает ввода. Непустой command был бы отправлен "
@@ -3889,7 +3893,7 @@ class Agent:
                             # their historical automatic transition behavior.
                             acceptance_proof = None
                             active_step = current_step(plan)
-                            if active_step is not None and name != "get_tool_result":
+                            if active_step is not None and name != "get_tool_result" and not controller_blocked:
                                 acceptance_check = active_step.get("acceptance_check")
                                 if acceptance_check is not None:
                                     acceptance_proof = verify_acceptance_check(
