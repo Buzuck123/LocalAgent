@@ -236,7 +236,7 @@ def test_reset_terminal_session_recreates_only_shell_after_unknown_operation():
     manager._runtimes = {}
     manager._find_persisted_active_operation_details = lambda conversation_id: None
     runtime = Runtime()
-    manager.get_runtime = lambda conversation_id: runtime
+    manager.get_runtime = lambda conversation_id, **kwargs: runtime
 
     result = manager.reset_terminal_session(
         "conversation-1",
@@ -281,7 +281,7 @@ def test_reset_terminal_session_does_not_clear_active_state_if_new_shell_fails()
     manager = _manager_with_active_operation("stale-operation")
     manager._new_sessions = set()
     manager._runtimes = {}
-    manager.get_runtime = lambda conversation_id: Runtime()
+    manager.get_runtime = lambda conversation_id, **kwargs: Runtime()
 
     with pytest.raises(RuntimeError, match="не подтвердил создание новой Bash-сессии"):
         manager.reset_terminal_session(
