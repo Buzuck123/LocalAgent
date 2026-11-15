@@ -592,8 +592,15 @@ _TERMINAL_CONTROL_TOOLS = {
 
 
 def _is_safe_terminal_recovery_call(tool_name, arguments, conversation_id):
-    """Polling and interrupting an active terminal operation must survive repeat guards."""
-    if tool_name != "terminal" or not isinstance(arguments, dict):
+    """Polling, interrupting and recovering a stuck terminal must survive repeat guards."""
+    if not isinstance(arguments, dict):
+        return False
+    if tool_name == "reset_terminal_session":
+        if arguments.get("confirm_reset") is not True:
+            return False
+        from .sandbox_manager import sandbox_manager
+        return sandbox_manager.get_active_operation(conversation_id) is not None
+    if tool_name != "terminal":
         return False
     command = str(arguments.get("command") or "")
     if not command.strip():
