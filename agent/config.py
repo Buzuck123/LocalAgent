@@ -20,7 +20,11 @@ class Settings:
     # Ollama tag does not expose PARAMETER num_ctx. Never sent to Ollama.
     num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "65536"))
     keep_alive: str = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
+    # Legacy setting retained for compatibility; chat uses the explicit inactivity timeouts below.
     request_timeout: int = int(os.getenv("OLLAMA_TIMEOUT", "300"))
+    ollama_connect_timeout: float = float(os.getenv("OLLAMA_CONNECT_TIMEOUT", "10"))
+    ollama_first_token_timeout: float = float(os.getenv("OLLAMA_FIRST_TOKEN_TIMEOUT", "600"))
+    ollama_stream_idle_timeout: float = float(os.getenv("OLLAMA_STREAM_IDLE_TIMEOUT", "300"))
     database_path: Path = Path(os.getenv("DATABASE_PATH", str(PROJECT_ROOT / "data" / "agent.sqlite3")))
     workspace_path: Path = Path(os.getenv("WORKSPACE_PATH", str(PROJECT_ROOT / "workspace"))).resolve()
     host: str = os.getenv("WEB_HOST", "127.0.0.1")
