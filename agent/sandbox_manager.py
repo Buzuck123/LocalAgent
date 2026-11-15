@@ -410,18 +410,19 @@ print(json.dumps(result))
         if syntax.returncode:
             return {"state": "failed", "exit_code": 2, "stdout": syntax.stdout or "",
                     "stderr": (syntax.stderr or "Invalid Bash syntax")[:4000], "syntax_error": True}
-        self.ensure_session_idle(conversation_id)
-        runtime = self.get_runtime(conversation_id)
-        self._ensure_network_proxy(runtime, command)
-        starter = getattr(runtime, "start_operation", None)
-        if not callable(starter):
-            raise SandboxError("Подключённый SandboxRuntime не поддерживает фоновые операции SWE-ReX.")
-        result = starter(command, session="main", timeout=timeout, idempotency_key=idempotency_key)
-        operation_id = str(result.get("operation_id") or "")
-        if not operation_id:
-            raise SandboxError("SWE-ReX не вернул operation_id для фоновой операции.")
-        with self._guard:
-            self._active_operations[conversation_id] = {"operation_id": operation_id, "session": "main"}
+        with self._lock_for(conversation_id):
+            self.ensure_session_idle(conversation_id)
+            runtime = self.get_runtime(conversation_id)
+            self._ensure_network_proxy(runtime, command)
+            starter = getattr(runtime, "start_operation", None)
+            if not callable(starter):
+                raise SandboxError("Подключённый SandboxRuntime не поддерживает фоновые операции SWE-ReX.")
+            result = starter(command, session="main", timeout=timeout, idempotency_key=idempotency_key)
+            operation_id = str(result.get("operation_id") or "")
+            if not operation_id:
+                raise SandboxError("SWE-ReX не вернул operation_id для фоновой операции.")
+            with self._guard:
+                self._active_operations[conversation_id] = {"operation_id": operation_id, "session": "main"}
         return {"operation_id": operation_id, "session": "main", "state": result.get("state", "running"),
                 "created_at": result.get("created_at"), "command": command, "background": True}
 
