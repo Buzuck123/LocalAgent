@@ -596,7 +596,6 @@ def _active_terminal_operation_blocker(conversation_id, *, terminal_command=None
     active = sandbox_manager.get_active_operation(conversation_id)
     if not isinstance(active, dict):
         return None
-    operation_id = str(active.get("operation_id") or "неизвестен")
     state = str(active.get("state") or "running")
     interrupt = terminal_command in {"\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}
     if terminal_command is not None:
@@ -605,7 +604,7 @@ def _active_terminal_operation_blocker(conversation_id, *, terminal_command=None
         if not str(terminal_command).strip() or interrupt or state == "waiting_input":
             return None
         error = (
-            f"Новая shell-команда не запущена: операция {operation_id} всё ещё выполняется "
+            "Новая shell-команда не запущена: фоновая операция всё ещё выполняется "
             f"(состояние: {state}) и не ожидает ввода. Непустой command был бы отправлен "
             "в stdin текущего процесса, а не запущен как новая команда. Вызови terminal "
             "с пустой command для ожидания или отправь CTRL+C для прерывания. "
@@ -614,7 +613,7 @@ def _active_terminal_operation_blocker(conversation_id, *, terminal_command=None
     else:
         error = (
             f"Инструмент не запущен: Bash-сессия занята фоновой терминальной операцией "
-            f"{operation_id} (состояние: {state}). Пока она не завершена, другие инструменты "
+            f"(состояние: {state}). Пока она не завершена, другие инструменты "
             "и команды запускать нельзя. Сначала вызови terminal с пустой command, чтобы "
             "дождаться результата; если процесс требует ввода — передай его через terminal, "
             "а если его нужно остановить — отправь CTRL+C. После завершения terminal можно продолжить."
@@ -623,7 +622,7 @@ def _active_terminal_operation_blocker(conversation_id, *, terminal_command=None
         "ok": False,
         "blocked_by_active_terminal_operation": True,
         "error": error,
-        "active_operation": {"operation_id": operation_id, "state": state},
+        "active_operation": {"state": state},
         "required_tool": "terminal",
         "required_action": "wait_or_control_active_operation",
     }
