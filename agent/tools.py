@@ -503,7 +503,9 @@ TOOL_DEFINITIONS = [
         "description": ("Ask an independent Gemma 4 model a question in a clean, isolated context. "
                         "The required prompt is the only text context. Optionally attach one file from the conversation's Linux container. "
                         "Supported files: text/code, PDF, DOCX, XLSX, PNG/JPEG/WebP/GIF, supported audio and video. "
-                        "The input budget is about 32k tokens. Oversized answers are archived and can be retrieved with get_tool_result."),
+                        "Limits: about 32k input tokens; images/audio up to 12 MB; audio up to 30 seconds; video up to 100 MB and 60 seconds; documents up to 50 MB. "
+                        "For longer or detailed analyses, consider meaningful segments with a modest overlap; retain timestamps/offsets and remove duplicated boundary findings when combining results. "
+                        "Oversized answers are archived and can be retrieved with get_tool_result."),
         "parameters": {"type": "object", "properties": {
             "prompt": {"type": "string", "minLength": 1},
             "file": {"type": "string"}},
@@ -515,8 +517,9 @@ TOOL_DEFINITIONS = [
                         "Images use native image input. Audio is normalized to mono 16 kHz 32-bit float WAV and limited to 30 seconds; if the active model does not support audio, use ask_model (Gemma 4). "
                         "Video is limited to 60 seconds and 100 MB, sampled at up to 1 frame/second as compact 320px JPEGs; its first 30 seconds of soundtrack are attached only for Gemma 4. "
                         "PDF/DOCX/XLSX provide extracted text plus selected rendered PDF pages or embedded Office images when available; use terminal for full programmatic processing. "
-                        "Image/audio files are limited to 12 MB; documents to 50 MB. Video sampling and audio normalization require ffmpeg. "
-                        "The path is resolved inside the container, never on the host."),
+                        "Limits: image/audio files up to 12 MB, audio up to 30 seconds, video up to 100 MB and 60 seconds, documents up to 50 MB; text budget about 32k tokens (roughly 80k characters). "
+                        "For longer or detailed analyses, consider meaningful segments with a modest overlap; keep timestamps/offsets and deduplicate findings at segment boundaries when combining results. "
+                        "Video sampling and audio normalization require ffmpeg. The path is resolved inside the container, never on the host."),
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
             "start": {"type": "integer", "minimum": 0, "default": 0},
