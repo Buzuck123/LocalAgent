@@ -97,6 +97,31 @@ def test_tool_catalog_uses_terminal_and_keeps_only_non_duplicate_capabilities():
                                    "write_excel", "sqlite_query", "copy_file"})
 
 
+def test_load_file_dispatch_receives_conversation_id(monkeypatch):
+    from agent import core
+
+    calls = {}
+    monkeypatch.setattr(db, "get_task", lambda task_id: {"conversation_id": "conversation-load"})
+    monkeypatch.setattr(db, "record_debug_trace", lambda *args, **kwargs: None)
+
+    def fake_dispatch(name, arguments, **kwargs):
+        calls.update({"name": name, "arguments": arguments, **kwargs})
+        return {"ok": True}
+
+    monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
+    result = core._dispatch_tool_for_task(
+        "load_file_for_model", {"path": "/workspace/result.json"}, "task-load"
+    )
+
+    assert result == {"ok": True}
+    assert calls == {
+        "name": "load_file_for_model",
+        "arguments": {"path": "/workspace/result.json"},
+        "conversation_id": "conversation-load",
+        "idempotency_key": None,
+    }
+
+
 def test_new_sandbox_is_created_once_with_rootless_limits_and_dynamic_loopback_port(monkeypatch, tmp_path):
     state = _fake_db(monkeypatch)
     host_workspace = tmp_path / "workspace" / "work"
