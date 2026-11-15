@@ -598,7 +598,7 @@ def _active_terminal_operation_blocker(conversation_id, *, terminal_command=None
         return None
     operation_id = str(active.get("operation_id") or "неизвестен")
     state = str(active.get("state") or "running")
-    interrupt = terminal_command in {"\\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}
+    interrupt = terminal_command in {"\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}
     if terminal_command is not None:
         # An empty command polls; Ctrl+C interrupts; ordinary text is input only
         # after the runtime explicitly reports that the process awaits input.
@@ -3943,7 +3943,9 @@ class Agent:
                             tool_ok = _tool_result_is_successful(result)
                             failure_step_id = step_id_at_tool_start
                             if failure_step_id is not None:
-                                if not tool_ok and not controller_blocked:
+                                if controller_blocked:
+                                    pass
+                                elif not tool_ok:
                                     step_tool_failures[failure_step_id] = (
                                         int(step_tool_failures.get(failure_step_id, 0)) + 1
                                     )
