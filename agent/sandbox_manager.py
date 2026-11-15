@@ -684,7 +684,7 @@ print(json.dumps(result))
                 rows = con.execute(
                     "SELECT o.result_json FROM tool_operations o JOIN tasks t ON t.id=o.task_id "
                     "WHERE t.conversation_id=? AND o.status='completed' "
-                    "AND o.tool_name IN ('terminal','terminal_start','terminal_poll') "
+                    "AND o.tool_name IN ('terminal','terminal_start','terminal_poll','reset_terminal_session') "
                     "ORDER BY o.rowid DESC LIMIT 100", (conversation_id,),
                 ).fetchall()
             for row in rows:
@@ -696,7 +696,7 @@ print(json.dumps(result))
                     continue
                 if payload.get("state") in {"running", "waiting_input"} and payload.get("operation_id"):
                     return payload
-                if payload.get("state") in {"completed", "interrupted", "timed_out", "failed"}:
+                if payload.get("state") in {"completed", "interrupted", "timed_out", "failed", "reset", "idle"}:
                     return None
         except Exception as exc:
             logger.warning("Could not recover persisted terminal operation (%s)", type(exc).__name__)
@@ -733,6 +733,84 @@ print(json.dumps(result))
                 if active and active.get("operation_id") == target:
                     self._active_operations.pop(conversation_id, None)
         return result
+
+    def reset_terminal_session(
+        self,
+        conversation_id: str,
+        *,
+        confirm_reset: bool,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Recreate only the persistent Bash session, keeping its container and files intact."""
+        if confirm_reset is not True:
+            raise ValueError("confirm_reset must be true to recreate the Bash session")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("A non-empty reason is required for an audited terminal reset")
+        if len(reason) > 1000:
+            raise ValueError("reason exceeds 1000 characters")
+
+        with self._lock_for(conversation_id):
+            active = self.get_active_operation(conversation_id)
+            runtime = self.get_runtime(conversation_id)
+
+            interrupt_result = None
+            interrupt_error = None
+            if active:
+                interrupter = getattr(runtime, "interrupt_operation", None)
+                if callable(interrupter):
+                    try:
+                        interrupt_result = interrupter(
+                            str(active.get("operation_id") or ""), session="main"
+                        )
+                    except Exception as exc:
+                        # A stale SWE-ReX operation ID is exactly one reason to
+                        # recreate the PTY. Closing the session is the fallback.
+                        interrupt_error = type(exc).__name__
+
+            closer = getattr(runtime, "close_session", None)
+            creator = getattr(runtime, "ensure_session", None)
+            if not callable(closer) or not callable(creator):
+                raise SandboxError("Runtime не поддерживает безопасное пересоздание Bash-сессии.")
+
+            closer("main")
+            created = creator("main")
+            if created is not True:
+                raise SandboxError(
+                    "SWE-ReX не подтвердил создание новой Bash-сессии после закрытия старой; "
+                    "активное состояние сохранено."
+                )
+
+            probe = runtime.run(
+                "unset SWEREX_AUTH_TOKEN; printf '__LOCALAGENT_RESET_READY__'",
+                session="main", timeout=10,
+            )
+            if (probe.get("exit_code") != 0 or probe.get("timed_out")
+                    or "__LOCALAGENT_RESET_READY__" not in str(probe.get("stdout") or "")):
+                raise SandboxError(
+                    "Новая Bash-сессия создана, но проверочная команда не прошла; "
+                    "состояние операции не сброшено."
+                )
+
+            with self._guard:
+                self._active_operations.pop(conversation_id, None)
+                self._new_sessions.discard(conversation_id)
+                self._runtimes[conversation_id] = runtime
+
+            return {
+                "state": "reset" if active else "idle",
+                "shell_state": "recreated",
+                "previous_operation_state": str(active.get("state") or "running") if active else None,
+                "interrupt_result": interrupt_result,
+                "interrupt_error": interrupt_error,
+                "reason": reason.strip(),
+                "container_recreated": False,
+                "workspace_preserved": True,
+                "verified": True,
+                "message": (
+                    "Bash-сессия пересоздана в прежнем контейнере. Файлы и workspace сохранены; "
+                    "переменные, функции и процессы старой shell-сессии не сохраняются."
+                ),
+            }
 
     def send_operation_input(self, conversation_id: str, operation_id: str, value: str, sendline: bool = True) -> dict[str, Any]:
         runtime = self.get_runtime(conversation_id)
