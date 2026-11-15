@@ -2466,6 +2466,7 @@ class OllamaClient:
         self._request_lock = threading.RLock()
         self._active_response_lock = threading.RLock()
         self._active_responses: dict[str, Any] = {}
+        self._recovery_state: dict[str, Any] | None = None
         self.last_generation_stats = {"tokens_per_second": None, "eval_count": 0, "eval_duration": 0, "model": self.model}
         # Keep Ollama requests independent of the host's system HTTP/HTTPS proxy.
         self.opener = build_opener(ProxyHandler({}))
@@ -2496,6 +2497,42 @@ class OllamaClient:
         except Exception:
             # Diagnostics must never turn a valid model response into a failed task.
             logger.exception("Could not persist Ollama request event %s", event_type)
+
+    def _recover_after_timeout(self) -> None:
+        """Probe Ollama before allowing another generation after a timed-out stream."""
+        previous = self._recovery_state
+        if not previous:
+            return
+        started = time.monotonic()
+        recovery_id = uuid.uuid4().hex
+        task_id = previous.get("task_id")
+        model = str(previous.get("model") or self.model)
+        details = {"previous_request_id": previous.get("request_id"),
+                   "previous_timeout_phase": previous.get("phase")}
+        self._record_request_event(
+            recovery_id, task_id, model, "recovery_check_started", started,
+            phase="availability", details=details,
+        )
+        try:
+            # The previous streaming response/socket has already been closed in
+            # _post_stream_unlocked.finally. /api/ps verifies the server is responsive
+            # before a later generation is allowed; it does not trigger an automatic retry.
+            self._status_unlocked()
+        except Exception as exc:
+            self._record_request_event(
+                recovery_id, task_id, model, "recovery_check_failed", started,
+                phase="availability", error=exc, details=details,
+            )
+            raise RuntimeError(
+                "Ollama did not pass the availability check after the previous "
+                "stream was closed. A new generation was not started; check Ollama "
+                "and retry only after it is responsive."
+            ) from exc
+        self._recovery_state = None
+        self._record_request_event(
+            recovery_id, task_id, model, "recovery_check_completed", started,
+            phase="availability", details=details,
+        )
 
     def _post(self, endpoint: str, payload: dict, timeout: int | None = None) -> dict:
         with self._request_lock:
@@ -2733,6 +2770,10 @@ class OllamaClient:
                 "active": False, "error": str(wrapped), "model": model_name,
                 "request_id": request_id, "timeout_phase": timeout_phase,
             }
+            self._recovery_state = {
+                "request_id": request_id, "task_id": active_task_id,
+                "model": model_name, "phase": timeout_phase,
+            }
             self._record_request_event(
                 request_id, active_task_id, model_name, "request_timeout", started,
                 phase=timeout_phase, error=wrapped,
@@ -2767,6 +2808,7 @@ class OllamaClient:
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None, reasoning: bool = True, model: str | None = None) -> dict:
         with self._request_lock:
+            self._recover_after_timeout()
             return self._chat_unlocked(messages, tools=tools, reasoning=reasoning, model=model)
 
     def _chat_unlocked(self, messages: list[dict], tools: list[dict] | None = None, reasoning: bool = True, model: str | None = None) -> dict:
