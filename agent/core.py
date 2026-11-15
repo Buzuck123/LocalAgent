@@ -2785,6 +2785,11 @@ class OllamaClient:
                 "active": False, "error": str(exc)[:2000], "model": model_name,
                 "request_id": request_id,
             }
+            if connected and not final.get("done"):
+                self._recovery_state = {
+                    "request_id": request_id, "task_id": active_task_id,
+                    "model": model_name, "phase": phase,
+                }
             self._record_request_event(
                 request_id, active_task_id, model_name, "request_failed", started,
                 phase=phase, error=exc, details={"endpoint": endpoint},
