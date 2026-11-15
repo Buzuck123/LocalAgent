@@ -93,6 +93,21 @@ def init_db():
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_model_requests_task ON model_requests(task_id, id);
+        CREATE TABLE IF NOT EXISTS ollama_request_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL,
+            task_id TEXT,
+            model TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            phase TEXT,
+            elapsed_ms INTEGER,
+            error_type TEXT,
+            error TEXT,
+            details_json TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ollama_events_task ON ollama_request_events(task_id, id);
+        CREATE INDEX IF NOT EXISTS idx_ollama_events_request ON ollama_request_events(request_id, id);
         CREATE TABLE IF NOT EXISTS debug_trace (
             event_id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
@@ -488,6 +503,55 @@ def record_model_request(task_id: str | None, model: str, response: dict) -> Non
             (task_id, str(model or ""), nonnegative_int("prompt_eval_count"), nonnegative_int("eval_count"),
              nonnegative_int("prompt_eval_duration"), nonnegative_int("eval_duration"), now()),
         )
+
+
+def record_ollama_request_event(
+    request_id: str,
+    task_id: str | None,
+    model: str,
+    event_type: str,
+    *,
+    phase: str | None = None,
+    elapsed_ms: int | None = None,
+    error_type: str | None = None,
+    error: str | None = None,
+    details: dict | None = None,
+) -> None:
+    """Persist bounded Ollama request lifecycle events without storing prompts or media."""
+    safe_details = _redact_trace_value(details or {})
+    with _lock, connect() as con:
+        con.execute(
+            """INSERT INTO ollama_request_events
+               (request_id,task_id,model,event_type,phase,elapsed_ms,error_type,error,details_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                str(request_id), task_id, str(model or "")[:200], str(event_type)[:80],
+                str(phase)[:80] if phase else None,
+                max(0, int(elapsed_ms)) if elapsed_ms is not None else None,
+                str(error_type)[:200] if error_type else None,
+                str(_redact_trace_value(str(error)))[:2000] if error else None,
+                json.dumps(safe_details, ensure_ascii=False, default=str)[:12000],
+                now(),
+            ),
+        )
+
+
+def list_ollama_request_events(task_id: str, limit: int = 200) -> list[dict]:
+    limit = max(1, min(int(limit), 1000))
+    with connect() as con:
+        rows = con.execute(
+            "SELECT * FROM ollama_request_events WHERE task_id=? ORDER BY id LIMIT ?",
+            (task_id, limit),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["details"] = json.loads(item.pop("details_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            item["details"] = {}
+        result.append(item)
+    return result
 
 
 def get_model_usage(task_id: str) -> dict:
