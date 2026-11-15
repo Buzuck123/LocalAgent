@@ -293,3 +293,28 @@ def test_reset_terminal_session_does_not_clear_active_state_if_new_shell_fails()
 
 def test_controller_allows_explicit_terminal_reset_during_active_operation():
     assert "reset_terminal_session" in core._TERMINAL_CONTROL_TOOLS
+
+
+def test_persisted_reset_receipt_clears_old_running_operation(monkeypatch):
+    import json
+
+    class Rows:
+        def fetchall(self):
+            return [(json.dumps({"state": "reset", "shell_state": "recreated"}),)]
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, query, params):
+            assert "reset_terminal_session" in query
+            assert params == ("conversation-1",)
+            return Rows()
+
+    monkeypatch.setattr("agent.sandbox_manager.db.connect", lambda: Connection())
+    manager = object.__new__(SandboxManager)
+
+    assert manager._find_persisted_active_operation_details("conversation-1") is None
