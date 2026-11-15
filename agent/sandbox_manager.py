@@ -222,14 +222,14 @@ class SandboxManager:
             self._podman("rm", "-f", container_id, check=False)
             raise
 
-    def get_runtime(self, conversation_id: str) -> SandboxRuntime:
+    def get_runtime(self, conversation_id: str, *, check_proxy: bool = True) -> SandboxRuntime:
         if not conversation_id:
             raise ValueError("conversation_id is required")
         if not settings.sandbox_enabled:
             raise SandboxError("Новая sandbox отключена настройкой SANDBOX_ENABLED.")
         # Only the real host-backed manager enforces the shared proxy lifecycle;
         # injected command runners remain deterministic in unit tests.
-        if getattr(settings, "sandbox_proxy_required", True) and self._uses_default_runner:
+        if check_proxy and getattr(settings, "sandbox_proxy_required", True) and self._uses_default_runner:
             try:
                 self._proxy_manager.ensure(settings.sandbox_network)
             except ProxyUnavailable as exc:
@@ -297,7 +297,7 @@ class SandboxManager:
                 cleared = runtime.run("unset SWEREX_AUTH_TOKEN", session="main", timeout=10)
             if cleared.get("exit_code") != 0 or cleared.get("timed_out"):
                 raise SandboxError("Не удалось очистить переменную авторизации или проверить Bash-сессию.")
-            if getattr(settings, "sandbox_proxy_required", True) and self._uses_default_runner:
+            if check_proxy and getattr(settings, "sandbox_proxy_required", True) and self._uses_default_runner:
                 self._probe_proxy_from_sandbox(runtime)
             self._runtimes[conversation_id] = runtime
             return runtime
@@ -751,7 +751,9 @@ print(json.dumps(result))
 
         with self._lock_for(conversation_id):
             active = self.get_active_operation(conversation_id)
-            runtime = self.get_runtime(conversation_id)
+            # Resetting a local PTY must remain possible even when the container's
+            # outbound proxy is unhealthy; no network access is needed here.
+            runtime = self.get_runtime(conversation_id, check_proxy=False)
 
             interrupt_result = None
             interrupt_error = None
