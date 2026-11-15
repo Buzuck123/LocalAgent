@@ -31,10 +31,8 @@ def test_controller_returns_explicit_blocker_for_non_terminal_tools(monkeypatch)
 
     assert blocker["ok"] is False
     assert blocker["blocked_by_active_terminal_operation"] is True
-    assert blocker["active_operation"] == {
-        "operation_id": "remote-op-1",
-        "state": "running",
-    }
+    assert blocker["active_operation"] == {"state": "running"}
+    assert "remote-op-1" not in blocker["error"]
     assert blocker["required_tool"] == "terminal"
     assert "пустой command" in blocker["error"]
     assert "CTRL+C" in blocker["error"]
@@ -55,7 +53,7 @@ def test_sandbox_manager_detects_in_memory_active_operation_and_blocks_session_u
 
     assert active["operation_id"] == "remote-op-1"
     assert active["state"] == "running"
-    with pytest.raises(SandboxBusyError, match="remote-op-1"):
+    with pytest.raises(SandboxBusyError, match="Bash-сессия занята"):
         manager.ensure_session_idle("conversation-1")
 
 
@@ -73,7 +71,7 @@ def test_sandbox_manager_detects_persisted_active_operation_after_restart(monkey
 
     assert active["operation_id"] == "persisted-op"
     assert active["state"] == "waiting_input"
-    with pytest.raises(SandboxBusyError, match="persisted-op"):
+    with pytest.raises(SandboxBusyError, match="Bash-сессия занята"):
         manager.ensure_session_idle("conversation-1")
 
 
@@ -84,7 +82,7 @@ def test_download_file_checks_busy_guard_before_using_runtime(tmp_path, monkeypa
     ))
     target = tmp_path / "download.bin"
 
-    with pytest.raises(SandboxBusyError, match="remote-op-1"):
+    with pytest.raises(SandboxBusyError, match="Bash-сессия занята"):
         manager.download_file(
             "conversation-1", "/workspace/source.bin", target
         )
