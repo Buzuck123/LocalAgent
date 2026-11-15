@@ -1003,7 +1003,8 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
     started = time.monotonic()
     try:
         if name in {"terminal", "terminal_start", "terminal_poll", "terminal_input",
-                    "terminal_interrupt", "terminal_resize", "reset_terminal_session", "publish_file"}:
+                    "terminal_interrupt", "terminal_resize", "reset_terminal_session",
+                    "load_file_for_model", "publish_file"}:
             task = db.get_task(task_id) if task_id else None
             if not task:
                 raise RuntimeError("Не удалось определить диалог для sandbox-инструмента")
