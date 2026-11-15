@@ -203,3 +203,92 @@ def test_nonempty_shell_commands_remain_subject_to_repeat_guard():
     assert not core._is_safe_terminal_recovery_call(
         "ask_model", {"file": "/workspace/audio.wav"}, "conversation-1"
     )
+
+
+def test_reset_terminal_session_recreates_only_shell_after_unknown_operation():
+    class Runtime:
+        def __init__(self):
+            self.closed = []
+            self.created = []
+            self.commands = []
+
+        def interrupt_operation(self, operation_id, *, session="main"):
+            raise ValueError(f"Unknown operation {operation_id}")
+
+        def close_session(self, session="main"):
+            self.closed.append(session)
+
+        def ensure_session(self, session="main"):
+            self.created.append(session)
+            return True
+
+        def run(self, command, *, session="main", timeout=10):
+            self.commands.append((command, session, timeout))
+            return {
+                "stdout": "__LOCALAGENT_RESET_READY__",
+                "stderr": "",
+                "exit_code": 0,
+                "timed_out": False,
+            }
+
+    manager = _manager_with_active_operation("stale-operation")
+    manager._new_sessions = set()
+    manager._runtimes = {}
+    runtime = Runtime()
+    manager.get_runtime = lambda conversation_id: runtime
+
+    result = manager.reset_terminal_session(
+        "conversation-1",
+        confirm_reset=True,
+        reason="Polling and CTRL+C return Unknown operation",
+    )
+
+    assert result["state"] == "reset"
+    assert result["shell_state"] == "recreated"
+    assert result["container_recreated"] is False
+    assert result["workspace_preserved"] is True
+    assert result["verified"] is True
+    assert result["interrupt_error"] == "ValueError"
+    assert runtime.closed == ["main"]
+    assert runtime.created == ["main"]
+    assert "unset SWEREX_AUTH_TOKEN" in runtime.commands[0][0]
+    assert manager.get_active_operation("conversation-1") is None
+
+
+def test_reset_terminal_session_requires_explicit_confirmation():
+    manager = _manager_with_active_operation()
+    manager._new_sessions = set()
+    manager._runtimes = {}
+
+    with pytest.raises(ValueError, match="confirm_reset must be true"):
+        manager.reset_terminal_session(
+            "conversation-1", confirm_reset=False, reason="test"
+        )
+
+
+def test_reset_terminal_session_does_not_clear_active_state_if_new_shell_fails():
+    class Runtime:
+        def interrupt_operation(self, operation_id, *, session="main"):
+            return {"state": "unknown"}
+
+        def close_session(self, session="main"):
+            pass
+
+        def ensure_session(self, session="main"):
+            return False
+
+    manager = _manager_with_active_operation("stale-operation")
+    manager._new_sessions = set()
+    manager._runtimes = {}
+    manager.get_runtime = lambda conversation_id: Runtime()
+
+    with pytest.raises(SandboxBusyError, match="не подтвердил создание новой Bash-сессии"):
+        manager.reset_terminal_session(
+            "conversation-1", confirm_reset=True, reason="runtime is inconsistent"
+        )
+
+    assert manager.get_active_operation("conversation-1")["operation_id"] == "stale-operation"
+
+
+def test_controller_allows_explicit_terminal_reset_during_active_operation():
+    assert "reset_terminal_session" in core._TERMINAL_CONTROL_TOOLS
