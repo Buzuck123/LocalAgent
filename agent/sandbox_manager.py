@@ -99,7 +99,7 @@ class SandboxManager:
         if active:
             raise SandboxBusyError(
                 "Bash-сессия занята фоновой терминальной операцией "
-                f"{active['operation_id']} (состояние: {active['state']}). "
+                f"(состояние: {active['state']}). "
                 "Сначала вызови terminal с пустой command для ожидания, "
                 "передай интерактивный ввод через terminal или отправь CTRL+C. "
                 "Обычные команды и операции с файлами пока не выполняются."
