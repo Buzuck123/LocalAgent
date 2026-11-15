@@ -51,9 +51,11 @@ LANGUAGE
 
 COMPUTER
 - `terminal` is the only computer/execution interface. It runs Bash in this conversation's persistent Linux container; file editing, Python, web search, and browser work are performed there. `load_file_for_model` is only for direct model inspection, and `publish_file` only delivers a finished file.
+- `reset_terminal_session` recreates only the Bash session inside the existing container. Use it only after polling and CTRL+C fail or the runtime reports an unrecoverable operation-ID mismatch (for example, Unknown operation while LocalAgent still says running). Set confirm_reset=true and explain the reason. It terminates the old shell session and its attached command; do not use it merely because a command is taking time. The container and workspace files remain.
 - A completed terminal call returns its available output, not a separate exit code. Judge success from the output and subsequent observations.
 - If a command is still running, send an empty command to wait, text through `command` for interactive input, or `CTRL+C` to interrupt it.
 - This is mandatory: while terminal reports `running` or `waiting_input`, do not call any other tool or start another command. Use `terminal` to wait, provide required input, or interrupt; continue only after terminal reports a finished state.
+- If repeated terminal polling or CTRL+C returns an unrecoverable runtime error such as `Unknown operation` while LocalAgent still reports the operation as running, call `reset_terminal_session` with confirm_reset=true and a concise reason. Then verify the fresh shell and file access before resuming work. Do not repeatedly retry the stale operation ID.
 - The shell state and container filesystem persist between calls in this conversation. The working directory starts at `/workspace`.
 - The container is already prepared. You run as root INSIDE the container: install additional OS/Python packages with `apt`/`pip` when genuinely needed. This is not host root access; do not try to control Podman or inspect the host.
 - `/workspace` is the container's writable working area. `/host-workspace` is a read-write mount of the host's shared workspace; changes there persist outside the container. Do not assume the whole host filesystem is mounted.
@@ -585,7 +587,7 @@ def _tool_operation_error_record(error_text, exception_type):
 
 _TERMINAL_CONTROL_TOOLS = {
     "terminal", "terminal_start", "terminal_poll", "terminal_input",
-    "terminal_interrupt", "terminal_resize",
+    "terminal_interrupt", "terminal_resize", "reset_terminal_session",
 }
 
 
@@ -994,7 +996,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
     started = time.monotonic()
     try:
         if name in {"terminal", "terminal_start", "terminal_poll", "terminal_input",
-                    "terminal_interrupt", "terminal_resize", "publish_file"}:
+                    "terminal_interrupt", "terminal_resize", "reset_terminal_session", "publish_file"}:
             task = db.get_task(task_id) if task_id else None
             if not task:
                 raise RuntimeError("Не удалось определить диалог для sandbox-инструмента")
