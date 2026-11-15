@@ -202,3 +202,40 @@ def test_file_tool_descriptions_document_limits_and_optional_overlap():
         assert "50 mb" in text
         assert "overlap" in text
         assert "timestamps" in text
+
+
+def test_next_chat_checks_ollama_after_timeout_before_starting_generation(monkeypatch):
+    from agent.core import OllamaClient
+
+    client = OllamaClient()
+    order = []
+    client._recovery_state = {
+        "request_id": "previous-request", "task_id": "task-1",
+        "model": "test-model", "phase": "first_token",
+    }
+    monkeypatch.setattr(client, "_status_unlocked", lambda: order.append("health_check") or {})
+    monkeypatch.setattr(client, "_chat_unlocked", lambda *args, **kwargs: order.append("generation") or {"ok": True})
+
+    result = client.chat([{"role": "user", "content": "continue"}])
+
+    assert result == {"ok": True}
+    assert order == ["health_check", "generation"]
+    assert client._recovery_state is None
+
+
+def test_failed_ollama_recovery_check_blocks_the_next_generation(monkeypatch):
+    from agent.core import OllamaClient
+
+    client = OllamaClient()
+    client._recovery_state = {
+        "request_id": "previous-request", "task_id": "task-1",
+        "model": "test-model", "phase": "stream_idle",
+    }
+    generation_calls = []
+    monkeypatch.setattr(client, "_status_unlocked", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(client, "_chat_unlocked", lambda *args, **kwargs: generation_calls.append(True))
+
+    with pytest.raises(RuntimeError, match="new generation was not started"):
+        client.chat([{"role": "user", "content": "retry"}])
+    assert generation_calls == []
+    assert client._recovery_state is not None
