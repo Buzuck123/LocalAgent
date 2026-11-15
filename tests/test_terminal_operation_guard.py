@@ -123,3 +123,30 @@ def test_controller_allows_interactive_input_only_when_terminal_waits_for_input(
     assert core._active_terminal_operation_blocker(
         "conversation-1", terminal_command="yes"
     ) is None
+
+
+
+def test_attachment_upload_reuses_deterministic_path_without_touching_busy_pty(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from agent import sandbox_manager as sandbox_module
+
+    attachment_root = tmp_path / "attachments"
+    attachment_root.mkdir()
+    source = attachment_root / "clip.wav"
+    source.write_bytes(b"audio")
+    monkeypatch.setattr(
+        sandbox_module,
+        "settings",
+        SimpleNamespace(
+            database_path=tmp_path / "agent.sqlite3",
+            workspace_path=tmp_path / "workspace",
+        ),
+    )
+    manager = _manager_with_active_operation()
+    monkeypatch.setattr(manager, "get_runtime", lambda cid: (_ for _ in ()).throw(
+        AssertionError("busy PTY must not be used for attachment upload")
+    ))
+
+    destination = manager.upload_file("conversation-1", source, "clip.wav")
+
+    assert destination.startswith("/workspace/uploads/")
