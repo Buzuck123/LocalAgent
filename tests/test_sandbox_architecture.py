@@ -91,8 +91,8 @@ def _fake_db(monkeypatch, record=None):
 
 def test_tool_catalog_uses_terminal_and_keeps_only_non_duplicate_capabilities():
     names = {item["function"]["name"] for item in TOOL_DEFINITIONS}
-    assert names == {"get_tool_result", "terminal", "publish_file",
-                     "load_file_for_model", "ask_model"}
+    assert names == {"get_tool_result", "terminal", "reset_terminal_session",
+                     "publish_file", "load_file_for_model", "ask_model"}
     assert not names.intersection({"read_file", "write_file", "run_python", "read_excel",
                                    "write_excel", "sqlite_query", "copy_file"})
 
