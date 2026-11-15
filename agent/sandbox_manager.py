@@ -48,6 +48,10 @@ class SandboxError(RuntimeError):
     pass
 
 
+class SandboxBusyError(SandboxError):
+    """Raised when a non-terminal operation tries to use a busy Bash session."""
+
+
 class SandboxManager:
     def __init__(self, *, runtime_factory=None, command_runner=None):
         self._runtime_factory = runtime_factory or self._make_runtime
@@ -67,6 +71,39 @@ class SandboxManager:
     def _lock_for(self, conversation_id: str):
         with self._guard:
             return self._locks.setdefault(conversation_id, threading.RLock())
+
+    def get_active_operation(self, conversation_id: str) -> dict[str, Any] | None:
+        """Return the active terminal operation, including one recovered from SQLite."""
+        if not conversation_id:
+            return None
+        with self._guard:
+            active = self._active_operations.get(conversation_id)
+            if active:
+                return {
+                    "operation_id": str(active.get("operation_id") or ""),
+                    "state": str(active.get("state") or "running"),
+                    "session": str(active.get("session") or "main"),
+                }
+        persisted = self._find_persisted_active_operation_details(conversation_id)
+        if not isinstance(persisted, dict) or not persisted.get("operation_id"):
+            return None
+        return {
+            "operation_id": str(persisted["operation_id"]),
+            "state": str(persisted.get("state") or "running"),
+            "session": "main",
+        }
+
+    def ensure_session_idle(self, conversation_id: str) -> None:
+        """Fail before any ordinary runtime.run call can collide with a live command."""
+        active = self.get_active_operation(conversation_id)
+        if active:
+            raise SandboxBusyError(
+                "Bash-сессия занята фоновой терминальной операцией "
+                f"{active['operation_id']} (состояние: {active['state']}). "
+                "Сначала вызови terminal с пустой command для ожидания, "
+                "передай интерактивный ввод через terminal или отправь CTRL+C. "
+                "Обычные команды и операции с файлами пока не выполняются."
+            )
 
     @staticmethod
     def _run_command(args: list[str], *, env=None, check=True):
@@ -366,6 +403,7 @@ print(json.dumps(result))
         if syntax.returncode:
             return {"state": "failed", "exit_code": 2, "stdout": syntax.stdout or "",
                     "stderr": (syntax.stderr or "Invalid Bash syntax")[:4000], "syntax_error": True}
+        self.ensure_session_idle(conversation_id)
         runtime = self.get_runtime(conversation_id)
         self._ensure_network_proxy(runtime, command)
         starter = getattr(runtime, "start_operation", None)
@@ -696,6 +734,7 @@ print(json.dumps(result))
     def resize_terminal(self, conversation_id: str, rows: int = 24, cols: int = 80) -> dict[str, Any]:
         if not 1 <= int(rows) <= 1000 or not 1 <= int(cols) <= 1000:
             raise ValueError("rows and cols must be between 1 and 1000")
+        self.ensure_session_idle(conversation_id)
         runtime = self.get_runtime(conversation_id)
         resize = getattr(runtime, "resize_terminal", None)
         if not callable(resize):
@@ -730,6 +769,7 @@ print(json.dumps(result))
                     "exit_code": 2, "timed_out": False, "syntax_error": True, "command": command}
 
         with self._lock_for(conversation_id):
+            self.ensure_session_idle(conversation_id)
             runtime = self.get_runtime(conversation_id)
             self._ensure_network_proxy(runtime, command)
             try:
@@ -775,6 +815,7 @@ print(json.dumps(result))
         quoted = shlex.quote(source_path)
         chunk_bytes = 1024 * 1024
         with self._lock_for(conversation_id):
+            self.ensure_session_idle(conversation_id)
             runtime = self.get_runtime(conversation_id)
             probe = runtime.run(
                 "test -f " + quoted + " && test -r " + quoted + " && stat -c '%s' -- " + quoted,
@@ -856,6 +897,7 @@ print(json.dumps(result))
         destination = f"/workspace/uploads/{digest}_{safe_name}"
         quoted = shlex.quote(destination)
         with self._lock_for(conversation_id):
+            self.ensure_session_idle(conversation_id)
             runtime = self.get_runtime(conversation_id)
             exists = runtime.run(f"test -f {quoted} && test ! -L {quoted}", session="main", timeout=10)
             if exists["exit_code"] == 0:
