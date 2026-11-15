@@ -582,6 +582,37 @@ def _tool_operation_error_record(error_text, exception_type):
     }}
 
 
+_TERMINAL_CONTROL_TOOLS = {
+    "terminal", "terminal_start", "terminal_poll", "terminal_input",
+    "terminal_interrupt", "terminal_resize",
+}
+
+
+def _active_terminal_operation_blocker(conversation_id):
+    """Return a model-readable blocker while the conversation Bash session is busy."""
+    from .sandbox_manager import sandbox_manager
+
+    active = sandbox_manager.get_active_operation(conversation_id)
+    if not isinstance(active, dict):
+        return None
+    operation_id = str(active.get("operation_id") or "неизвестен")
+    state = str(active.get("state") or "running")
+    return {
+        "ok": False,
+        "blocked_by_active_terminal_operation": True,
+        "error": (
+            f"Инструмент не запущен: Bash-сессия занята фоновой терминальной операцией "
+            f"{operation_id} (состояние: {state}). Пока она не завершена, другие инструменты "
+            "и команды запускать нельзя. Сначала вызови terminal с пустой command, чтобы "
+            "дождаться результата; если процесс требует ввода — передай его через terminal, "
+            "а если его нужно остановить — отправь CTRL+C. После завершения terminal можно продолжить."
+        ),
+        "active_operation": {"operation_id": operation_id, "state": state},
+        "required_tool": "terminal",
+        "required_action": "wait_or_control_active_operation",
+    }
+
+
 def _restore_tool_operation_payload(record, tool_name, arguments, diagnosis_state=None):
     """Convert a durable journal receipt into the normal tool message payload."""
     if isinstance(record, dict) and isinstance(record.get(_TOOL_OPERATION_ERROR_KEY), dict):
@@ -3736,21 +3767,31 @@ class Agent:
                                 task.get("user_message", ""),
                                 active_step_for_validation.get("description", "") if active_step_for_validation else "",
                             )
-                            result = _run_internal_tool(
-                                name, args, state.setdefault("tool_result_archive", {}),
-                                tool_definitions=available_for_validation,
-                            )
-                            if result is None:
-                                result = _dispatch_tool_for_task(
-                                    name, args, task_id, operation_id,
-                                    context_messages=messages,
-                                    main_model=str(checkpoint.get("model") or getattr(settings, "model", "")),
-                                    context_limit=(
-                                        _CURRENT_MODEL_CONTEXT.get()
-                                        or checkpoint.get("model_num_ctx")
-                                        or settings.num_ctx
-                                    ),
+                            # A live terminal operation owns the conversation's single
+                            # persistent Bash session. Only terminal control calls may
+                            # proceed until it finishes; all other tools receive an
+                            # explicit blocker instead of touching the busy session.
+                            blocker = None
+                            if name not in _TERMINAL_CONTROL_TOOLS:
+                                blocker = _active_terminal_operation_blocker(cid)
+                            if blocker is not None:
+                                result = blocker
+                            else:
+                                result = _run_internal_tool(
+                                    name, args, state.setdefault("tool_result_archive", {}),
+                                    tool_definitions=available_for_validation,
                                 )
+                                if result is None:
+                                    result = _dispatch_tool_for_task(
+                                        name, args, task_id, operation_id,
+                                        context_messages=messages,
+                                        main_model=str(checkpoint.get("model") or getattr(settings, "model", "")),
+                                        context_limit=(
+                                            _CURRENT_MODEL_CONTEXT.get()
+                                            or checkpoint.get("model_num_ctx")
+                                            or settings.num_ctx
+                                        ),
+                                    )
                         except ToolReceiptError:
                             raise
                         except Exception as exc:
