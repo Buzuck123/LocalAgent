@@ -709,10 +709,10 @@ def _guard_loaded_file_context(result: dict[str, Any], messages: list[dict[str, 
                 "ok": False,
                 "file_not_loaded": True,
                 "error": (
-                    "Не удалось загрузить файл непосредственно в модель.\\n"
+                    "Не удалось загрузить файл непосредственно в модель.\n"
                     "Причина: по консервативной оценке превышается доступное контекстное окно "
                     f"(текущая история и инструменты: около {base_tokens} токенов; "
-                    f"файл: около {loaded_tokens}; резерв ответа: {reserve}; лимит: {limit}).\\n"
+                    f"файл: около {loaded_tokens}; резерв ответа: {reserve}; лимит: {limit}).\n"
                     + (
                         "Файл не был передан для анализа. Повтори вызов с меньшим length; для продолжения используй start=next_start."
                         if kind == "text" else
