@@ -905,6 +905,12 @@ print(json.dumps(result))
         destination = f"/workspace/uploads/{digest}_{safe_name}"
         quoted = shlex.quote(destination)
         with self._lock_for(conversation_id):
+            if self.get_active_operation(conversation_id):
+                # Task attachments are uploaded before execution starts. If a
+                # task resumes while its own terminal command is still active,
+                # reuse the deterministic destination without sending commands
+                # into the occupied PTY.
+                return destination
             self.ensure_session_idle(conversation_id)
             runtime = self.get_runtime(conversation_id)
             exists = runtime.run(f"test -f {quoted} && test ! -L {quoted}", session="main", timeout=10)
