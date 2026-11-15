@@ -543,6 +543,22 @@ TOOL_DEFINITIONS.insert(1, {"type": "function", "function": {
         "additionalProperties": False}}})
 
 TOOL_DEFINITIONS.insert(2, {"type": "function", "function": {
+    "name": "reset_terminal_session",
+    "description": (
+        "Recreate this conversation's persistent Bash session inside the EXISTING container. "
+        "Use only when terminal polling/CTRL+C cannot recover the shell, for example when LocalAgent "
+        "reports an active operation but SWE-ReX returns Unknown operation. This terminates the old "
+        "shell session and any command attached to it; shell variables/functions are lost. "
+        "The container, /workspace, /host-workspace mount and their files are preserved. "
+        "Must explicitly set confirm_reset=true and provide a concise reason. The tool verifies the new shell."
+    ),
+    "parameters": {"type": "object", "properties": {
+        "confirm_reset": {"type": "boolean", "description": "Must be true: authorize replacing the old Bash session."},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1000,
+                   "description": "Why normal terminal polling and interruption were insufficient."}},
+        "required": ["confirm_reset", "reason"], "additionalProperties": False}}})
+
+TOOL_DEFINITIONS.insert(3, {"type": "function", "function": {
     "name": "publish_file",
     "description": ("Publish a regular file from the Linux computer to the downloadable files area. "
                     "Pass only its container source_path. LocalAgent chooses a unique filename and never overwrites an existing file."),
@@ -628,6 +644,15 @@ def _dispatch_tool_impl(name: str, arguments: dict[str, Any], *, task_id: str | 
         return sandbox_manager.terminal_command(
             conversation_id, arguments.get("command", ""),
             timeout=arguments.get("timeout"), idempotency_key=idempotency_key,
+        )
+    if name == "reset_terminal_session":
+        from .sandbox_manager import sandbox_manager
+        if not conversation_id:
+            raise ValueError("Terminal reset requires a conversation-scoped sandbox")
+        return sandbox_manager.reset_terminal_session(
+            conversation_id,
+            confirm_reset=arguments.get("confirm_reset"),
+            reason=arguments.get("reason", ""),
         )
     if name == "publish_file":
         if not conversation_id:
