@@ -589,7 +589,7 @@ _TERMINAL_CONTROL_TOOLS = {
 }
 
 
-def _active_terminal_operation_blocker(conversation_id):
+def _active_terminal_operation_blocker(conversation_id, *, terminal_command=None):
     """Return a model-readable blocker while the conversation Bash session is busy."""
     from .sandbox_manager import sandbox_manager
 
@@ -598,16 +598,27 @@ def _active_terminal_operation_blocker(conversation_id):
         return None
     operation_id = str(active.get("operation_id") or "неизвестен")
     state = str(active.get("state") or "running")
-    return {
-        "ok": False,
-        "blocked_by_active_terminal_operation": True,
-        "error": (
+    interrupt = terminal_command in {"\\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}
+    if terminal_command is not None and str(terminal_command).strip() and not interrupt and state != "waiting_input":
+        error = (
+            f"Новая shell-команда не запущена: операция {operation_id} всё ещё выполняется "
+            f"(состояние: {state}) и не ожидает ввода. Непустой command был бы отправлен "
+            "в stdin текущего процесса, а не запущен как новая команда. Вызови terminal "
+            "с пустой command для ожидания или отправь CTRL+C для прерывания. "
+            "Текстовый ввод разрешён только когда terminal явно сообщает waiting_input."
+        )
+    else:
+        error = (
             f"Инструмент не запущен: Bash-сессия занята фоновой терминальной операцией "
             f"{operation_id} (состояние: {state}). Пока она не завершена, другие инструменты "
             "и команды запускать нельзя. Сначала вызови terminal с пустой command, чтобы "
             "дождаться результата; если процесс требует ввода — передай его через terminal, "
             "а если его нужно остановить — отправь CTRL+C. После завершения terminal можно продолжить."
-        ),
+        )
+    return {
+        "ok": False,
+        "blocked_by_active_terminal_operation": True,
+        "error": error,
         "active_operation": {"operation_id": operation_id, "state": state},
         "required_tool": "terminal",
         "required_action": "wait_or_control_active_operation",
@@ -3744,6 +3755,7 @@ class Agent:
                         if step_at_tool_start is not None:
                             step_id_at_tool_start = step_at_tool_start["id"]
 
+                        controller_blocked = False
                         try:
                             if operation_id is not None:
                                 db.create_tool_operation(
@@ -3775,7 +3787,12 @@ class Agent:
                             blocker = None
                             if name not in _TERMINAL_CONTROL_TOOLS:
                                 blocker = _active_terminal_operation_blocker(cid)
+                            elif name == "terminal":
+                                blocker = _active_terminal_operation_blocker(
+                                    cid, terminal_command=str(args.get("command") or "")
+                                )
                             if blocker is not None:
+                                controller_blocked = True
                                 result = blocker
                             else:
                                 result = _run_internal_tool(
@@ -3843,7 +3860,7 @@ class Agent:
                                         str(checkpoint.get("model") or ""),
                                     )
                             _update_pending_terminal_operations(state, name, result)
-                            if not _tool_result_is_successful(result):
+                            if not _tool_result_is_successful(result) and not controller_blocked:
                                 try:
                                     error_text = json.dumps(result, ensure_ascii=False, default=str)[:6000]
                                 except Exception:
@@ -3922,7 +3939,7 @@ class Agent:
                             tool_ok = _tool_result_is_successful(result)
                             failure_step_id = step_id_at_tool_start
                             if failure_step_id is not None:
-                                if not tool_ok:
+                                if not tool_ok and not controller_blocked:
                                     step_tool_failures[failure_step_id] = (
                                         int(step_tool_failures.get(failure_step_id, 0)) + 1
                                     )
@@ -3939,7 +3956,7 @@ class Agent:
                         try:
                             parsed_tool_content = json.loads(content)
                             legacy_tool_ok = isinstance(parsed_tool_content, dict) and parsed_tool_content.get("ok") is True
-                            if not legacy_tool_ok:
+                            if not legacy_tool_ok and not controller_blocked:
                                 failure_blob = parsed_tool_content.get("error") or parsed_tool_content.get("result") or content
                                 if isinstance(failure_blob, dict):
                                     failure_blob = failure_blob.get("error") or json.dumps(failure_blob, ensure_ascii=False, default=str)
@@ -3956,9 +3973,12 @@ class Agent:
                                 "at_round": round_index,
                             })
                             del history[:-40]
-                        update_task_state(state, tool_name=name, arguments=args, result=content,
-                                          success=legacy_tool_ok, failure=legacy_failure_info)
-                        if legacy_tool_ok:
+                        if not controller_blocked:
+                            update_task_state(state, tool_name=name, arguments=args, result=content,
+                                              success=legacy_tool_ok, failure=legacy_failure_info)
+                        if controller_blocked:
+                            pass
+                        elif legacy_tool_ok:
                             state["simple_consecutive_failures"] = 0
                             state["simple_last_plan_review_failure_count"] = 0
                             state.pop("simple_last_failure_signature", None)
@@ -3970,9 +3990,17 @@ class Agent:
                             else:
                                 state["simple_consecutive_failures"] = 1
                             state["simple_last_failure_signature"] = failure_signature
-                        append_execution_event(state, "tool_result", tool_name=name,
-                                               detail=_tool_activity_label(name, args) + (" → подтверждено" if legacy_tool_ok else " → ошибка/неподтверждённый результат"),
-                                               status="succeeded" if legacy_tool_ok else "failed")
+                        append_execution_event(
+                            state,
+                            "tool_blocked" if controller_blocked else "tool_result",
+                            tool_name=name,
+                            detail=(
+                                _tool_activity_label(name, args) + " → заблокировано: активная terminal-операция"
+                                if controller_blocked else
+                                _tool_activity_label(name, args) + (" → подтверждено" if legacy_tool_ok else " → ошибка/неподтверждённый результат")
+                            ),
+                            status="blocked" if controller_blocked else ("succeeded" if legacy_tool_ok else "failed"),
+                        )
                         raw_archive = state.setdefault("raw_tool_result_archive", {})
                         visible_content = _model_visible_tool_content(name, content)
                         result_id, state["tool_result_archive"] = _store_tool_result(
@@ -4022,7 +4050,9 @@ class Agent:
                             action_succeeded = False
                             activity_payload = {"ok": False, "error": "Не удалось разобрать результат инструмента"}
                         set_activity(_tool_activity_summary(name, args, activity_payload))
-                        if action_succeeded:
+                        if controller_blocked:
+                            pass
+                        elif action_succeeded:
                             state["simple_consecutive_failures"] = 0
                             state["simple_last_plan_review_failure_count"] = 0
                             state.pop("simple_last_failure_signature", None)
