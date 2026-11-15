@@ -150,3 +150,18 @@ def test_attachment_upload_reuses_deterministic_path_without_touching_busy_pty(m
     destination = manager.upload_file("conversation-1", source, "clip.wav")
 
     assert destination.startswith("/workspace/uploads/")
+
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda manager: manager.start_operation("conversation-1", "sleep 1"),
+        lambda manager: manager.execute("conversation-1", "printf ok"),
+    ],
+)
+def test_shell_execution_entry_points_refuse_a_busy_session(invoke):
+    manager = _manager_with_active_operation()
+
+    with pytest.raises(SandboxBusyError, match="Bash-сессия занята"):
+        invoke(manager)
