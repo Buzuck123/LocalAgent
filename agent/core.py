@@ -2507,7 +2507,7 @@ class OllamaClient:
         try:
             with self.opener.open(
                 req,
-                timeout=timeout or settings.ollama_connect_timeout,
+                timeout=timeout or getattr(settings, "ollama_connect_timeout", getattr(settings, "request_timeout", 300)),
             ) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
@@ -2604,9 +2604,9 @@ class OllamaClient:
         first_chunk_received = False
         phase = "connect"
         model_name = str(payload.get("model") or self.model)
-        connect_timeout = float(timeout or settings.ollama_connect_timeout)
-        first_timeout = float(settings.ollama_first_token_timeout)
-        idle_timeout = float(settings.ollama_stream_idle_timeout)
+        connect_timeout = float(timeout or getattr(settings, "ollama_connect_timeout", 10))
+        first_timeout = float(getattr(settings, "ollama_first_token_timeout", 600))
+        idle_timeout = float(getattr(settings, "ollama_stream_idle_timeout", 300))
         self.last_generation_stats = {
             "active": True, "tokens_per_second": 0.0, "estimated": True,
             "eval_count": 0, "model": model_name, "started_at": time.time(),
@@ -2675,8 +2675,13 @@ class OllamaClient:
                 if not first_chunk_received:
                     first_chunk_received = True
                     phase = "stream_idle"
-                    if connection.sock is not None:
-                        connection.sock.settimeout(idle_timeout)
+                    stream_socket = connection.sock
+                    if stream_socket is None:
+                        stream_file = getattr(active_response, "fp", None)
+                        stream_raw = getattr(stream_file, "raw", None)
+                        stream_socket = getattr(stream_raw, "_sock", None)
+                    if stream_socket is not None:
+                        stream_socket.settimeout(idle_timeout)
                     self._record_request_event(
                         request_id, active_task_id, model_name, "first_chunk", started,
                         phase=phase, details={"elapsed_ms": int((time.monotonic() - started) * 1000)},
@@ -2962,7 +2967,7 @@ class OllamaClient:
     def _models_unlocked(self) -> dict:
         req = Request(self.base + "/api/tags", method="GET")
         try:
-            with self.opener.open(req, timeout=settings.ollama_connect_timeout) as response:
+            with self.opener.open(req, timeout=getattr(settings, "ollama_connect_timeout", 10)) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:1000]
@@ -3002,7 +3007,7 @@ class OllamaClient:
         )
 
         try:
-           with self.opener.open(req, timeout=15) as response:
+           with self.opener.open(req, timeout=getattr(settings, "ollama_connect_timeout", 10)) as response:
                return json.loads(response.read().decode("utf-8"))
 
         except HTTPError as exc:
