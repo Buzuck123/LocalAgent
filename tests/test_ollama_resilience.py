@@ -79,6 +79,7 @@ def test_stream_uses_phase_timeouts_without_total_generation_deadline(monkeypatc
     monkeypatch.setattr(core.db, "record_ollama_request_event",
                         lambda *args, **kwargs: events.append((args, kwargs)))
     monkeypatch.setattr(core, "settings", SimpleNamespace(
+        ollama_url="http://127.0.0.1:11434", model="test-model",
         ollama_connect_timeout=10, ollama_first_token_timeout=600,
         ollama_stream_idle_timeout=300, debug_llm_trace=False, debug_llm_thinking=False,
     ))
@@ -126,6 +127,7 @@ def test_stream_timeout_is_classified_by_last_response_phase(
     monkeypatch.setattr(core.http.client, "HTTPConnection", TimeoutConnection)
     monkeypatch.setattr(core.db, "record_ollama_request_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(core, "settings", SimpleNamespace(
+        ollama_url="http://127.0.0.1:11434", model="test-model",
         ollama_connect_timeout=10, ollama_first_token_timeout=600,
         ollama_stream_idle_timeout=300, debug_llm_trace=False, debug_llm_thinking=False,
     ))
