@@ -281,6 +281,13 @@ class SandboxManager:
             if session_created:
                 with self._guard:
                     self._new_sessions.add(conversation_id)
+            persisted_active_operation = self._find_persisted_active_operation_details(conversation_id)
+            if persisted_active_operation:
+                # The persistent PTY may still be executing a command after a
+                # LocalAgent restart. Do not send auth cleanup or proxy probes
+                # through that occupied shell; get_operation must be able to poll it.
+                self._runtimes[conversation_id] = runtime
+                return runtime
             # The auth token is needed by the SWE-ReX server only. Remove it
             # from the persistent interactive shell before the model can use it.
             cleared = runtime.run("unset SWEREX_AUTH_TOKEN", session="main", timeout=10)
@@ -734,7 +741,6 @@ print(json.dumps(result))
     def resize_terminal(self, conversation_id: str, rows: int = 24, cols: int = 80) -> dict[str, Any]:
         if not 1 <= int(rows) <= 1000 or not 1 <= int(cols) <= 1000:
             raise ValueError("rows and cols must be between 1 and 1000")
-        self.ensure_session_idle(conversation_id)
         runtime = self.get_runtime(conversation_id)
         resize = getattr(runtime, "resize_terminal", None)
         if not callable(resize):
