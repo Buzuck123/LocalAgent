@@ -1,6 +1,9 @@
 """Agent loop, task worker and Ollama API client."""
 import json
 import logging
+import http.client
+import socket
+import ssl
 import hashlib
 import re
 import inspect
@@ -12,6 +15,7 @@ from pathlib import Path
 from urllib.request import build_opener, ProxyHandler
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+from urllib.parse import urlsplit
 from typing import Any
 from .config import settings
 from . import db
@@ -2442,11 +2446,24 @@ def _mark_loaded_media_not_attached(model_messages: list[dict], kind: str, reaso
     previous["content"] = json.dumps(payload, ensure_ascii=False, default=str)
 
 
+class OllamaRequestTimeout(TimeoutError):
+    """An Ollama request stopped producing a response during a specific phase."""
+
+    def __init__(self, phase: str, timeout_seconds: float):
+        self.phase = str(phase)
+        self.timeout_seconds = float(timeout_seconds)
+        super().__init__(
+            f"Ollama {self.phase} timeout after {self.timeout_seconds:g}s without response data"
+        )
+
+
 class OllamaClient:
     def __init__(self):
         self.base = settings.ollama_url.rstrip("/")
         self.model = settings.model
         self._model_lock = threading.RLock()
+        # Serialize every Ollama API operation, including auxiliary calls and status checks.
+        self._request_lock = threading.RLock()
         self._active_response_lock = threading.RLock()
         self._active_responses: dict[str, Any] = {}
         self.last_generation_stats = {"tokens_per_second": None, "eval_count": 0, "eval_duration": 0, "model": self.model}
@@ -2465,13 +2482,32 @@ class OllamaClient:
         except Exception:
             return False
 
+    def _record_request_event(self, request_id: str, task_id: str | None, model: str,
+                              event_type: str, started: float, *, phase: str | None = None,
+                              error: Exception | None = None, details: dict | None = None) -> None:
+        try:
+            db.record_ollama_request_event(
+                request_id, task_id, model, event_type, phase=phase,
+                elapsed_ms=int(max(0.0, time.monotonic() - started) * 1000),
+                error_type=type(error).__name__ if error else None,
+                error=str(error)[:2000] if error else None,
+                details=details or {},
+            )
+        except Exception:
+            # Diagnostics must never turn a valid model response into a failed task.
+            logger.exception("Could not persist Ollama request event %s", event_type)
+
     def _post(self, endpoint: str, payload: dict, timeout: int | None = None) -> dict:
+        with self._request_lock:
+            return self._post_unlocked(endpoint, payload, timeout=timeout)
+
+    def _post_unlocked(self, endpoint: str, payload: dict, timeout: int | None = None) -> dict:
         data = json.dumps(payload).encode("utf-8")
         req = Request(self.base + endpoint, data=data, headers={"Content-Type": "application/json"})
         try:
             with self.opener.open(
                 req,
-                timeout=timeout or settings.request_timeout,
+                timeout=timeout or settings.ollama_connect_timeout,
             ) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
@@ -2550,80 +2586,185 @@ class OllamaClient:
         return profile
 
     def _post_stream(self, endpoint: str, payload: dict, timeout: int | None = None) -> dict:
+        with self._request_lock:
+            return self._post_stream_unlocked(endpoint, payload, timeout=timeout)
+
+    def _post_stream_unlocked(self, endpoint: str, payload: dict, timeout: int | None = None) -> dict:
         data = json.dumps(payload).encode("utf-8")
-        req = Request(self.base + endpoint, data=data, headers={"Content-Type": "application/json"})
         started = time.monotonic()
+        request_id = uuid.uuid4().hex
         text_chars = 0
         final = {}
         thinking_parts: list[str] = []
         message = {"role": "assistant", "content": ""}
         active_task_id = _CURRENT_MODEL_TASK_ID.get()
         active_response = None
-        self.last_generation_stats = {"active": True, "tokens_per_second": 0.0, "estimated": True,
-                                      "eval_count": 0, "model": payload.get("model"), "started_at": time.time()}
+        connection = None
+        connected = False
+        first_chunk_received = False
+        phase = "connect"
+        model_name = str(payload.get("model") or self.model)
+        connect_timeout = float(timeout or settings.ollama_connect_timeout)
+        first_timeout = float(settings.ollama_first_token_timeout)
+        idle_timeout = float(settings.ollama_stream_idle_timeout)
+        self.last_generation_stats = {
+            "active": True, "tokens_per_second": 0.0, "estimated": True,
+            "eval_count": 0, "model": model_name, "started_at": time.time(),
+            "request_id": request_id,
+        }
+        self._record_request_event(
+            request_id, active_task_id, model_name, "request_started", started,
+            phase="connect", details={"endpoint": endpoint},
+        )
         try:
-            # Preserve compatibility with tests and adapters that replace _post
-            # with an in-memory transport; production uses the streaming reader.
+            # Preserve compatibility with in-memory transports used by tests/adapters.
             if "_post" in self.__dict__:
                 result = self._post(endpoint, payload)
-                self.last_generation_stats = {"active": False, "tokens_per_second": None,
-                    "eval_count": int(result.get("eval_count") or 0), "model": result.get("model") or payload.get("model")}
+                self.last_generation_stats = {
+                    "active": False, "tokens_per_second": None,
+                    "eval_count": int(result.get("eval_count") or 0),
+                    "model": result.get("model") or model_name, "request_id": request_id,
+                }
+                self._record_request_event(
+                    request_id, active_task_id, model_name, "request_completed", started,
+                    phase="complete", details={"transport": "adapter"},
+                )
                 return result
-            with self.opener.open(req, timeout=timeout or getattr(settings, "request_timeout", 300)) as response:
-                active_response = response
-                if active_task_id is not None:
-                    with self._active_response_lock:
-                        self._active_responses[str(active_task_id)] = response
-                for raw_line in response:
-                    if not raw_line.strip():
-                        continue
-                    chunk = json.loads(raw_line.decode("utf-8"))
-                    if chunk.get("error"):
-                        raise RuntimeError(f"Ollama stream error: {str(chunk['error'])[:1000]}")
-                    part = chunk.get("message") or {}
-                    content = part.get("content") or ""
-                    thinking = part.get("thinking") or ""
-                    if thinking:
-                        thinking_parts.append(str(thinking))
-                    if content:
-                        message["content"] += content
-                        text_chars += len(content)
-                    if thinking:
-                        text_chars += len(thinking)
-                    if content or thinking:
-                        elapsed = max(0.1, time.monotonic() - started)
-                        # Live estimate; final rate is replaced with Ollama's exact eval stats.
-                        self.last_generation_stats.update({"active": True, "estimated": True,
-                            "tokens_per_second": round((text_chars / 4) / elapsed, 1),
-                            "generated_chars": text_chars, "elapsed_seconds": round(elapsed, 1)})
-                    if part.get("tool_calls"):
-                        message.setdefault("tool_calls", []).extend(part["tool_calls"])
-                    if chunk.get("done"):
-                        final = chunk
+
+            parts = urlsplit(self.base)
+            if parts.scheme not in {"http", "https"} or not parts.hostname:
+                raise ValueError(f"Unsupported Ollama URL: {self.base}")
+            connection_type = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+            connection_kwargs = {"timeout": connect_timeout}
+            if parts.scheme == "https":
+                connection_kwargs["context"] = ssl.create_default_context()
+            connection = connection_type(parts.hostname, parts.port, **connection_kwargs)
+            connection.connect()
+            connected = True
+            phase = "first_token"
+            self._record_request_event(
+                request_id, active_task_id, model_name, "connected", started,
+                phase=phase, details={"endpoint": endpoint},
+            )
+            if connection.sock is not None:
+                connection.sock.settimeout(first_timeout)
+            target = (parts.path.rstrip("/") + endpoint) or endpoint
+            if parts.query:
+                target += "?" + parts.query
+            connection.request(
+                "POST", target, body=data,
+                headers={"Content-Type": "application/json", "Accept": "application/x-ndjson"},
+            )
+            active_response = connection.getresponse()
+            if active_task_id is not None:
+                with self._active_response_lock:
+                    self._active_responses[str(active_task_id)] = active_response
+            if active_response.status >= 400:
+                detail = active_response.read(1000).decode("utf-8", errors="replace")
+                raise RuntimeError(f"Ollama HTTP {active_response.status}: {detail}")
+            self._record_request_event(
+                request_id, active_task_id, model_name, "response_headers", started,
+                phase=phase, details={"status": active_response.status},
+            )
+            for raw_line in active_response:
+                if not raw_line.strip():
+                    continue
+                chunk = json.loads(raw_line.decode("utf-8"))
+                if chunk.get("error"):
+                    raise RuntimeError(f"Ollama stream error: {str(chunk['error'])[:1000]}")
+                if not first_chunk_received:
+                    first_chunk_received = True
+                    phase = "stream_idle"
+                    if connection.sock is not None:
+                        connection.sock.settimeout(idle_timeout)
+                    self._record_request_event(
+                        request_id, active_task_id, model_name, "first_chunk", started,
+                        phase=phase, details={"elapsed_ms": int((time.monotonic() - started) * 1000)},
+                    )
+                part = chunk.get("message") or {}
+                content = part.get("content") or ""
+                thinking = part.get("thinking") or ""
+                if thinking:
+                    thinking_parts.append(str(thinking))
+                if content:
+                    message["content"] += content
+                    text_chars += len(content)
+                if thinking:
+                    text_chars += len(thinking)
+                if content or thinking:
+                    elapsed = max(0.1, time.monotonic() - started)
+                    self.last_generation_stats.update({
+                        "active": True, "estimated": True,
+                        "tokens_per_second": round((text_chars / 4) / elapsed, 1),
+                        "generated_chars": text_chars, "elapsed_seconds": round(elapsed, 1),
+                    })
+                if part.get("tool_calls"):
+                    message.setdefault("tool_calls", []).extend(part["tool_calls"])
+                if chunk.get("done"):
+                    final = chunk
+            if not final.get("done"):
+                raise RuntimeError("Ollama stream ended before the final done response")
             if (thinking_parts
                     and db._debug_setting_enabled("debug_llm_trace", getattr(settings, "debug_llm_trace", False))
                     and db._debug_setting_enabled("debug_llm_thinking", getattr(settings, "debug_llm_thinking", False))):
                 message["thinking"] = "".join(thinking_parts)
             result = dict(final)
             result["message"] = message
+            self._record_request_event(
+                request_id, active_task_id, model_name, "request_completed", started,
+                phase="complete", details={
+                    "prompt_eval_count": final.get("prompt_eval_count"),
+                    "eval_count": final.get("eval_count"),
+                },
+            )
             return result
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:1000]
-            self.last_generation_stats = {"active": False, "error": detail, "model": payload.get("model")}
-            raise RuntimeError(f"Ollama HTTP {exc.code}: {detail}") from exc
-        except (URLError, TimeoutError) as exc:
-            self.last_generation_stats = {"active": False, "error": str(exc), "model": payload.get("model")}
-            raise RuntimeError(f"Cannot connect to Ollama at {self.base}: {exc}") from exc
-        except Exception:
-            self.last_generation_stats = {"active": False, "model": payload.get("model")}
+        except (socket.timeout, TimeoutError) as exc:
+            timeout_phase = "connect" if not connected else ("first_token" if not first_chunk_received else "stream_idle")
+            timeout_value = connect_timeout if timeout_phase == "connect" else (
+                first_timeout if timeout_phase == "first_token" else idle_timeout
+            )
+            wrapped = OllamaRequestTimeout(timeout_phase, timeout_value)
+            self.last_generation_stats = {
+                "active": False, "error": str(wrapped), "model": model_name,
+                "request_id": request_id, "timeout_phase": timeout_phase,
+            }
+            self._record_request_event(
+                request_id, active_task_id, model_name, "request_timeout", started,
+                phase=timeout_phase, error=wrapped,
+                details={"timeout_seconds": timeout_value, "endpoint": endpoint},
+            )
+            raise wrapped from exc
+        except Exception as exc:
+            self.last_generation_stats = {
+                "active": False, "error": str(exc)[:2000], "model": model_name,
+                "request_id": request_id,
+            }
+            self._record_request_event(
+                request_id, active_task_id, model_name, "request_failed", started,
+                phase=phase, error=exc, details={"endpoint": endpoint},
+            )
             raise
         finally:
             if active_task_id is not None:
                 with self._active_response_lock:
                     if self._active_responses.get(str(active_task_id)) is active_response:
                         self._active_responses.pop(str(active_task_id), None)
+            if active_response is not None:
+                try:
+                    active_response.close()
+                except Exception:
+                    pass
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None, reasoning: bool = True, model: str | None = None) -> dict:
+        with self._request_lock:
+            return self._chat_unlocked(messages, tools=tools, reasoning=reasoning, model=model)
+
+    def _chat_unlocked(self, messages: list[dict], tools: list[dict] | None = None, reasoning: bool = True, model: str | None = None) -> dict:
         # Enforce Ollama's message-history invariant at the final API boundary too;
         # planner/reviewer/compaction calls must not bypass main-loop safeguards.
         messages = _sanitize_messages_for_ollama(messages)
@@ -2815,9 +2956,13 @@ class OllamaClient:
         return self._post("/api/generate", {"model": db.get_app_setting("selected_ollama_model", self.model), "keep_alive": 0, "prompt": ""}, timeout=60)
 
     def models(self) -> dict:
+        with self._request_lock:
+            return self._models_unlocked()
+
+    def _models_unlocked(self) -> dict:
         req = Request(self.base + "/api/tags", method="GET")
         try:
-            with self.opener.open(req, timeout=15) as response:
+            with self.opener.open(req, timeout=settings.ollama_connect_timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:1000]
@@ -2831,6 +2976,10 @@ class OllamaClient:
         return {"models": models, "selected_model": db.get_app_setting("selected_ollama_model", self.model)}
 
     def select_model(self, model: str) -> dict:
+        with self._request_lock:
+            return self._select_model_unlocked(model)
+
+    def _select_model_unlocked(self, model: str) -> dict:
         name = str(model or "").strip()
         if not name or len(name) > 200:
             raise ValueError("Укажите корректное имя модели Ollama")
@@ -2843,6 +2992,10 @@ class OllamaClient:
         return {"selected_model": name}
 
     def status(self) -> dict:
+        with self._request_lock:
+            return self._status_unlocked()
+
+    def _status_unlocked(self) -> dict:
         req = Request(
             self.base + "/api/ps",
             method="GET",
