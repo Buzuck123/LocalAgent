@@ -697,21 +697,6 @@ def _guard_loaded_file_context(result: dict[str, Any], messages: list[dict[str, 
             loaded_tokens = max(4096, int(result.get("frame_count") or 1) * 300 + 3000)
         else:
             loaded_tokens = estimate_tokens([{"role": "user", "content": json.dumps(result, ensure_ascii=False, default=str)}], model=model)
-        if prior_file_text_tokens + prior_media_tokens + loaded_tokens > MAX_MODEL_INPUT_TOKENS:
-            return {
-                "ok": False,
-                "error": (
-                    f"Новое вложение требует примерно {loaded_tokens:,} токенов; ранее загруженные файлы/медиа требуют около {prior_file_text_tokens + prior_media_tokens:,}. "
-                    f"Суммарно это превышает бюджет входа файлов в {MAX_MODEL_INPUT_TOKENS:,} токенов. "
-                    + (
-                        "Файл не был передан частично; уменьши length и читай текст последовательными фрагментами через next_start."
-                        if kind == "text" else
-                        "Файл не был передан; уменьши визуальный/мультимодальный объём или раздели материалы на несколько запросов."
-                    )
-                ),
-                "input_budget_tokens": MAX_MODEL_INPUT_TOKENS,
-                "estimated_input_tokens": loaded_tokens,
-            }
         projected = base_tokens + loaded_tokens + reserve
         # Estimates for multimodal tokens are approximate. Reject only a clear
         # overrun; near-boundary loads are attempted and handled by the real
@@ -919,6 +904,23 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 "result": result,
             })
             return result
+        if prior_file_text_tokens + prior_media_tokens + loaded_tokens > MAX_MODEL_INPUT_TOKENS:
+            return {
+                "ok": False,
+                "file_not_loaded": True,
+                "error": (
+                    f"Новое вложение требует примерно {loaded_tokens:,} токенов; ранее загруженные файлы/медиа требуют около {prior_file_text_tokens + prior_media_tokens:,}. "
+                    f"Суммарно это превышает бюджет входа файлов в {MAX_MODEL_INPUT_TOKENS:,} токенов. "
+                    + (
+                        "Файл не был передан частично; уменьши length и читай текст последовательными фрагментами через next_start."
+                        if kind == "text" else
+                        "Файл не был передан; уменьши визуальный/мультимодальный объём или раздели материалы на несколько запросов."
+                    )
+                ),
+                "input_budget_tokens": MAX_MODEL_INPUT_TOKENS,
+                "estimated_input_tokens": loaded_tokens,
+            }
+
         except Exception as exc:
             db.record_debug_trace(task_id, "tool_error", {
                 "name": name, "duration_seconds": round(time.monotonic() - started, 3),
