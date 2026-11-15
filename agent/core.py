@@ -923,23 +923,6 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 "result": result,
             })
             return result
-        if prior_file_text_tokens + prior_media_tokens + loaded_tokens > MAX_MODEL_INPUT_TOKENS:
-            return {
-                "ok": False,
-                "file_not_loaded": True,
-                "error": (
-                    f"Новое вложение требует примерно {loaded_tokens:,} токенов; ранее загруженные файлы/медиа требуют около {prior_file_text_tokens + prior_media_tokens:,}. "
-                    f"Суммарно это превышает бюджет входа файлов в {MAX_MODEL_INPUT_TOKENS:,} токенов. "
-                    + (
-                        "Файл не был передан частично; уменьши length и читай текст последовательными фрагментами через next_start."
-                        if kind == "text" else
-                        "Файл не был передан; уменьши визуальный/мультимодальный объём или раздели материалы на несколько запросов."
-                    )
-                ),
-                "input_budget_tokens": MAX_MODEL_INPUT_TOKENS,
-                "estimated_input_tokens": loaded_tokens,
-            }
-
         except Exception as exc:
             db.record_debug_trace(task_id, "tool_error", {
                 "name": name, "duration_seconds": round(time.monotonic() - started, 3),
