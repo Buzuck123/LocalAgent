@@ -318,3 +318,29 @@ def test_persisted_reset_receipt_clears_old_running_operation(monkeypatch):
     manager = object.__new__(SandboxManager)
 
     assert manager._find_persisted_active_operation_details("conversation-1") is None
+
+
+def test_confirmed_terminal_reset_bypasses_repeat_guard_only_while_operation_is_active(monkeypatch):
+    class Manager:
+        def __init__(self, active):
+            self.active = active
+
+        def get_active_operation(self, conversation_id):
+            return self.active
+
+    args = {"confirm_reset": True, "reason": "Unknown operation after poll and interrupt"}
+    monkeypatch.setattr(
+        "agent.sandbox_manager.sandbox_manager",
+        Manager({"operation_id": "stale-op", "state": "running"}),
+    )
+    assert core._is_safe_terminal_recovery_call(
+        "reset_terminal_session", args, "conversation-1"
+    )
+
+    monkeypatch.setattr("agent.sandbox_manager.sandbox_manager", Manager(None))
+    assert not core._is_safe_terminal_recovery_call(
+        "reset_terminal_session", args, "conversation-1"
+    )
+    assert not core._is_safe_terminal_recovery_call(
+        "reset_terminal_session", {"confirm_reset": False, "reason": "x"}, "conversation-1"
+    )
