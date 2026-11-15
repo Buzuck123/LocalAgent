@@ -9,6 +9,7 @@ from agent.sandbox_manager import SandboxBusyError, SandboxManager
 def _manager_with_active_operation(operation_id="remote-op-1"):
     manager = object.__new__(SandboxManager)
     manager._guard = threading.RLock()
+    manager._locks = {}
     manager._active_operations = {
         "conversation-1": {
             "operation_id": operation_id,
@@ -61,6 +62,7 @@ def test_sandbox_manager_detects_in_memory_active_operation_and_blocks_session_u
 def test_sandbox_manager_detects_persisted_active_operation_after_restart(monkeypatch):
     manager = object.__new__(SandboxManager)
     manager._guard = threading.RLock()
+    manager._locks = {}
     manager._active_operations = {}
     manager._find_persisted_active_operation_details = lambda cid: {
         "operation_id": "persisted-op",
