@@ -589,6 +589,20 @@ _TERMINAL_CONTROL_TOOLS = {
 }
 
 
+def _is_safe_terminal_recovery_call(tool_name, arguments, conversation_id):
+    """Polling and interrupting an active terminal operation must survive repeat guards."""
+    if tool_name != "terminal" or not isinstance(arguments, dict):
+        return False
+    command = str(arguments.get("command") or "")
+    if not command.strip():
+        # Empty terminal calls only poll; repeating a poll is safe and necessary.
+        return True
+    if command in {"\\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}:
+        from .sandbox_manager import sandbox_manager
+        return sandbox_manager.get_active_operation(conversation_id) is not None
+    return False
+
+
 def _active_terminal_operation_blocker(conversation_id, *, terminal_command=None):
     """Return a model-readable blocker while the conversation Bash session is busy."""
     from .sandbox_manager import sandbox_manager
@@ -3769,7 +3783,14 @@ class Agent:
                                 )
                             if arguments_error:
                                 raise ToolContractError(arguments_error)
-                            repeat_guard = should_block_repeated_call(
+                            # Empty terminal calls are read-only polls. Repeating
+                            # them is the recovery mechanism for a still-running
+                            # background operation, so historical identical-call
+                            # failures must never prevent polling or interrupting it.
+                            terminal_recovery_call = _is_safe_terminal_recovery_call(
+                                name, args, cid
+                            )
+                            repeat_guard = None if terminal_recovery_call else should_block_repeated_call(
                                 name, args, state.get("tool_failure_history", [])
                             )
                             if repeat_guard:
