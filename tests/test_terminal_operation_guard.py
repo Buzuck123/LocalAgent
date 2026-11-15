@@ -165,3 +165,41 @@ def test_shell_execution_entry_points_refuse_a_busy_session(invoke):
 
     with pytest.raises(SandboxBusyError, match="Bash-сессия занята"):
         invoke(manager)
+
+
+
+def test_empty_terminal_poll_bypasses_exact_repeat_guard():
+    assert core._is_safe_terminal_recovery_call(
+        "terminal", {"command": ""}, "conversation-1"
+    )
+
+
+def test_terminal_interrupt_bypasses_repeat_guard_only_for_active_operation(monkeypatch):
+    class Manager:
+        def __init__(self, active):
+            self.active = active
+
+        def get_active_operation(self, conversation_id):
+            return self.active
+
+    monkeypatch.setattr(
+        "agent.sandbox_manager.sandbox_manager",
+        Manager({"operation_id": "op-1", "state": "running"}),
+    )
+    assert core._is_safe_terminal_recovery_call(
+        "terminal", {"command": "CTRL+C"}, "conversation-1"
+    )
+
+    monkeypatch.setattr("agent.sandbox_manager.sandbox_manager", Manager(None))
+    assert not core._is_safe_terminal_recovery_call(
+        "terminal", {"command": "CTRL+C"}, "conversation-1"
+    )
+
+
+def test_nonempty_shell_commands_remain_subject_to_repeat_guard():
+    assert not core._is_safe_terminal_recovery_call(
+        "terminal", {"command": "ffmpeg -i input.mp4 output.wav"}, "conversation-1"
+    )
+    assert not core._is_safe_terminal_recovery_call(
+        "ask_model", {"file": "/workspace/audio.wav"}, "conversation-1"
+    )
