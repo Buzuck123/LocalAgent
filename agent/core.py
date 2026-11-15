@@ -697,34 +697,53 @@ def _guard_loaded_file_context(result: dict[str, Any], messages: list[dict[str, 
             loaded_tokens = max(4096, int(result.get("frame_count") or 1) * 300 + 3000)
         else:
             loaded_tokens = estimate_tokens([{"role": "user", "content": json.dumps(result, ensure_ascii=False, default=str)}], model=model)
+
+        # Check the model context first so the caller gets the most relevant
+        # reason when both the model window and the file-input budget are exceeded.
         projected = base_tokens + loaded_tokens + reserve
         # Estimates for multimodal tokens are approximate. Reject only a clear
         # overrun; near-boundary loads are attempted and handled by the real
         # Ollama response if its tokenizer disagrees with our estimate.
-        if projected <= limit or projected - limit <= safety_margin:
-            return result
-        return {
-            "ok": False,
-            "error": (
-                "Не удалось загрузить файл непосредственно в модель.\n"
-                "Причина: по консервативной оценке превышается доступное контекстное окно "
-                f"(текущая история и инструменты: около {base_tokens} токенов; "
-                f"файл: около {loaded_tokens}; резерв ответа: {reserve}; лимит: {limit}).\n"
-                + (
-                    "Файл не был передан для анализа. Повтори вызов с меньшим length; для продолжения используй start=next_start."
-                    if kind == "text" else
-                    "Файл не был передан для анализа. Уменьши размер изображения/длительность аудио или видео либо обработай файл через terminal."
-                )
-            ),
-            "file_not_loaded": True,
-            "estimated_tokens": loaded_tokens,
-            "available_context_tokens": max(0, limit - base_tokens - reserve - safety_margin),
-        }
+        if projected > limit and projected - limit > safety_margin:
+            return {
+                "ok": False,
+                "file_not_loaded": True,
+                "error": (
+                    "Не удалось загрузить файл непосредственно в модель.\\n"
+                    "Причина: по консервативной оценке превышается доступное контекстное окно "
+                    f"(текущая история и инструменты: около {base_tokens} токенов; "
+                    f"файл: около {loaded_tokens}; резерв ответа: {reserve}; лимит: {limit}).\\n"
+                    + (
+                        "Файл не был передан для анализа. Повтори вызов с меньшим length; для продолжения используй start=next_start."
+                        if kind == "text" else
+                        "Файл не был передан для анализа. Уменьши размер изображения/длительность аудио или видео либо обработай файл через terminal."
+                    )
+                ),
+                "estimated_tokens": loaded_tokens,
+                "available_context_tokens": max(0, limit - base_tokens - reserve - safety_margin),
+            }
+
+        if prior_file_text_tokens + prior_media_tokens + loaded_tokens > MAX_MODEL_INPUT_TOKENS:
+            return {
+                "ok": False,
+                "file_not_loaded": True,
+                "error": (
+                    f"Новое вложение требует примерно {loaded_tokens:,} токенов; ранее загруженные файлы/медиа требуют около {prior_file_text_tokens + prior_media_tokens:,}. "
+                    f"Суммарно это превышает бюджет входа файлов в {MAX_MODEL_INPUT_TOKENS:,} токенов. "
+                    + (
+                        "Файл не был передан частично; уменьши length и читай текст последовательными фрагментами через next_start."
+                        if kind == "text" else
+                        "Файл не был передан; уменьши визуальный/мультимодальный объём или раздели материалы на несколько запросов."
+                    )
+                ),
+                "input_budget_tokens": MAX_MODEL_INPUT_TOKENS,
+                "estimated_input_tokens": loaded_tokens,
+            }
+        return result
     except Exception as exc:
         # If estimation itself fails, do not reject the file on a guess.
         logger.warning("Could not estimate direct file context cost (%s); allowing bounded load", type(exc).__name__)
         return result
-
 
 def _replace_overflowed_file_load_with_error(messages: list[dict[str, Any]]) -> bool:
     """Remove a failed multimodal/text payload from the next request and replace its receipt."""
