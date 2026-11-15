@@ -589,6 +589,8 @@ print(json.dumps(result))
             text = (text.rstrip() + "\n" +
                     "[Внимание: SWE-ReX сообщил об ограничении объёма одного фрагмента вывода; "
                     "экранный вывод может быть неполным.]").lstrip("\n")
+        if still_running:
+            active["state"] = "waiting_input" if waiting else "running"
         return {
             "_terminal_text": text,
             "_terminal_output": output,
