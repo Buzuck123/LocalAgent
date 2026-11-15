@@ -90,3 +90,38 @@ def test_download_file_checks_busy_guard_before_using_runtime(tmp_path, monkeypa
         )
 
     assert not target.exists()
+
+
+
+def test_controller_allows_poll_and_interrupt_but_blocks_new_shell_command(monkeypatch):
+    class Manager:
+        def get_active_operation(self, conversation_id):
+            return {"operation_id": "remote-op", "state": "running"}
+
+    monkeypatch.setattr("agent.sandbox_manager.sandbox_manager", Manager())
+
+    assert core._active_terminal_operation_blocker(
+        "conversation-1", terminal_command=""
+    ) is None
+    assert core._active_terminal_operation_blocker(
+        "conversation-1", terminal_command="CTRL+C"
+    ) is None
+
+    blocker = core._active_terminal_operation_blocker(
+        "conversation-1", terminal_command="ls -la"
+    )
+    assert blocker["blocked_by_active_terminal_operation"] is True
+    assert "не запущена" in blocker["error"]
+    assert "stdin" in blocker["error"]
+
+
+def test_controller_allows_interactive_input_only_when_terminal_waits_for_input(monkeypatch):
+    class Manager:
+        def get_active_operation(self, conversation_id):
+            return {"operation_id": "remote-op", "state": "waiting_input"}
+
+    monkeypatch.setattr("agent.sandbox_manager.sandbox_manager", Manager())
+
+    assert core._active_terminal_operation_blocker(
+        "conversation-1", terminal_command="yes"
+    ) is None
