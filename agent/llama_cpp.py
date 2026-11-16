@@ -97,7 +97,14 @@ class LlamaCppClient:
 
     def status(self) -> dict:
         try:
-            from urllib.parse import urlsplit, urlunsplit\n            parts = urlsplit(self.base)\n            root = urlunsplit((parts.scheme, parts.netloc, parts.path.removesuffix("/v1"), "", ""))\n            req = Request(root.rstrip("/") + "/health", headers={"Accept": "application/json"})\n            with self.opener.open(req, timeout=10) as response:\n                raw = response.read()\n            health = json.loads(raw.decode("utf-8")) if raw else {}\n            return {"provider": "llama_cpp", "available": True, "health": health}
+            from urllib.parse import urlsplit, urlunsplit
+            parts = urlsplit(self.base)
+            root = urlunsplit((parts.scheme, parts.netloc, parts.path.removesuffix("/v1"), "", ""))
+            req = Request(root.rstrip("/") + "/health", headers={"Accept": "application/json"})
+            with self.opener.open(req, timeout=10) as response:
+                raw = response.read()
+            health = json.loads(raw.decode("utf-8")) if raw else {}
+            return {"provider": "llama_cpp", "available": True, "health": health}
         except Exception as exc:
             return {"provider": "llama_cpp", "available": False, "error": str(exc)}
 
