@@ -1022,6 +1022,9 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
         idle_seconds=float(terminal_result.get("_idle_seconds") or 0),
         runtime_error=terminal_result.get("_runtime_error"),
     )
+    snapshot["command_hard_timeout_seconds"] = terminal_result.get("_terminal_hard_timeout")
+    snapshot["runtime_poll_errors"] = terminal_result.get("_terminal_runtime_errors") or []
+    snapshot["previous_diagnostic_actions"] = actions[-12:]
     if not messages:
         messages = [{"role": "system", "content": TERMINAL_DIAGNOSTIC_SYSTEM_PROMPT}]
         db.create_terminal_diagnostic(diagnostic_id, task_id, conversation_id, operation_id, messages)
@@ -1109,7 +1112,13 @@ def _terminal_recovery_report(action, reason, result):
         consequence = "Bash-сессия пересоздана в прежнем контейнере; команда не считается выполненной, возможны частичные изменения файлов."
     else:
         consequence = "Существующий контейнер перезапущен; команда не считается выполненной, необходимо проверить файлы и окружение."
-    return f"Диагностика: {reason}\\nВыполнено: {action}. {consequence}"
+    if action == "interrupt_operation" and isinstance(result.get("recovery"), dict):
+        if result["recovery"].get("state") != "interrupted":
+            consequence = (
+                "Попытка прерывания не подтвердила остановку команды; состояние операции остаётся неопределённым. "
+                "Перед продолжением необходимо проверить процессы и файлы."
+            )
+    return f"Диагностика: {reason}\nВыполнено: {action}. {consequence}"
 
 
 def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
@@ -1164,6 +1173,22 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                         diagnostic_actions=diagnostic_actions,
                     )
                     if action == "continue_waiting":
+                        if result.get("state") == "runtime_unresponsive":
+                            from .sandbox_manager import sandbox_manager
+                            recovery_deadline = time.monotonic() + max(
+                                30.0, float(getattr(settings, "terminal_max_wait_seconds", 300))
+                            )
+                            while time.monotonic() < recovery_deadline:
+                                if sandbox_manager.is_runtime_responsive(task["conversation_id"]):
+                                    break
+                                time.sleep(10)
+                            if not sandbox_manager.is_runtime_responsive(task["conversation_id"]):
+                                result = dict(result)
+                                result["_diagnostic_due"] = True
+                                result["_elapsed_seconds"] = float(result.get("_elapsed_seconds") or 0) + max(
+                                    30.0, float(getattr(settings, "terminal_max_wait_seconds", 300))
+                                )
+                                continue
                         result = dispatch_tool("terminal", {"command": ""},
                                                conversation_id=task["conversation_id"])
                         continue
@@ -1188,7 +1213,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 # Routine long-running/failed commands return only their terminal output.
                 visible_text = str(result.get("_terminal_output") or result.get("_terminal_text") or "")
                 if diagnostic_intervened:
-                    visible_text = (visible_text.rstrip() + "\\n\\n" +
+                    visible_text = (visible_text.rstrip() + "\n\n" +
                                     str(result.get("diagnostic_report") or "")).strip()
                 result = {
                     "_terminal_text": visible_text,

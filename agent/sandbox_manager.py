@@ -474,7 +474,12 @@ print(json.dumps(result))
                     "cursor": int(recovered_record.get("cursor", 0) or 0),
                     "output": str(recovered_record.get("_terminal_output", "") or ""),
                     "command": recovered_record.get("_terminal_command"),
-                    "started_monotonic": recovered_now, "last_output_monotonic": recovered_now,
+                    "command_timeout": recovered_record.get("_terminal_hard_timeout"),
+                    "runtime_errors": list(recovered_record.get("_terminal_runtime_errors") or [])[-10:],
+                    "started_monotonic": recovered_now - max(0.0, time.time() - float(recovered_record.get("_terminal_started_at") or time.time())),
+                    "last_output_monotonic": recovered_now - max(0.0, time.time() - float(recovered_record.get("_terminal_last_output_at") or time.time())),
+                    "started_at_wall": float(recovered_record.get("_terminal_started_at") or time.time()),
+                    "last_output_at_wall": float(recovered_record.get("_terminal_last_output_at") or time.time()),
                 }
                 with self._guard:
                     self._active_operations[conversation_id] = active
@@ -497,8 +502,10 @@ print(json.dumps(result))
             started_now = time.monotonic()
             active = {
                 "operation_id": operation_id, "session": "main", "cursor": 0,
-                "output": "", "command": command, "started_monotonic": started_now,
+                "output": "", "command": command, "command_timeout": timeout,
+                "runtime_errors": [], "started_monotonic": started_now,
                 "last_output_monotonic": started_now,
+                "started_at_wall": time.time(), "last_output_at_wall": time.time(),
             }
             with self._guard:
                 self._active_operations[conversation_id] = active
@@ -540,6 +547,11 @@ print(json.dumps(result))
                 runtime_errors += 1
                 runtime_error_text = f"{type(exc).__name__}: {str(exc)[:500]}"
                 active["last_runtime_error"] = runtime_error_text
+                active.setdefault("runtime_errors", []).append({
+                    "elapsed_seconds": round(max(0.0, time.monotonic() - command_started_at), 3),
+                    "error": runtime_error_text,
+                })
+                active["runtime_errors"] = active["runtime_errors"][-10:]
                 # A single failed poll is not proof of runtime failure.
                 if runtime_errors >= 3:
                     state = "runtime_unresponsive"
@@ -552,6 +564,7 @@ print(json.dumps(result))
                 active["output"] = str(active.get("output") or "") + chunk
                 last_output_at = time.monotonic()
                 active["last_output_monotonic"] = last_output_at
+                active["last_output_at_wall"] = time.time()
             active["output_truncated"] = bool(active.get("output_truncated")) or bool(
                 latest.get("stdout_truncated") or latest.get("output_truncated")
             )
@@ -612,6 +625,10 @@ print(json.dumps(result))
             "_terminal_text": text,
             "_terminal_output": output,
             "_terminal_command": active.get("command"),
+            "_terminal_hard_timeout": active.get("command_timeout"),
+            "_terminal_started_at": active.get("started_at_wall"),
+            "_terminal_last_output_at": active.get("last_output_at_wall"),
+            "_terminal_runtime_errors": list(active.get("runtime_errors") or [])[-10:],
             "state": state if not still_running else ("waiting_input" if waiting else state),
             "operation_id": operation_id if still_running else None,
             "cursor": active.get("cursor", 0),
@@ -637,7 +654,12 @@ print(json.dumps(result))
         record = db.get_sandbox(conversation_id) or {}
         container_id = str(record.get("container_id") or "")
         snapshot: dict[str, Any] = {
+            "sampled_at": db.now(),
             "operation_id": str(operation_id), "command": str(command or "")[:8000],
+            "llm_duration_forecast": {
+                "available": False,
+                "reason": "Предварительный прогноз не запрашивается, чтобы не замедлять обычные команды.",
+            },
             "terminal_output_tail": str(output or "")[-12000:],
             "elapsed_seconds": round(max(0.0, float(elapsed_seconds)), 3),
             "idle_seconds": round(max(0.0, float(idle_seconds)), 3),
@@ -681,6 +703,23 @@ print(json.dumps(result))
             except Exception as exc:
                 snapshot[key] = {"error": type(exc).__name__}
         return snapshot
+
+    def is_runtime_responsive(self, conversation_id: str) -> bool:
+        """Check SWE-ReX availability without touching the persistent PTY."""
+        runtime = self._runtimes.get(conversation_id)
+        if runtime is None:
+            record = db.get_sandbox(conversation_id)
+            if not record:
+                return False
+            try:
+                runtime = self._runtime_factory(port=record["host_port"], token=record["auth_token"])
+                self._runtimes[conversation_id] = runtime
+            except Exception:
+                return False
+        try:
+            return bool(runtime.is_alive())
+        except Exception:
+            return False
 
     def restart_container(self, conversation_id: str, *, reason: str) -> dict[str, Any]:
         """Restart the existing container without removing it or its writable layer."""
