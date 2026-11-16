@@ -12,7 +12,7 @@ LocalAgent is a local AI agent built around Ollama, a persistent conversation pl
 - SWE-ReX timeouts trigger a bounded reset and health probe of the conversation's `main` Bash session without recreating the Podman container or deleting files.
 - Timeout results report whether shell recovery succeeded; a failed recovery marks the sandbox as unhealthy instead of pretending it is ready.
 - Ollama tool-call arguments are normalized strictly and malformed argument payloads become recoverable tool errors instead of crashing the task/checkpoint loop.
-- The model sees one terminal tool. LocalAgent waits for command completion, returning the accumulated PTY transcript without appending an exit code; after 10 seconds without new output it returns control to the model, while continuing output can keep one wait open for up to 300 seconds. The model can wait again with an empty terminal call, send interactive input, or interrupt with Ctrl+C. Operation IDs, cursors and background polling remain internal. The command hard timeout is unlimited unless explicitly supplied.
+- The model sees one terminal tool. LocalAgent waits internally for the command instead of asking the model to poll repeatedly. A silent command is not treated as hung just because it has produced no output; after the configured wait checkpoint, a separate diagnostic agent reviews the command, relevant tool history, prior errors, runtime health, and bounded host/container diagnostics. It can continue waiting or use controlled recovery actions. The command hard timeout is unlimited unless explicitly supplied.
 - Cancel closes the active Ollama stream and independently interrupts the remote terminal process; unconfirmed remote cancellation is reported as interrupted, not cancelled.
 - The shared Xray proxy is started/reconnected to the configured network and its DNS, SOCKS5 handshake and Privoxy egress are probed from the sandbox before network-dependent terminal commands; recognized mid-command proxy/DNS failures trigger a bounded health recheck but never an automatic command replay.
 - The active Ollama model selects Direct vs Plan for new tasks, with a conservative fallback if its response is invalid or unavailable.
@@ -247,14 +247,21 @@ container/
 ```
 
 
-## Terminal waiting behavior
+## Terminal waiting, monitoring, and recovery
 
 The model-facing computer interface is a single `terminal` tool. It does not see terminal pools, operation IDs, polling tools, or separate input/interrupt tools. While the persistent Bash command is running, an empty `command` means wait, ordinary text is sent as input to the foreground process, and Ctrl+C (`\\u0003`) interrupts it. After the command finishes, the next non-empty call starts a new Bash command.
 
-- `TERMINAL_IDLE_TIMEOUT_SECONDS=10`: return control after this many seconds without new terminal output.
-- `TERMINAL_MAX_WAIT_SECONDS=300`: maximum time one terminal tool call waits, even if output continues.
+LocalAgent polls SWE-ReX internally and waits through periods with no output. It does not return control to the main LLM just because the terminal is silent, and the model does not need to issue repeated empty `terminal` calls. At the configured wait checkpoint, if the operation is still active, LocalAgent starts a separate diagnostic-agent cycle.
 
-These values control when LocalAgent returns control to the LLM; they are not the remote command's hard execution timeout. The optional `timeout` argument remains a separate per-command hard timeout.
+The diagnostic agent has its own system prompt and a restricted tool set. It receives the command, terminal transcript, relevant tool history, previous timeout/error information, and a bounded diagnostic snapshot. It does not receive the original user task and cannot run arbitrary shell commands. It can request additional fixed diagnostics, continue waiting, interrupt the operation, recreate the Bash session, or restart the sandbox container when evidence supports that action. Runtime unresponsiveness is treated as uncertainty, not proof that the command is hung.
+
+- `TERMINAL_IDLE_TIMEOUT_SECONDS=300`: silence interval used to classify a running operation as silent and trigger diagnostic review; silence alone does not interrupt it.
+- `TERMINAL_MAX_WAIT_SECONDS=300`: maximum duration of one internal wait cycle before the diagnostic checkpoint.
+- `TERMINAL_POLL_INTERVAL_SECONDS=2`: interval between internal SWE-ReX operation checks.
+
+These settings do not impose a hard execution timeout. The optional `timeout` argument remains a separate per-command hard timeout; without it, a command has no command-level deadline.
+
+The diagnostic agent only reports back to the main agent when it performed a recovery action. A Bash-session reset preserves the container and workspace files but loses shell variables, functions, and processes; the interrupted command may have made partial file changes and must be checked. A container restart preserves the existing container's writable filesystem and the shared `/host-workspace` mount, but loses running processes and may leave an installation or other command incomplete. If diagnostics only confirm that a command is still working and choose to wait, the main agent receives the ordinary terminal result without extra diagnostic narration.
 
 
 ## Planning and context lifecycle (0.7.2)
