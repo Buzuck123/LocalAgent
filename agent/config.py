@@ -14,8 +14,7 @@ def _bool(name: str, default: bool = False) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
-    ollama_url: str = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-    model: str = os.getenv("OLLAMA_MODEL", "ornith-1.5:9b")
+    # Provider is a deployment default; the selected model remains a UI/DB setting and is pinned per task.\n    llm_provider: str = os.getenv("LLM_PROVIDER", "ollama").strip().lower()\n    ollama_url: str = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")\n    llama_cpp_url: str = os.getenv("LLAMA_CPP_URL", "http://127.0.0.1:8081/v1")\n    llama_cpp_model: str = os.getenv("LLAMA_CPP_MODEL", "ternary-bonsai-2-27b")\n    llama_cpp_context: int = int(os.getenv("LLAMA_CPP_CONTEXT", "32768"))\n    llama_cpp_timeout: int = int(os.getenv("LLAMA_CPP_TIMEOUT", "600"))\n    model: str = os.getenv("OLLAMA_MODEL", "ornith-1.5:9b")
     # Fallback used only for LocalAgent's history budgeting when the selected
     # Ollama tag does not expose PARAMETER num_ctx. Never sent to Ollama.
     num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "65536"))
