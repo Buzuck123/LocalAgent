@@ -1,13 +1,14 @@
 import json
 
 from agent.llama_cpp import LlamaCppClient
+from agent.config import settings
 
 
 def test_model_profile_uses_configured_server_context():
     client = LlamaCppClient()
     profile = client.model_profile("bonsai")
     assert profile["model"] == "bonsai"
-    assert profile["num_ctx"] == 32768
+    assert profile["num_ctx"] == settings.llama_cpp_context
     assert profile["source"] == "llama_cpp_server_config"
 
 
