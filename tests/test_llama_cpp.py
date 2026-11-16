@@ -137,3 +137,28 @@ def test_document_visuals_are_not_claimed_as_delivered():
     assert "только извлечённый текст" in prior["result"]["note"]
     assert "Медиа не переданы модели" in result[2]["content"]
     assert "has been supplied" not in result[2]["content"]
+
+
+def test_multiple_system_messages_are_merged_at_the_beginning():
+    messages = [
+        {"role": "user", "content": "First user turn"},
+        {"role": "system", "content": "Primary agent instructions"},
+        {"role": "assistant", "content": "Previous response"},
+        {"role": "system", "content": "Current plan instructions"},
+        {"role": "user", "content": "Continue"},
+    ]
+
+    result = LlamaCppClient._safe_messages(messages, "bonsai")
+
+    system_messages = [item for item in result if item["role"] == "system"]
+    assert len(system_messages) == 1
+    assert result[0] is system_messages[0]
+    assert "Primary agent instructions" in result[0]["content"]
+    assert "Current plan instructions" in result[0]["content"]
+    assert "LOCAL_AGENT_TOOL_SCOPE" in result[0]["content"]
+    assert [item["content"] for item in result if item["role"] == "user"] == [
+        "First user turn", "Continue"
+    ]
+    assert [item["role"] for item in result[1:]] == [
+        "user", "assistant", "user"
+    ]
