@@ -87,7 +87,7 @@ def test_terminal_diagnostic_isolated_from_user_task_and_uses_only_diagnostic_to
     assert action == "continue_waiting"
     assert recovery is None
     assert diagnostic_id
-    assert "исходную пользовательскую задачу" in messages[0]["content"]
+    assert "НЕ получаешь её исходный запрос" in messages[0]["content"]
     assert all("private user goal" not in str(item) for item in messages)
     assert {item["function"]["name"] for item in captured["tools"]} == {
         "get_additional_terminal_diagnostics",
