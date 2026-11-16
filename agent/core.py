@@ -1326,7 +1326,7 @@ ASK_MODEL_NAME = "gemma4:12b-64k-32k-42gpu"
 
 
 def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model, context_limit):
-    """Run a one-shot, history-free Gemma 4 request and budget its receipt for the main model."""
+    """Run a one-shot, history-free auxiliary-model request and budget its receipt."""
     if not isinstance(arguments, dict):
         raise ValueError("ask_model arguments must be an object")
     prompt = arguments.get("prompt")
@@ -1357,6 +1357,12 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
         loaded = load_file_for_model(file_path, conversation_id=conversation_id)
         if loaded.get("ok") is not True:
             raise ValueError(str(loaded.get("error") or "Не удалось подготовить файл"))
+        if settings.llm_provider == "llama_cpp" and loaded.get("kind") in {"image", "audio", "video"}:
+            return {
+                "ok": False,
+                "error": "Текущий llama.cpp сервер принимает только текст. Изображение, аудио или видео не передавалось модели.",
+                "file": {"path": file_path, "kind": loaded.get("kind"), "name": loaded.get("name")},
+            }
         file_info = {
             "path": file_path,
             "kind": loaded.get("kind"),
@@ -1374,11 +1380,11 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
             user_content += "\n\n--- Содержимое файла: " + str(loaded.get("name") or file_path) + " ---\n"
             user_content += str(loaded.get("extracted_text") or "")
         elif not attachments:
-            raise ValueError("Не удалось подготовить содержимое файла для Gemma 4")
+            raise ValueError("Не удалось подготовить содержимое файла для вспомогательной модели")
 
     # Keep ask_model input bounded independently of the parent agent's context.
     # Text tokenization is model-specific; estimate_tokens uses the selected
-    # Gemma tokenizer approximation, while media is budgeted conservatively.
+    # Use the selected auxiliary model tokenizer approximation; media is budgeted conservatively.
     try:
         input_tokens = estimate_tokens(
             [{"role": "user", "content": user_content}], model=auxiliary_model
@@ -1503,7 +1509,7 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
             return {
                 "ok": True,
                 "answer": (
-                    "Gemma 4 не смогла обработать запрос: входные данные превысили доступное контекстное окно. "
+                    f"{auxiliary_label} не смогла обработать запрос: входные данные превысили доступное контекстное окно. "
                     "Ответ модели не получен."
                 ),
                 "context_overflow": True,
