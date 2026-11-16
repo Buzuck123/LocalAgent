@@ -42,14 +42,14 @@ form{display:flex;gap:10px;padding:16px;background:#fff;border-top:1px solid #dd
 
 </style></head>
 <body><div class="layout">
-<aside><h2>LocalAgent Autonomous</h2><div class="small">Автономный локальный агент · Ollama</div>
+<aside><h2>LocalAgent Autonomous</h2><div class="small">Автономный локальный агент · локальные LLM</div>
 <button id="new">＋ Новый диалог</button><div id="conversations"></div>
-<hr><button id="refresh">Обновить задачи</button><button id="ollama">Статус Ollama</button>
+<hr><button id="refresh">Обновить задачи</button><button id="ollama">Статус LLM</button>
 <label class="small" style="display:flex;gap:7px;align-items:center;margin:8px 0"><input id="debug-trace" type="checkbox"> Debug Trace</label>
 <label class="small" style="display:flex;gap:7px;align-items:center;margin:8px 0"><input id="debug-thinking" type="checkbox"> Сохранять thinking</label>
 <button id="trace-view" type="button">Просмотр трассировки задачи</button><button id="trace-export" type="button">Экспорт трассировки задачи</button>
 <div class="small">Трассировка выключена по умолчанию; секреты фильтруются перед записью.</div><div class="small">По умолчанию доступен только на этом компьютере.</div></aside>
-<section class="main"><header><strong id="title">Выберите диалог</strong><div style="display:flex;align-items:center;gap:12px;min-width:0"><span id="proxy-status" title="Состояние общего Xray/Privoxy">Интернет: —</span><div id="model-control"><span>Модель</span><select id="model-select" title="Установленные модели Ollama"><option>Загрузка…</option></select><button id="model-refresh" type="button" title="Обновить список моделей">↻</button></div><span id="status"></span></div></header>
+<section class="main"><header><strong id="title">Выберите диалог</strong><div style="display:flex;align-items:center;gap:12px;min-width:0"><span id="proxy-status" title="Состояние общего Xray/Privoxy">Интернет: —</span><div id="model-control"><span>Модель</span><select id="model-select" title="Модели активного LLM-провайдера"><option>Загрузка…</option></select><button id="model-refresh" type="button" title="Обновить список моделей">↻</button></div><span id="status"></span></div></header>
 <div id="messages"></div>
 <div id="activity-panel" class="collapsed" aria-live="polite"><div id="activity-toolbar"><div id="activity-heading">Работа агента</div><div id="activity-current">Нет активной задачи</div><div id="generation-speed" style="font-weight:700;font-size:14px;color:#174b83;white-space:nowrap">Генерация: — tok/s</div><button id="activity-toggle" type="button" aria-expanded="false" aria-controls="activity-report activity-history-details">Развернуть</button></div><div id="activity-report"></div><details id="activity-history-details"><summary id="activity-history-summary">История вызовов инструментов</summary><div id="activity-history"><div class="operation">Нет вызовов инструментов для отображения.</div></div></details></div>
 <div id="tasks"><strong>Задачи и управление</strong><div id="tasklist"></div></div>
@@ -95,10 +95,10 @@ async function loadOllamaModels(){
         }
         select.value=data.selected_model||'';select.dataset.current=select.value;select.disabled=models.length===0;refreshSelectedModelProfile();
         if(!models.length){const option=document.createElement('option');option.textContent='Нет установленных моделей';option.value='';select.append(option)}
-    }catch(error){select.replaceChildren();const option=document.createElement('option');option.textContent='Ollama недоступна';option.value='';select.append(option);select.disabled=true;select.title=error.message}
+    }catch(error){select.replaceChildren();const option=document.createElement('option');option.textContent='LLM-провайдер недоступен';option.value='';select.append(option);select.disabled=true;select.title=error.message}
 }
 async function refreshSelectedModelProfile(){
-    try{const p=await api('/api/ollama/model-profile');$('status').textContent=`${p.model} · контекст ${Number(p.num_ctx).toLocaleString('ru-RU')} · генерация до ${Number(p.num_predict).toLocaleString('ru-RU')}`;}
+    try{const p=await api('/api/ollama/model-profile');const predict=Number(p.num_predict)>0?` · генерация до ${Number(p.num_predict).toLocaleString('ru-RU')}`:'';$('status').textContent=`${p.model} · контекст ${Number(p.num_ctx).toLocaleString('ru-RU')}${predict}`;}
     catch(_){$('status').textContent='Параметры модели недоступны'}
 }
 $('model-refresh').addEventListener('click',async()=>{await loadOllamaModels();await refreshSelectedModelProfile()});
