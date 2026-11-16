@@ -438,7 +438,10 @@ def sandbox_proxy_status():
 @app.get("/api/ollama/model-profile")
 def ollama_model_profile():
     from .core import client
-    model = db.get_app_setting("selected_ollama_model", settings.model)
+    fallback_model = settings.llama_cpp_model if settings.llm_provider == "llama_cpp" else settings.model
+    model = db.get_app_setting("selected_ollama_model", fallback_model)
+    if settings.llm_provider == "llama_cpp":
+        model = client.models().get("selected_model") or model
     try:
         return client.model_profile(model)
     except Exception as exc:
