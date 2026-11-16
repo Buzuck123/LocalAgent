@@ -1333,8 +1333,8 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("prompt обязателен и должен быть непустой строкой")
 
-    auxiliary_model = ASK_MODEL_NAME if settings.llm_provider == "ollama" else main_model
-    auxiliary_label = "Gemma 4" if settings.llm_provider == "ollama" else "вспомогательная модель llama.cpp"
+    auxiliary_model = ASK_MODEL_NAME if getattr(settings, "llm_provider", "ollama") == "ollama" else main_model
+    auxiliary_label = "Gemma 4" if getattr(settings, "llm_provider", "ollama") == "ollama" else "вспомогательная модель llama.cpp"
     file_path = arguments.get("file")
     user_content = prompt.strip()
     attachments = []
@@ -1357,7 +1357,7 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
         loaded = load_file_for_model(file_path, conversation_id=conversation_id)
         if loaded.get("ok") is not True:
             raise ValueError(str(loaded.get("error") or "Не удалось подготовить файл"))
-        if settings.llm_provider == "llama_cpp" and loaded.get("kind") in {"image", "audio", "video"}:
+        if getattr(settings, "llm_provider", "ollama") == "llama_cpp" and loaded.get("kind") in {"image", "audio", "video"}:
             return {
                 "ok": False,
                 "error": "Текущий llama.cpp сервер принимает только текст. Изображение, аудио или видео не передавалось модели.",
@@ -3324,13 +3324,13 @@ class OllamaClient:
                 f"Cannot connect to Ollama at {self.base}: {exc}"
             ) from exc
 
-if settings.llm_provider == "llama_cpp":
+if getattr(settings, "llm_provider", "ollama") == "llama_cpp":
     from .llama_cpp import LlamaCppClient
     client = LlamaCppClient()
-elif settings.llm_provider == "ollama":
+elif getattr(settings, "llm_provider", "ollama") == "ollama":
     client = OllamaClient()
 else:
-    raise RuntimeError(f"Unsupported LLM_PROVIDER: {settings.llm_provider!r}")
+    raise RuntimeError(f"Unsupported LLM_PROVIDER: {getattr(settings, "llm_provider", "ollama")!r}")
 
 class TaskControl:
     def __init__(self):
@@ -3474,11 +3474,11 @@ class Agent:
                 thread.start()
                 return db.get_task(pending["id"])
         task = db.create_task(conversation_id, user_message, attachments=attachments or [])
-        selected_model = (client.models().get("selected_model") if settings.llm_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if settings.llm_provider == "llama_cpp" else settings.model)
+        selected_model = (client.models().get("selected_model") if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else settings.model)
         try:
             selected_profile = client.model_profile(selected_model)
         except Exception:
-            selected_profile = {"num_ctx": settings.llama_cpp_context if settings.llm_provider == "llama_cpp" else settings.num_ctx, "num_predict": None}
+            selected_profile = {"num_ctx": settings.llama_cpp_context if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else settings.num_ctx, "num_predict": None}
         initial_checkpoint = {
             "version": 4,
             "mode": "unified",
@@ -3616,7 +3616,7 @@ class Agent:
             except Exception: cp = {}
             pinned = cp.get("model") if isinstance(cp, dict) else None
             if not pinned:
-                pinned = (client.models().get("selected_model") if settings.llm_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if settings.llm_provider == "llama_cpp" else settings.model)
+                pinned = (client.models().get("selected_model") if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else settings.model)
                 if isinstance(cp, dict):
                     cp["model"] = pinned
                     db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
@@ -3629,7 +3629,7 @@ class Agent:
                     cp["model_num_predict"] = client.model_profile(pinned).get("num_predict")
                     db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
                 except Exception:
-                    pinned_context = int(settings.llama_cpp_context if settings.llm_provider == "llama_cpp" else getattr(settings, "num_ctx", 65536))
+                    pinned_context = int(settings.llama_cpp_context if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else getattr(settings, "num_ctx", 65536))
             _CURRENT_MODEL_CONTEXT.set(int(pinned_context))
             return self._run_unified_task_impl(task_id, control)
         finally:
