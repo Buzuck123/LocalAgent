@@ -1333,6 +1333,8 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("prompt обязателен и должен быть непустой строкой")
 
+    auxiliary_model = ASK_MODEL_NAME if settings.llm_provider == "ollama" else main_model
+    auxiliary_label = "Gemma 4" if settings.llm_provider == "ollama" else "вспомогательная модель llama.cpp"
     file_path = arguments.get("file")
     user_content = prompt.strip()
     attachments = []
@@ -1379,7 +1381,7 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
     # Gemma tokenizer approximation, while media is budgeted conservatively.
     try:
         input_tokens = estimate_tokens(
-            [{"role": "user", "content": user_content}], model=ASK_MODEL_NAME
+            [{"role": "user", "content": user_content}], model=auxiliary_model
         )
         for attachment in attachments:
             kind = attachment.get("kind")
@@ -1494,7 +1496,7 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
 
     try:
         response = _client_chat(
-            isolated_messages, tools=None, reasoning=True, model=ASK_MODEL_NAME
+            isolated_messages, tools=None, reasoning=True, model=auxiliary_model
         )
     except Exception as exc:
         if _is_context_overflow_error(exc):
@@ -1506,7 +1508,7 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
                 ),
                 "context_overflow": True,
                 "warning": (
-                    "Вызов ask_model переполнил контекст Gemma 4. Полноценный ответ не получен; "
+                    f"Вызов ask_model переполнил контекст {auxiliary_label}. Полноценный ответ не получен; "
                     "качество возможного частичного результата могло быть снижено."
                 ),
                 "file": file_info,
@@ -1519,20 +1521,20 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
     response_error = response.get("error") if isinstance(response, dict) else None
     overflow = bool(response_error and _is_context_overflow_error(RuntimeError(str(response_error))))
     if not answer and overflow:
-        answer = "Gemma 4 не вернула ответ из-за переполнения контекстного окна."
+        answer = f"{auxiliary_label} не вернула ответ из-за переполнения контекстного окна."
     if not answer:
-        raise RuntimeError("Gemma 4 вернула пустой ответ")
+        raise RuntimeError(f"{auxiliary_label} вернула пустой ответ")
     result = {
         "ok": True,
         "answer": answer,
-        "model": ASK_MODEL_NAME,
+        "model": auxiliary_model,
         "context_overflow": overflow,
         "file": file_info,
         "_model_visible_limit_chars": max_visible_chars,
     }
     if overflow:
         result["warning"] = (
-            "Вызов ask_model переполнил контекст Gemma 4. "
+            f"Вызов ask_model переполнил контекст {auxiliary_label}. "
             "Ответ может быть частичным, его качество может быть снижено."
         )
     return result
