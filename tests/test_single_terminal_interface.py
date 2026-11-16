@@ -50,7 +50,7 @@ def test_terminal_returns_complete_transcript_without_exit_code(monkeypatch):
     assert result["exit_code"] == 7  # internal only; core strips it from the model transcript
 
 
-def test_terminal_returns_control_after_idle_and_waits_again(monkeypatch):
+def test_terminal_waits_through_silence_until_command_finishes(monkeypatch):
     manager = _manager(monkeypatch, idle=0.1, maximum=0.2)
     manager.start_operation = lambda *a, **k: {"operation_id": "op-2", "state": "running"}
     outputs = iter([
@@ -58,23 +58,24 @@ def test_terminal_returns_control_after_idle_and_waits_again(monkeypatch):
         {"state": "running", "stdout": "", "next_cursor": 8},
         {"state": "completed", "stdout": "done\\n", "next_cursor": 13, "exit_code": 0},
     ])
+
     def get_operation(*a, **k):
         time.sleep(0.11)
         try:
             return next(outputs)
         except StopIteration:
             return {"state": "completed", "stdout": "", "next_cursor": 13, "exit_code": 0}
+
     manager.get_operation = get_operation
 
-    first = manager.terminal_command("conversation-2", "long-running-command")
-    assert first["state"] == "running"
-    assert "progress" in first["_terminal_text"]
-    assert "ещё выполняется" in first["_terminal_text"]
+    result = manager.terminal_command("conversation-2", "long-running-command")
 
-    second = manager.terminal_command("conversation-2", "")
-    assert second["state"] == "completed"
-    assert "progress\\n" in second["_terminal_text"]
-    assert "done\\n" in second["_terminal_text"]
+    # Silence longer than the old idle threshold must not return control early.
+    assert result["state"] == "completed"
+    assert result["_diagnostic_due"] is False
+    assert "progress\\n" in result["_terminal_text"]
+    assert "done\\n" in result["_terminal_text"]
+    assert result["_terminal_output"] == "progress\\ndone\\n"
 
 
 def test_active_terminal_routes_text_as_input_and_ctrl_c_as_interrupt(monkeypatch):
