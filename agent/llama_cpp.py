@@ -162,10 +162,23 @@ class LlamaCppClient:
             if isinstance(attachments, list) and attachments:
                 names = [str(x.get("name") or x.get("kind") or "media")
                          for x in attachments if isinstance(x, dict)]
-                item["content"] += (
-                    "\n\n[Медиа не переданы модели: текущий endpoint llama.cpp "
-                    "использует текстовый режим. Файлы: " + ", ".join(names) + ".]"
+                warning = (
+                    "[Медиа не переданы модели: текущий llama.cpp endpoint объявляет text-only input. "
+                    "Файлы: " + ", ".join(names) + ".] "
+                    "Продолжай выполнение исходного запроса пользователя."
                 )
+                item["content"] = warning
+                if output and output[-1].get("role") == "tool":
+                    try:
+                        prior_receipt = json.loads(output[-1].get("content", ""))
+                    except (TypeError, json.JSONDecodeError):
+                        prior_receipt = None
+                    if isinstance(prior_receipt, dict) and isinstance(prior_receipt.get("result"), dict):
+                        prior_result = prior_receipt["result"]
+                        prior_result["visual_media_delivery"] = "not_attached_llama_cpp_text_mode"
+                        prior_note = str(prior_result.get("note") or "").strip()
+                        prior_result["note"] = (prior_note + " Визуальные вложения не передавались модели; был передан только извлечённый текст.").strip()
+                        output[-1]["content"] = json.dumps(prior_receipt, ensure_ascii=False, default=str)
             if role == "tool" and source.get("tool_name") == "load_file_for_model":
                 try:
                     receipt = json.loads(item["content"])
