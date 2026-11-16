@@ -162,6 +162,21 @@ class LlamaCppClient:
                     "\n\n[Медиа не переданы модели: текущий endpoint llama.cpp "
                     "использует текстовый режим. Файлы: " + ", ".join(names) + ".]"
                 )
+            if role == "tool" and source.get("tool_name") == "load_file_for_model":
+                try:
+                    receipt = json.loads(item["content"])
+                except (TypeError, json.JSONDecodeError):
+                    receipt = None
+                if isinstance(receipt, dict) and isinstance(receipt.get("result"), dict):
+                    result = receipt["result"]
+                    if result.get("kind") in {"image", "audio", "video"}:
+                        kind = result["kind"]
+                        result["delivery"] = "not_attached_llama_cpp_text_mode"
+                        if kind == "video":
+                            result["audio_track_handling"] = "not_attached"
+                        note = "Текущий llama.cpp сервер объявляет text-only input; медиа-байты не передавались модели."
+                        result["note"] = (str(result.get("note") or "").strip() + " " + note).strip()
+                        item["content"] = json.dumps(receipt, ensure_ascii=False, default=str)
             output.append(item)
         return output
 
@@ -250,7 +265,9 @@ class LlamaCppClient:
                         })
                     message["tool_calls"] = normalized
                 elapsed = max(0.001, time.monotonic() - started)
-                completion_tokens = int(usage.get("completion_tokens") or max(0, len(message["content"]) // 4))\n                prompt_tokens = int(usage.get("prompt_tokens") or 0)\n                self.last_generation_stats = {
+                completion_tokens = int(usage.get("completion_tokens") or max(0, len(message["content"]) // 4))
+                prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                self.last_generation_stats = {
                     "active": False, "model": selected, "request_id": request_id,
                     "eval_count": completion_tokens, "prompt_eval_count": prompt_tokens,
                     "tokens_per_second": round(completion_tokens / elapsed, 2) if completion_tokens else None,
