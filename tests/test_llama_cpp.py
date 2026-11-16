@@ -111,7 +111,6 @@ def test_document_visuals_are_not_claimed_as_delivered():
     }
     messages = [
         {
-            "role": "tool",
             "role": "assistant",
             "content": "",
             "tool_calls": [{
@@ -121,7 +120,9 @@ def test_document_visuals_are_not_claimed_as_delivered():
             }],
         },
         {
+            "role": "tool",
             "tool_name": "load_file_for_model",
+            "tool_call_id": "call_load_file",
             "content": json.dumps(receipt),
         },
         {
@@ -134,5 +135,5 @@ def test_document_visuals_are_not_claimed_as_delivered():
     prior = json.loads(result[1]["content"])
     assert prior["result"]["visual_media_delivery"] == "not_attached_llama_cpp_text_mode"
     assert "только извлечённый текст" in prior["result"]["note"]
-    assert "Медиа не переданы модели" in result[1]["content"]
-    assert "has been supplied" not in result[1]["content"]
+    assert "Медиа не переданы модели" in result[2]["content"]
+    assert "has been supplied" not in result[2]["content"]
