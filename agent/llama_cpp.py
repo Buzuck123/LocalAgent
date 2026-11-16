@@ -222,6 +222,11 @@ class LlamaCppClient:
             calls: dict[int, dict] = {}
             usage = {}
             response = None
+            self.last_generation_stats = {
+                "active": True, "tokens_per_second": 0.0, "estimated": True,
+                "eval_count": 0, "model": selected, "started_at": time.time(),
+                "request_id": request_id,
+            }
             try:
                 response = self.opener.open(req, timeout=settings.llama_cpp_timeout)
                 if task_id:
@@ -252,6 +257,14 @@ class LlamaCppClient:
                     if reasoning_text:
                         message.setdefault("thinking", "")
                         message["thinking"] += str(reasoning_text)
+                    generated_chars = len(message["content"]) + len(message.get("thinking", ""))
+                    elapsed_now = max(0.1, time.monotonic() - started)
+                    self.last_generation_stats.update({
+                        "active": True, "estimated": True,
+                        "tokens_per_second": round((generated_chars / 4) / elapsed_now, 1),
+                        "generated_chars": generated_chars,
+                        "elapsed_seconds": round(elapsed_now, 1),
+                    })
                     for part in delta.get("tool_calls") or []:
                         index = int(part.get("index", 0))
                         current = calls.setdefault(index, {
@@ -299,6 +312,7 @@ class LlamaCppClient:
                 }
             except HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")[:2000]
+                self.last_generation_stats = {"active": False, "error": detail, "model": selected}
                 raise RuntimeError(f"llama.cpp HTTP {exc.code}: {detail}") from exc
             except (URLError, TimeoutError, OSError) as exc:
                 self.last_generation_stats = {"active": False, "error": str(exc), "model": selected}
