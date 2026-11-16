@@ -170,11 +170,12 @@ def _model_visible_tool_content(tool_name: str, content: str) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def _sanitize_messages_for_ollama(messages: list[dict]) -> list[dict]:
-    """Strip retired tool calls and controller-only fields at the final API boundary."""
+def _sanitize_messages_for_ollama(messages: list[dict], tool_definitions=None) -> list[dict]:
+    """Strip tool calls not allowed by the active call's catalog and controller-only fields."""
+    active_definitions = tool_definitions if isinstance(tool_definitions, list) else TOOL_DEFINITIONS
     schemas = {
         item.get("function", {}).get("name"): item.get("function", {}).get("parameters", {})
-        for item in TOOL_DEFINITIONS
+        for item in active_definitions
         if isinstance(item, dict) and isinstance(item.get("function"), dict)
     }
     active_names = set(schemas)
@@ -3051,7 +3052,7 @@ class OllamaClient:
     def _chat_unlocked(self, messages: list[dict], tools: list[dict] | None = None, reasoning: bool = True, model: str | None = None) -> dict:
         # Enforce Ollama's message-history invariant at the final API boundary too;
         # planner/reviewer/compaction calls must not bypass main-loop safeguards.
-        messages = _sanitize_messages_for_ollama(messages)
+        messages = _sanitize_messages_for_ollama(messages, tool_definitions=tools)
         messages = _prepare_messages_for_next_model_turn(messages)
         selected_model = model or db.get_app_setting("selected_ollama_model", self.model)
         audio_supported = _model_supports_audio_input(selected_model)

@@ -134,3 +134,31 @@ def test_terminal_diagnostic_can_reset_bash_without_main_agent_context(monkeypat
     assert action == "reset_bash_session"
     assert recovery["state"] == "reset"
     assert any(item.get("role") == "tool" for item in messages)
+
+
+
+def test_ollama_message_sanitizer_uses_diagnostic_tool_catalog():
+    diagnostic_call = {
+        "role": "assistant",
+        "tool_calls": [{
+            "id": "diag-call",
+            "function": {
+                "name": "get_additional_terminal_diagnostics",
+                "arguments": {"reason": "Need a second process sample."},
+            },
+        }],
+    }
+    tool_result = {
+        "role": "tool",
+        "tool_name": "get_additional_terminal_diagnostics",
+        "content": '{"ok":true,"diagnostics":{"runtime_responsive":true}}',
+    }
+
+    sanitized = core._sanitize_messages_for_ollama(
+        [diagnostic_call, tool_result],
+        tool_definitions=core.TERMINAL_DIAGNOSTIC_TOOLS,
+    )
+
+    assert sanitized[0]["tool_calls"][0]["function"]["name"] == "get_additional_terminal_diagnostics"
+    assert sanitized[1]["role"] == "tool"
+    assert sanitized[1]["tool_name"] == "get_additional_terminal_diagnostics"
