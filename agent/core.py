@@ -1028,7 +1028,6 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
     )
     snapshot["command_hard_timeout_seconds"] = terminal_result.get("_terminal_hard_timeout")
     snapshot["runtime_poll_errors"] = terminal_result.get("_terminal_runtime_errors") or []
-    snapshot["previous_diagnostic_actions"] = actions[-12:]
     if not messages:
         messages = [{"role": "system", "content": TERMINAL_DIAGNOSTIC_SYSTEM_PROMPT}]
         db.create_terminal_diagnostic(diagnostic_id, task_id, conversation_id, operation_id, messages)
