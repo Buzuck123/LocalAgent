@@ -533,8 +533,12 @@ TOOL_DEFINITIONS.insert(1, {"type": "function", "function": {
     "name": "terminal",
     "description": (
         "The only interface to this conversation's persistent Linux computer and Bash terminal. "
-        "When idle, send an ordinary Bash command. If it continues running, the agent returns accumulated output; "
-        "use an empty command to wait, text in command to provide interactive input, or CTRL+C to interrupt. "
+        "When idle, send an ordinary Bash command. LocalAgent waits internally for up to the configured terminal checkpoint "
+        "(300 seconds by default); it does not require repeated empty-command polling during this interval. "
+        "If the operation remains active, a separate diagnostic agent checks it while the main executor is paused. "
+        "Normal long-running commands, including commands that later fail without diagnostic intervention, return only their terminal output. "
+        "A diagnostic report is added only if the diagnostic agent actually interrupts the command, recreates Bash, or restarts the container. "
+        "Use text in command for interactive input only when the process is waiting for input, or CTRL+C to interrupt. "
         "While a command is active, non-empty command is input to that process, not a new shell command. "
         "A completed call returns terminal output without a separate exit code. Bash state and files persist between calls."
     ),
