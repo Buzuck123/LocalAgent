@@ -853,7 +853,7 @@ print(json.dumps(result))
                     continue
                 if payload.get("state") in {"running", "waiting_input"} and payload.get("operation_id"):
                     return payload
-                if payload.get("state") in {"completed", "interrupted", "timed_out", "failed", "reset", "idle"}:
+                if payload.get("state") in {"completed", "interrupted", "timed_out", "failed", "reset", "restarted", "idle"}:
                     return None
         except Exception as exc:
             logger.warning("Could not recover persisted terminal operation (%s)", type(exc).__name__)

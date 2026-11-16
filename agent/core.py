@@ -146,7 +146,10 @@ def _model_visible_tool_result(tool_name: str, result):
         output = result.get("_terminal_output")
         if output is None:
             output = result.get("_terminal_text")
-        return {"output": str(output or "")}
+        output = str(output or "")
+        if result.get("state") == "waiting_input":
+            output = (output.rstrip() + "\\n[Терминал ожидает ввода. Передай ответ следующей командой terminal.]").strip()
+        return {"output": output}
     hidden = {
         "_localagent_internal", "_model_attachment", "operation_id", "process_id",
         "pool", "process_pool", "shell_id", "operation_token", "session", "cursor", "next_cursor", "oldest_cursor",
@@ -1216,8 +1219,10 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                         result["state"] = (
                             "interrupted" if action == "interrupt_operation" and
                             isinstance(recovery, dict) and recovery.get("state") == "interrupted"
-                            else "reset" if action == "reset_bash_session"
-                            else "restarted" if action == "restart_container"
+                            else "reset" if action == "reset_bash_session" and
+                            isinstance(recovery, dict) and recovery.get("state") == "reset" and recovery.get("verified") is True
+                            else "restarted" if action == "restart_container" and
+                            isinstance(recovery, dict) and recovery.get("state") == "restarted" and recovery.get("verified") is True
                             else "runtime_unresponsive"
                         )
                         result["diagnostic_report"] = _terminal_recovery_report(action, reason, result)
