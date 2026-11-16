@@ -120,6 +120,7 @@ class LlamaCppClient:
             _sanitize_messages_for_ollama(messages)
         )
         output = []
+        pending_call_ids: list[str] = []
         for source in sanitized:
             role = source.get("role")
             if role not in {"system", "user", "assistant", "tool"}:
@@ -130,6 +131,8 @@ class LlamaCppClient:
             item = {"role": role, "content": content}
             if role == "tool":
                 call_id = source.get("tool_call_id")
+                if not call_id and pending_call_ids:
+                    call_id = pending_call_ids.pop(0)
                 if not call_id:
                     # Older checkpoints may not have a provider call id. Such
                     # receipts are retained as user-visible context, not invalid
@@ -151,6 +154,7 @@ class LlamaCppClient:
                     })
                 if calls:
                     item["tool_calls"] = calls
+                    pending_call_ids.extend(str(call["id"]) for call in calls if call.get("id"))
             # The active Bonsai server currently advertises text-only input.
             # Never send Ollama's non-standard images[] field or silently claim
             # that image/audio/video bytes were analysed.
