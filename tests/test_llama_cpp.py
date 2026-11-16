@@ -112,6 +112,15 @@ def test_document_visuals_are_not_claimed_as_delivered():
     messages = [
         {
             "role": "tool",
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_load_file",
+                "type": "function",
+                "function": {"name": "load_file_for_model", "arguments": "{}"},
+            }],
+        },
+        {
             "tool_name": "load_file_for_model",
             "content": json.dumps(receipt),
         },
@@ -122,7 +131,7 @@ def test_document_visuals_are_not_claimed_as_delivered():
         },
     ]
     result = LlamaCppClient._safe_messages(messages, "bonsai")
-    prior = json.loads(result[0]["content"])
+    prior = json.loads(result[1]["content"])
     assert prior["result"]["visual_media_delivery"] == "not_attached_llama_cpp_text_mode"
     assert "только извлечённый текст" in prior["result"]["note"]
     assert "Медиа не переданы модели" in result[1]["content"]
