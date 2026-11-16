@@ -97,8 +97,7 @@ class LlamaCppClient:
 
     def status(self) -> dict:
         try:
-            health = self._json_request("/health", timeout=10)
-            return {"provider": "llama_cpp", "available": True, "health": health}
+            from urllib.parse import urlsplit, urlunsplit\n            parts = urlsplit(self.base)\n            root = urlunsplit((parts.scheme, parts.netloc, parts.path.removesuffix("/v1"), "", ""))\n            req = Request(root.rstrip("/") + "/health", headers={"Accept": "application/json"})\n            with self.opener.open(req, timeout=10) as response:\n                raw = response.read()\n            health = json.loads(raw.decode("utf-8")) if raw else {}\n            return {"provider": "llama_cpp", "available": True, "health": health}
         except Exception as exc:
             return {"provider": "llama_cpp", "available": False, "error": str(exc)}
 
@@ -170,8 +169,7 @@ class LlamaCppClient:
                 "model": selected,
                 "messages": model_messages,
                 "stream": True,
-                "stream_options": {"include_usage": True},
-            }
+                            }
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
@@ -245,9 +243,7 @@ class LlamaCppClient:
                         })
                     message["tool_calls"] = normalized
                 elapsed = max(0.001, time.monotonic() - started)
-                completion_tokens = int(usage.get("completion_tokens") or 0)
-                prompt_tokens = int(usage.get("prompt_tokens") or 0)
-                self.last_generation_stats = {
+                completion_tokens = int(usage.get("completion_tokens") or max(0, len(message["content"]) // 4))\n                prompt_tokens = int(usage.get("prompt_tokens") or 0)\n                self.last_generation_stats = {
                     "active": False, "model": selected, "request_id": request_id,
                     "eval_count": completion_tokens, "prompt_eval_count": prompt_tokens,
                     "tokens_per_second": round(completion_tokens / elapsed, 2) if completion_tokens else None,
