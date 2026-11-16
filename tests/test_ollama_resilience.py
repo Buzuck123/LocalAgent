@@ -35,6 +35,7 @@ class FakeResponse:
 
 
 class FakeConnection:
+    debuglevel = 0  # urllib's build_opener inspects this stdlib class attribute.
     instances = []
 
     def __init__(self, host, port, timeout, **kwargs):
