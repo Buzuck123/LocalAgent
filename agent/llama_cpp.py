@@ -180,7 +180,7 @@ class LlamaCppClient:
                 if "Media extracted from " in item["content"] and "has been supplied" in item["content"]:
                     item["content"] = warning
                 else:
-                    item["content"] = item["content"].rstrip() + "\\n\\n" + warning
+                    item["content"] = item["content"].rstrip() + "\n\n" + warning
                 if output and output[-1].get("role") == "tool":
                     try:
                         prior_receipt = json.loads(output[-1].get("content", ""))
