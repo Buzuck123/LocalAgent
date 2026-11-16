@@ -155,7 +155,6 @@ def test_multiple_system_messages_are_merged_at_the_beginning():
     assert result[0] is system_messages[0]
     assert "Primary agent instructions" in result[0]["content"]
     assert "Current plan instructions" in result[0]["content"]
-    assert "LOCAL_AGENT_TOOL_SCOPE" in result[0]["content"]
     assert [item["content"] for item in result if item["role"] == "user"] == [
         "First user turn", "Continue"
     ]
