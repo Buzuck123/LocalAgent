@@ -66,20 +66,29 @@ class LlamaCppClient:
             "num_predict": None, "source": "llama_cpp_server_config",
         }
 
-    def models(self) -> dict:
+    def _available_models(self) -> list[dict]:
         payload = self._json_request("/models")
         models = []
         for item in payload.get("data", []) if isinstance(payload, dict) else []:
             if isinstance(item, dict) and isinstance(item.get("id"), str):
                 models.append({"name": item["id"], "size": None, "modified_at": None})
-        selected = db.get_app_setting("selected_ollama_model", self.model)
+        return models
+
+    def models(self) -> dict:
+        models = self._available_models()
+        names = {item["name"] for item in models}
+        selected = db.get_app_setting("selected_ollama_model")
+        if selected not in names:
+            selected = self.model if self.model in names else (models[0]["name"] if models else "")
+            if selected:
+                db.set_app_setting("selected_ollama_model", selected)
         return {"models": models, "selected_model": selected}
 
     def select_model(self, model: str) -> dict:
         name = str(model or "").strip()
         if not name or len(name) > 200:
             raise ValueError("Укажите корректный идентификатор модели llama.cpp")
-        available = {item["name"] for item in self.models()["models"]}
+        available = {item["name"] for item in self._available_models()}
         if name not in available:
             raise ValueError(f"Модель {name!r} не обслуживается текущим llama.cpp сервером")
         db.set_app_setting("selected_ollama_model", name)
@@ -100,8 +109,10 @@ class LlamaCppClient:
 
     @staticmethod
     def _safe_messages(messages: list[dict], model: str) -> list[dict]:
-        from .core import _sanitize_messages_for_ollama
-        sanitized = _sanitize_messages_for_ollama(messages)
+        from .core import _sanitize_messages_for_ollama, _prepare_messages_for_next_model_turn
+        sanitized = _prepare_messages_for_next_model_turn(
+            _sanitize_messages_for_ollama(messages)
+        )
         output = []
         for source in sanitized:
             role = source.get("role")
