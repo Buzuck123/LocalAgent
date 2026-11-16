@@ -108,6 +108,17 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_ollama_events_task ON ollama_request_events(task_id, id);
         CREATE INDEX IF NOT EXISTS idx_ollama_events_request ON ollama_request_events(request_id, id);
+        CREATE TABLE IF NOT EXISTS terminal_diagnostics (
+            id TEXT PRIMARY KEY, task_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+            terminal_operation_id TEXT NOT NULL, status TEXT NOT NULL,
+            messages_json TEXT NOT NULL DEFAULT '[]', actions_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_terminal_diagnostics_task
+            ON terminal_diagnostics(task_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_terminal_diagnostics_operation
+            ON terminal_diagnostics(terminal_operation_id);
+
         CREATE TABLE IF NOT EXISTS debug_trace (
             event_id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
@@ -664,3 +675,49 @@ def delete_app_setting(key: str) -> None:
         con.execute("DELETE FROM app_settings WHERE key=?", (str(key),))
     if key in {"debug_llm_trace", "debug_llm_thinking"}:
         _debug_setting_cache_at = 0.0
+
+
+def create_terminal_diagnostic(diagnostic_id: str, task_id: str, conversation_id: str,
+                               terminal_operation_id: str, messages: list[dict] | None = None) -> dict:
+    ts = now()
+    with _lock, connect() as con:
+        con.execute(
+            """INSERT INTO terminal_diagnostics
+               (id, task_id, conversation_id, terminal_operation_id, status,
+                messages_json, actions_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'running', ?, '[]', ?, ?)""",
+            (diagnostic_id, task_id, conversation_id, terminal_operation_id,
+             json.dumps(messages or [], ensure_ascii=False), ts, ts),
+        )
+    return get_terminal_diagnostic(diagnostic_id)
+
+
+def update_terminal_diagnostic(diagnostic_id: str, *, status: str | None = None,
+                               messages: list[dict] | None = None,
+                               actions: list[dict] | None = None) -> dict:
+    fields, values = [], []
+    if status is not None:
+        fields.append("status=?"); values.append(str(status))
+    if messages is not None:
+        fields.append("messages_json=?"); values.append(json.dumps(messages, ensure_ascii=False))
+    if actions is not None:
+        fields.append("actions_json=?"); values.append(json.dumps(actions, ensure_ascii=False))
+    fields.append("updated_at=?"); values.append(now())
+    with _lock, connect() as con:
+        con.execute("UPDATE terminal_diagnostics SET " + ", ".join(fields) + " WHERE id=?",
+                    (*values, diagnostic_id))
+    return get_terminal_diagnostic(diagnostic_id)
+
+
+def get_terminal_diagnostic(diagnostic_id: str) -> dict | None:
+    with connect() as con:
+        row = con.execute("SELECT * FROM terminal_diagnostics WHERE id=?", (diagnostic_id,)).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    for key in ("messages_json", "actions_json"):
+        try:
+            item[key.removesuffix("_json")] = json.loads(item[key] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            item[key.removesuffix("_json")] = []
+    return item

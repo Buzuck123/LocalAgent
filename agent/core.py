@@ -975,6 +975,143 @@ def _tool_activity_summary(tool_name, arguments, payload):
     return (label + " → " + detail)[:320]
 
 
+TERMINAL_DIAGNOSTIC_SYSTEM_PROMPT = """Ты — отдельный диагностический агент LocalAgent. Ты НЕ выполняешь пользовательскую задачу и НЕ получаешь её исходный запрос. Ты анализируешь только одну конкретную terminal operation и состояние среды.
+
+Отсутствие вывода само по себе не означает зависание. Наличие процесса или CPU/I/O активности само по себе не доказывает корректность выполнения. Недоступность SWE-ReX не доказывает остановку команды.
+
+Сначала изучи полный снимок состояния. При необходимости используй диагностический инструмент для повторного снимка. Инструменты восстановления применяй только при веских основаниях.
+
+Если вмешательство не требуется, верни только JSON:
+{"action":"continue_waiting","reason":"краткое обоснование"}
+
+Не повторяй исходную команду. После interrupt/reset/restart команда не считается выполненной; возможны частичные изменения файлов или окружения. При недостатке данных предпочитай продолжить ожидание."""
+
+
+TERMINAL_DIAGNOSTIC_TOOLS = [
+    {"type": "function", "function": {"name": "get_additional_terminal_diagnostics",
+     "description": "Повторно собрать ограниченный снимок процессов, контейнера, runtime и хоста, не используя основную PTY.",
+     "parameters": {"type": "object", "properties": {"reason": {"type": "string", "maxLength": 500}},
+                    "required": ["reason"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "interrupt_terminal_operation",
+     "description": "Прервать текущую terminal operation. Возможны частичные изменения файлов.",
+     "parameters": {"type": "object", "properties": {"reason": {"type": "string", "minLength": 1, "maxLength": 1000}},
+                    "required": ["reason"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "reset_bash_session",
+     "description": "Пересоздать Bash-сессию в прежнем контейнере; процессы старой сессии будут потеряны.",
+     "parameters": {"type": "object", "properties": {"reason": {"type": "string", "minLength": 1, "maxLength": 1000}},
+                    "required": ["reason"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "restart_sandbox_container",
+     "description": "Перезапустить существующий контейнер без удаления; крайняя мера.",
+     "parameters": {"type": "object", "properties": {"reason": {"type": "string", "minLength": 1, "maxLength": 1000}},
+                    "required": ["reason"], "additionalProperties": False}}},
+]
+
+
+def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnostic_id=None,
+                             diagnostic_messages=None, diagnostic_actions=None):
+    from .sandbox_manager import sandbox_manager
+
+    diagnostic_id = diagnostic_id or str(uuid.uuid4())
+    messages = list(diagnostic_messages or [])
+    actions = list(diagnostic_actions or [])
+    operation_id = str(terminal_result.get("operation_id") or "")
+    snapshot = sandbox_manager.collect_terminal_diagnostics(
+        conversation_id, operation_id, command=str(terminal_result.get("_terminal_command") or ""),
+        output=str(terminal_result.get("_terminal_output") or ""),
+        elapsed_seconds=float(terminal_result.get("_elapsed_seconds") or 0),
+        idle_seconds=float(terminal_result.get("_idle_seconds") or 0),
+        runtime_error=terminal_result.get("_runtime_error"),
+    )
+    if not messages:
+        messages = [{"role": "system", "content": TERMINAL_DIAGNOSTIC_SYSTEM_PROMPT}]
+        db.create_terminal_diagnostic(diagnostic_id, task_id, conversation_id, operation_id, messages)
+    messages.append({"role": "user", "content":
+        "Снимок одной terminal operation. Исходная пользовательская задача намеренно не передаётся.\\n"
+        + json.dumps(snapshot, ensure_ascii=False, default=str)[:30000]})
+
+    action, reason, recovery = "continue_waiting", "Недостаточно оснований для вмешательства.", None
+    try:
+        for _ in range(5):
+            response = _client_chat(messages, tools=TERMINAL_DIAGNOSTIC_TOOLS, reasoning=False)
+            message = response.get("message", {}) if isinstance(response, dict) else {}
+            if not isinstance(message, dict):
+                break
+            calls = message.get("tool_calls")
+            if not isinstance(calls, list) or not calls:
+                assistant_text = str(message.get("content") or "")
+                messages.append({"role": "assistant", "content": assistant_text[:6000]})
+                decision = _parse_json_object(assistant_text) or {}
+                reason = str(decision.get("reason") or reason)[:1000]
+                action = "continue_waiting"
+                break
+            messages.append(message)
+            recovered = False
+            for call in calls[:4]:
+                function = call.get("function") if isinstance(call, dict) else {}
+                function = function if isinstance(function, dict) else {}
+                tool_name = str(function.get("name") or "")
+                raw = function.get("arguments", {})
+                if isinstance(raw, str):
+                    try: raw = json.loads(raw)
+                    except json.JSONDecodeError: raw = {}
+                args = raw if isinstance(raw, dict) else {}
+                why = str(args.get("reason") or "Диагностическое действие")[:1000]
+                call_id = str(call.get("id") or uuid.uuid4().hex)
+                if tool_name == "get_additional_terminal_diagnostics":
+                    tool_result = {"ok": True, "diagnostics": sandbox_manager.collect_terminal_diagnostics(
+                        conversation_id, operation_id,
+                        command=str(terminal_result.get("_terminal_command") or ""),
+                        output=str(terminal_result.get("_terminal_output") or ""),
+                        elapsed_seconds=float(terminal_result.get("_elapsed_seconds") or 0),
+                        idle_seconds=float(terminal_result.get("_idle_seconds") or 0),
+                        runtime_error=terminal_result.get("_runtime_error"),
+                    )}
+                    actions.append({"action": tool_name, "reason": why})
+                elif tool_name == "interrupt_terminal_operation":
+                    recovery = sandbox_manager.interrupt_operation(conversation_id, operation_id)
+                    action, reason, recovered = "interrupt_operation", why, True
+                    actions.append({"action": action, "reason": reason, "result": recovery})
+                    tool_result = recovery
+                elif tool_name == "reset_bash_session":
+                    recovery = sandbox_manager.reset_terminal_session(
+                        conversation_id, confirm_reset=True, reason=why)
+                    action, reason, recovered = "reset_bash_session", why, True
+                    actions.append({"action": action, "reason": reason, "result": recovery})
+                    tool_result = recovery
+                elif tool_name == "restart_sandbox_container":
+                    recovery = sandbox_manager.restart_container(conversation_id, reason=why)
+                    action, reason, recovered = "restart_container", why, True
+                    actions.append({"action": action, "reason": reason, "result": recovery})
+                    tool_result = recovery
+                else:
+                    tool_result = {"ok": False, "error": "Недоступный диагностический инструмент."}
+                messages.append({"role": "tool", "tool_name": tool_name,
+                                 "content": json.dumps(tool_result, ensure_ascii=False, default=str)[:12000]})
+                if recovered:
+                    break
+            if recovered:
+                break
+    except Exception as exc:
+        action, reason = "continue_waiting", (
+            f"Диагностика завершилась ошибкой {type(exc).__name__}; продолжаем наблюдение без вмешательства."
+        )
+        messages.append({"role": "assistant", "content": json.dumps({"action": action, "reason": reason}, ensure_ascii=False)})
+
+    actions.append({"action": action, "reason": reason, "snapshot": snapshot})
+    db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
+    return action, reason, diagnostic_id, messages, actions, recovery
+
+
+def _terminal_recovery_report(action, reason, result):
+    if action == "interrupt_operation":
+        consequence = "Команда прервана диагностом; её выполнение не подтверждено."
+    elif action == "reset_bash_session":
+        consequence = "Bash-сессия пересоздана в прежнем контейнере; команда не считается выполненной, возможны частичные изменения файлов."
+    else:
+        consequence = "Существующий контейнер перезапущен; команда не считается выполненной, необходимо проверить файлы и окружение."
+    return f"Диагностика: {reason}\\nВыполнено: {action}. {consequence}"
+
+
 def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                             context_messages=None, main_model=None, context_limit=None):
     if name == "ask_model":
@@ -1014,6 +1151,53 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 raise RuntimeError("Не удалось определить диалог для sandbox-инструмента")
             result = dispatch_tool(name, arguments, conversation_id=task["conversation_id"],
                                    idempotency_key=idempotency_key)
+            if name == "terminal" and result.get("_diagnostic_due"):
+                diagnostic_id = None
+                diagnostic_messages = None
+                diagnostic_actions = None
+                diagnostic_intervened = False
+                while result.get("_diagnostic_due"):
+                    action, reason, diagnostic_id, diagnostic_messages, diagnostic_actions, recovery = _run_terminal_diagnostic(
+                        task_id, task["conversation_id"], result,
+                        diagnostic_id=diagnostic_id,
+                        diagnostic_messages=diagnostic_messages,
+                        diagnostic_actions=diagnostic_actions,
+                    )
+                    if action == "continue_waiting":
+                        result = dispatch_tool("terminal", {"command": ""},
+                                               conversation_id=task["conversation_id"])
+                        continue
+                    if action in {"interrupt_operation", "reset_bash_session", "restart_container"}:
+                        diagnostic_intervened = True
+                        result = dict(result)
+                        result["state"] = (
+                            "interrupted" if action == "interrupt_operation" and
+                            isinstance(recovery, dict) and recovery.get("state") == "interrupted"
+                            else "reset" if action == "reset_bash_session"
+                            else "restarted" if action == "restart_container"
+                            else "runtime_unresponsive"
+                        )
+                        result["diagnostic_report"] = _terminal_recovery_report(action, reason, result)
+                        break
+                if diagnostic_id:
+                    db.update_terminal_diagnostic(
+                        diagnostic_id, status="intervened" if diagnostic_intervened else "completed",
+                        messages=diagnostic_messages, actions=diagnostic_actions,
+                    )
+                # The primary executor is blocked in this dispatch until diagnosis ends.
+                # Routine long-running/failed commands return only their terminal output.
+                visible_text = str(result.get("_terminal_output") or result.get("_terminal_text") or "")
+                if diagnostic_intervened:
+                    visible_text = (visible_text.rstrip() + "\\n\\n" +
+                                    str(result.get("diagnostic_report") or "")).strip()
+                result = {
+                    "_terminal_text": visible_text,
+                    "_terminal_output": visible_text,
+                    "state": result.get("state"),
+                    "exit_code": result.get("exit_code"),
+                    "timed_out": result.get("timed_out", False),
+                    "interrupted": result.get("interrupted", False),
+                }
         else:
             # Only pre-0.6.0 checkpoints can reach this private legacy path. Relative
             # paths were host workspace paths; task-scoped /work paths used task_id.

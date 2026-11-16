@@ -46,10 +46,11 @@ class Settings:
     debug_llm_trace: bool = _bool("DEBUG_LLM_TRACE", False)
     debug_llm_thinking: bool = _bool("DEBUG_LLM_THINKING", False)
     swerex_timeout: float = float(os.getenv("SWEREX_TIMEOUT", "10"))
-    # Return control to the model after this much terminal silence; continue
-    # waiting while output arrives, but never wait longer than the max per call.
-    terminal_idle_timeout_seconds: float = float(os.getenv("TERMINAL_IDLE_TIMEOUT_SECONDS", "10"))
+    # Internal observation window before a separate diagnostic review.
+    # Silence alone never interrupts a command or calls the main LLM.
+    terminal_idle_timeout_seconds: float = float(os.getenv("TERMINAL_IDLE_TIMEOUT_SECONDS", "300"))
     terminal_max_wait_seconds: float = float(os.getenv("TERMINAL_MAX_WAIT_SECONDS", "300"))
+    terminal_poll_interval_seconds: float = float(os.getenv("TERMINAL_POLL_INTERVAL_SECONDS", "2"))
 
 settings = Settings()
 settings.database_path.parent.mkdir(parents=True, exist_ok=True)

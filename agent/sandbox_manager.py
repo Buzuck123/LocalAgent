@@ -518,17 +518,35 @@ print(json.dumps(result))
         last_output_at = float(active.get("last_output_monotonic", call_started_at))
         state = "running"
         latest: dict[str, Any] = {}
+        runtime_errors = 0
+        runtime_error_text = None
+        poll_interval = max(0.25, float(getattr(settings, "terminal_poll_interval_seconds", 2)))
         while True:
             now = time.monotonic()
             elapsed = now - command_started_at
-            if now - call_started_at >= max_wait:
+            remaining = max_wait - (now - call_started_at)
+            if remaining <= 0:
                 break
-            latest = self.get_operation(
-                conversation_id, operation_id,
-                cursor=int(active.get("cursor", 0)),
-                max_output_chars=1_048_576,
-                wait_timeout=min(1.0, max(0.1, max_wait - elapsed)),
-            )
+            try:
+                latest = self.get_operation(
+                    conversation_id, operation_id,
+                    cursor=int(active.get("cursor", 0)),
+                    max_output_chars=1_048_576,
+                    wait_timeout=min(poll_interval, max(0.1, remaining)),
+                )
+                runtime_errors = 0
+                runtime_error_text = None
+            except Exception as exc:
+                runtime_errors += 1
+                runtime_error_text = f"{type(exc).__name__}: {str(exc)[:500]}"
+                active["last_runtime_error"] = runtime_error_text
+                # A single failed poll is not proof of runtime failure.
+                if runtime_errors >= 3:
+                    state = "runtime_unresponsive"
+                    latest = {"state": state, "runtime_error": runtime_error_text}
+                    break
+                time.sleep(min(1.0, max(0.1, remaining)))
+                continue
             chunk = str(latest.get("stdout") or latest.get("output") or "")
             if chunk:
                 active["output"] = str(active.get("output") or "") + chunk
@@ -542,9 +560,6 @@ print(json.dumps(result))
             if state in {"completed", "interrupted", "timed_out", "failed"}:
                 break
             if state == "waiting_input":
-                break
-            now = time.monotonic()
-            if now - last_output_at >= idle_limit:
                 break
 
         elapsed = max(0.0, time.monotonic() - command_started_at)
@@ -591,12 +606,13 @@ print(json.dumps(result))
                     "[Внимание: SWE-ReX сообщил об ограничении объёма одного фрагмента вывода; "
                     "экранный вывод может быть неполным.]").lstrip("\n")
         if still_running:
-            active["state"] = "waiting_input" if waiting else "running"
+            active["state"] = "waiting_input" if waiting else state
+        idle_seconds = max(0.0, time.monotonic() - last_output_at)
         return {
             "_terminal_text": text,
             "_terminal_output": output,
             "_terminal_command": active.get("command"),
-            "state": state if not still_running else ("waiting_input" if waiting else "running"),
+            "state": state if not still_running else ("waiting_input" if waiting else state),
             "operation_id": operation_id if still_running else None,
             "cursor": active.get("cursor", 0),
             "exit_code": latest.get("exit_code"),
@@ -605,7 +621,101 @@ print(json.dumps(result))
             "duration_seconds": latest.get("duration_seconds", elapsed),
             "output_truncated": bool(active.get("output_truncated")),
             "shell_state": shell_state,
+            "_diagnostic_due": bool(still_running and not waiting),
+            "_monitor_state": "running_silent" if still_running and idle_seconds >= idle_limit else ("running" if still_running else state),
+            "_elapsed_seconds": round(elapsed, 3),
+            "_idle_seconds": round(idle_seconds, 3),
+            "_runtime_error": runtime_error_text,
         }
+
+    def collect_terminal_diagnostics(
+        self, conversation_id: str, operation_id: str, *,
+        command: str = "", output: str = "", elapsed_seconds: float = 0,
+        idle_seconds: float = 0, runtime_error: str | None = None,
+    ) -> dict[str, Any]:
+        """Bounded read-only host/container/runtime snapshot; never touches the busy PTY."""
+        record = db.get_sandbox(conversation_id) or {}
+        container_id = str(record.get("container_id") or "")
+        snapshot: dict[str, Any] = {
+            "operation_id": str(operation_id), "command": str(command or "")[:8000],
+            "terminal_output_tail": str(output or "")[-12000:],
+            "elapsed_seconds": round(max(0.0, float(elapsed_seconds)), 3),
+            "idle_seconds": round(max(0.0, float(idle_seconds)), 3),
+            "runtime_error": str(runtime_error or "")[:800],
+            "container_id": container_id or None,
+        }
+        runtime = self._runtimes.get(conversation_id)
+        if runtime is None and record:
+            try:
+                runtime = self._runtime_factory(port=record["host_port"], token=record["auth_token"])
+            except Exception as exc:
+                snapshot["runtime_client_error"] = type(exc).__name__
+        try:
+            snapshot["runtime_responsive"] = bool(runtime.is_alive()) if runtime is not None else False
+        except Exception as exc:
+            snapshot["runtime_responsive"] = False
+            snapshot["runtime_health_error"] = type(exc).__name__
+        if container_id:
+            for key, args in (
+                ("container_inspect", ("inspect", container_id)),
+                ("container_top", ("top", container_id)),
+                ("container_stats", ("stats", "--no-stream", container_id)),
+                ("container_logs", ("logs", "--tail", "80", container_id)),
+            ):
+                try:
+                    proc = subprocess.run([settings.podman_path, *args], capture_output=True,
+                                          text=True, timeout=8, check=False)
+                    snapshot[key] = {"returncode": int(proc.returncode),
+                                     "output": str(proc.stdout or proc.stderr or "")[:10000]}
+                except Exception as exc:
+                    snapshot[key] = {"error": type(exc).__name__}
+        for key, args in (
+            ("host_memory", ["free", "-b"]),
+            ("host_disk", ["df", "-P", "-h", str(settings.workspace_path)]),
+            ("host_load", ["uptime"]),
+        ):
+            try:
+                proc = subprocess.run(args, capture_output=True, text=True, timeout=5, check=False)
+                snapshot[key] = {"returncode": int(proc.returncode),
+                                 "output": str(proc.stdout or proc.stderr or "")[:2500]}
+            except Exception as exc:
+                snapshot[key] = {"error": type(exc).__name__}
+        return snapshot
+
+    def restart_container(self, conversation_id: str, *, reason: str) -> dict[str, Any]:
+        """Restart the existing container without removing it or its writable layer."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("A non-empty restart reason is required")
+        with self._lock_for(conversation_id):
+            record = db.get_sandbox(conversation_id)
+            if not record or not record.get("container_id"):
+                raise SandboxError("Не найден существующий контейнер для перезапуска.")
+            container_id = str(record["container_id"])
+            self._podman("restart", container_id)
+            stale = self._runtimes.pop(conversation_id, None)
+            detach = getattr(stale, "detach", None)
+            if callable(detach):
+                detach()
+            runtime = self._runtime_factory(port=record["host_port"], token=record["auth_token"])
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if runtime.is_alive():
+                    break
+                time.sleep(1)
+            if not runtime.is_alive():
+                raise SandboxError("Контейнер перезапущен, но SWE-ReX не подтвердил доступность.")
+            runtime.ensure_session("main")
+            probe = runtime.run("unset SWEREX_AUTH_TOKEN; printf '__LOCALAGENT_CONTAINER_RESTART_READY__'",
+                                session="main", timeout=10)
+            if probe.get("exit_code") != 0 or probe.get("timed_out") or "__LOCALAGENT_CONTAINER_RESTART_READY__" not in str(probe.get("stdout") or ""):
+                raise SandboxError("Контейнер запущен, но проверка новой Bash-сессии не прошла.")
+            with self._guard:
+                self._active_operations.pop(conversation_id, None)
+                self._new_sessions.discard(conversation_id)
+                self._runtimes[conversation_id] = runtime
+            db.update_sandbox_status(conversation_id, "running")
+            return {"state": "restarted", "container_recreated": False, "container_id": container_id,
+                    "workspace_preserved": True, "verified": True, "reason": reason.strip()}
 
     def _recover_proxy_after_network_error(self, runtime: SandboxRuntime, result: dict[str, Any]) -> dict[str, Any] | None:
         if not getattr(settings, "sandbox_proxy_required", True) or not self._uses_default_runner:
