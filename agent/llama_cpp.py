@@ -317,6 +317,9 @@ class LlamaCppClient:
             except (URLError, TimeoutError, OSError) as exc:
                 self.last_generation_stats = {"active": False, "error": str(exc), "model": selected}
                 raise RuntimeError(f"llama.cpp request failed: {exc}") from exc
+            except Exception as exc:
+                self.last_generation_stats = {"active": False, "error": str(exc)[:2000], "model": selected}
+                raise
             finally:
                 if task_id:
                     with self._active_lock:
