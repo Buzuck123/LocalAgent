@@ -162,3 +162,27 @@ def test_ollama_message_sanitizer_uses_diagnostic_tool_catalog():
     assert sanitized[0]["tool_calls"][0]["function"]["name"] == "get_additional_terminal_diagnostics"
     assert sanitized[1]["role"] == "tool"
     assert sanitized[1]["tool_name"] == "get_additional_terminal_diagnostics"
+
+
+
+def test_normal_long_terminal_result_exposes_only_terminal_output():
+    result = {
+        "_terminal_text": "raw terminal output\\n[internal monitor notice]",
+        "_terminal_output": "raw terminal output",
+        "state": "failed",
+        "exit_code": 1,
+        "_diagnostic_due": False,
+    }
+    assert core._model_visible_tool_result("terminal", result) == {
+        "output": "raw terminal output"
+    }
+
+
+def test_terminal_recovery_report_is_separate_from_normal_output():
+    report = core._terminal_recovery_report(
+        "reset_bash_session",
+        "Bash session was not responsive.",
+        {"recovery": {"state": "reset", "verified": True}},
+    )
+    assert "Bash-сессия пересоздана" in report
+    assert "команда не считается выполненной" in report

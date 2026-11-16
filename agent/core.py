@@ -1066,6 +1066,8 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                 why = str(args.get("reason") or "Диагностическое действие")[:1000]
                 call_id = str(call.get("id") or uuid.uuid4().hex)
                 if tool_name == "get_additional_terminal_diagnostics":
+                    # Two process/resource samples need a small separation to reveal deltas.
+                    time.sleep(5)
                     tool_result = {"ok": True, "diagnostics": sandbox_manager.collect_terminal_diagnostics(
                         conversation_id, operation_id,
                         command=str(terminal_result.get("_terminal_command") or ""),
@@ -1123,9 +1125,9 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
 
 def _terminal_recovery_report(action, reason, result):
     if action == "interrupt_operation":
-        consequence = "Команда прервана диагностом; её выполнение не подтверждено."
+        consequence = "Команда прервана диагностом; её выполнение не подтверждено, возможны частичные изменения файлов и окружения."
     elif action == "reset_bash_session":
-        consequence = "Bash-сессия пересоздана в прежнем контейнере; команда не считается выполненной, возможны частичные изменения файлов."
+        consequence = "Bash-сессия пересоздана в прежнем контейнере; команда не считается выполненной, возможны частичные изменения файлов и окружения."
     else:
         consequence = "Существующий контейнер перезапущен; команда не считается выполненной, необходимо проверить файлы и окружение."
     recovery = result.get("recovery")
