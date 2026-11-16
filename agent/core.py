@@ -3610,7 +3610,7 @@ class Agent:
             except Exception: cp = {}
             pinned = cp.get("model") if isinstance(cp, dict) else None
             if not pinned:
-                pinned = (client.models().get("selected_model") if settings.llm_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or settings.llama_cpp_model
+                pinned = (client.models().get("selected_model") if settings.llm_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if settings.llm_provider == "llama_cpp" else settings.model)
                 if isinstance(cp, dict):
                     cp["model"] = pinned
                     db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
