@@ -40,6 +40,7 @@ def test_text_only_media_is_never_silently_claimed_as_attached():
     result = LlamaCppClient._safe_messages(messages, "bonsai")
     assert "Медиа не переданы модели" in result[0]["content"]
     assert "diagram.png" in result[0]["content"]
+    assert "Inspect this image" in result[0]["content"]
     assert "images" not in result[0]
 
 
