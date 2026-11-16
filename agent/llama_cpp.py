@@ -227,6 +227,18 @@ class LlamaCppClient:
                 payload["tool_choice"] = "auto"
 
             task_id = _current_task_id()
+            from .core import _CURRENT_MODEL_CONTEXT
+            context_limit = _CURRENT_MODEL_CONTEXT.get() or settings.llama_cpp_context
+            db.record_debug_trace(task_id, "llm_request", {
+                "model": selected,
+                "reasoning_requested": bool(reasoning),
+                "model_profile": self.model_profile(selected),
+                "generation_parameters": {"stream": True, "request_options_sent": False},
+                "messages": model_messages,
+                "tools": tools or [],
+                "context_estimate": context_limit,
+                "provider": "llama_cpp",
+            })
             started = time.monotonic()
             request_id = uuid.uuid4().hex
             req = Request(self._url("/chat/completions"), data=json.dumps(payload).encode("utf-8"),
@@ -317,12 +329,25 @@ class LlamaCppClient:
                     "elapsed_seconds": round(elapsed, 2), "usage": usage,
                     "num_ctx": int(settings.llama_cpp_context), "num_predict": None,
                 }
-                return {
+                result = {
                     "model": selected, "message": message,
                     "eval_count": completion_tokens, "prompt_eval_count": prompt_tokens,
                     "eval_duration": int(elapsed * 1_000_000_000),
                     "prompt_eval_duration": 0, "done": True,
                 }
+                db.record_debug_trace(task_id, "llm_response", {
+                    "model": selected, "message": message,
+                    "usage": usage, "provider": "llama_cpp",
+                })
+                if message.get("thinking") and db._debug_setting_enabled(
+                    "debug_llm_trace", getattr(settings, "debug_llm_trace", False)
+                ) and db._debug_setting_enabled(
+                    "debug_llm_thinking", getattr(settings, "debug_llm_thinking", False)
+                ):
+                    db.record_debug_trace(task_id, "llm_thinking", {
+                        "model": selected, "thinking": message["thinking"], "provider": "llama_cpp",
+                    }, thinking=True)
+                return result
             except HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")[:2000]
                 self.last_generation_stats = {"active": False, "error": detail, "model": selected}
