@@ -69,10 +69,10 @@ def test_streaming_openai_tool_call_is_normalized(monkeypatch):
     chunks = [
         {"choices": [{"delta": {"tool_calls": [{
             "index": 0, "id": "call_abc", "type": "function",
-            "function": {"name": "terminal", "arguments": "{\\"command\\""},
+            "function": {"name": "terminal", "arguments": '{"command"'},
         }]}}]},
         {"choices": [{"delta": {"tool_calls": [{
-            "index": 0, "function": {"arguments": ": \\"pwd\\"}"},
+            "function": {"arguments": ': "pwd}'},
         }]}}]},
         {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 120, "completion_tokens": 8}},
     ]
