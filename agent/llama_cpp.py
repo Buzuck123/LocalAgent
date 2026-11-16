@@ -25,6 +25,7 @@ class LlamaCppClient:
         self._request_lock = threading.RLock()
         self._active_lock = threading.RLock()
         self._active_responses: dict[str, object] = {}
+        self._recovery_required = False
         self.last_generation_stats = {
             "active": False, "tokens_per_second": None, "eval_count": 0,
             "eval_duration": 0, "model": self.model,
@@ -107,6 +108,17 @@ class LlamaCppClient:
             return {"provider": "llama_cpp", "available": True, "health": health}
         except Exception as exc:
             return {"provider": "llama_cpp", "available": False, "error": str(exc)}
+
+    def _recover_after_timeout(self) -> None:
+        if not self._recovery_required:
+            return
+        status = self.status()
+        if not status.get("available"):
+            raise RuntimeError(
+                "llama.cpp did not pass its health check after an interrupted stream; "
+                "the previous request was not replayed. Check the server before continuing."
+            )
+        self._recovery_required = False
 
     def unload(self) -> dict:
         # llama-server owns model lifetime; it has no Ollama-style unload API.
@@ -202,6 +214,7 @@ class LlamaCppClient:
         # Keep the same serialized request semantics as OllamaClient. In
         # particular, cancel_generation closes the active HTTP response.
         with self._request_lock:
+            self._recover_after_timeout()
             selected = model or db.get_app_setting("selected_ollama_model", self.model)
             model_messages = self._safe_messages(messages, selected)
             payload = {
@@ -316,9 +329,13 @@ class LlamaCppClient:
                 raise RuntimeError(f"llama.cpp HTTP {exc.code}: {detail}") from exc
             except (URLError, TimeoutError, OSError) as exc:
                 self.last_generation_stats = {"active": False, "error": str(exc), "model": selected}
+                if response is not None:
+                    self._recovery_required = True
                 raise RuntimeError(f"llama.cpp request failed: {exc}") from exc
             except Exception as exc:
                 self.last_generation_stats = {"active": False, "error": str(exc)[:2000], "model": selected}
+                if response is not None and not isinstance(exc, HTTPError):
+                    self._recovery_required = True
                 raise
             finally:
                 if task_id:
