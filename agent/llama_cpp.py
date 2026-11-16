@@ -5,12 +5,10 @@ existing agent loop. Provider-specific HTTP and streaming details stay here.
 """
 from __future__ import annotations
 
-import base64
 import json
 import threading
 import time
 import uuid
-from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, ProxyHandler
 
@@ -247,6 +245,7 @@ class LlamaCppClient:
             calls: dict[int, dict] = {}
             usage = {}
             response = None
+            stream_done = False
             self.last_generation_stats = {
                 "active": True, "tokens_per_second": 0.0, "estimated": True,
                 "eval_count": 0, "model": selected, "started_at": time.time(),
@@ -263,6 +262,7 @@ class LlamaCppClient:
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
+                        stream_done = True
                         break
                     try:
                         chunk = json.loads(data)
@@ -303,10 +303,14 @@ class LlamaCppClient:
                             current["function"]["name"] += fn["name"]
                         if fn.get("arguments"):
                             current["function"]["arguments"] += fn["arguments"]
+                if not stream_done:
+                    raise RuntimeError("llama.cpp SSE stream ended before the [DONE] marker")
                 if calls:
                     normalized = []
                     for index in sorted(calls):
                         call = calls[index]
+                        if not call.get("id"):
+                            call["id"] = "call_" + uuid.uuid4().hex[:20]
                         try:
                             call["function"]["arguments"] = json.loads(call["function"]["arguments"] or "{}")
                         except json.JSONDecodeError as exc:
