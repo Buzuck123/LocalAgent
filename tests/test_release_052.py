@@ -75,7 +75,7 @@ def test_chat_uses_pinned_model_context_and_streams_live_stats(monkeypatch):
                  "eval_duration": 1_000_000_000, "prompt_eval_count": 20,
                  "prompt_eval_duration": 2_000_000_000},
             ]
-            return Response([(json.dumps(item) + "\\n").encode() for item in lines])
+            return Response([(json.dumps(item)).encode() for item in lines])
 
         def close(self):
             pass
