@@ -1,4 +1,3 @@
-import io
 import json
 
 from agent import core
@@ -39,24 +38,49 @@ def test_chat_uses_pinned_model_context_and_streams_live_stats(monkeypatch):
     monkeypatch.setattr(core.db, "get_app_setting", lambda key, default=None: default)
     monkeypatch.setattr(core.db, "set_app_setting", lambda key, value: None)
     monkeypatch.setattr(core.OllamaClient, "_post", lambda self, *a, **k: {"parameters": "num_ctx 32768"})
+    monkeypatch.setattr(core.db, "record_ollama_request_event", lambda *args, **kwargs: None)
     captured = {}
 
-    class Response(io.BytesIO):
-        def __enter__(self): return self
-        def __exit__(self, *args): self.close()
+    class FakeSocket:
+        def settimeout(self, value):
+            pass
 
-    def open_request(req, timeout=None):
-        captured["payload"] = json.loads(req.data.decode("utf-8"))
-        lines = [
-            {"message": {"role": "assistant", "content": "hello "}, "done": False},
-            {"message": {"role": "assistant", "content": "world"}, "done": False},
-            {"message": {}, "done": True, "model": "qwen3.5:9b-32k", "eval_count": 4,
-             "eval_duration": 1_000_000_000, "prompt_eval_count": 20,
-             "prompt_eval_duration": 2_000_000_000},
-        ]
-        return Response(("\n".join(json.dumps(x) for x in lines) + "\n").encode())
+    class Response:
+        status = 200
 
-    client.opener = type("Opener", (), {"open": staticmethod(open_request)})()
+        def __init__(self, lines):
+            self.lines = lines
+
+        def __iter__(self):
+            return iter(self.lines)
+
+        def close(self):
+            pass
+
+    class Connection:
+        def __init__(self, host, port, timeout=None, **kwargs):
+            self.sock = FakeSocket()
+
+        def connect(self):
+            pass
+
+        def request(self, method, target, body=None, headers=None):
+            captured["payload"] = json.loads(body.decode("utf-8"))
+
+        def getresponse(self):
+            lines = [
+                {"message": {"role": "assistant", "content": "hello "}, "done": False},
+                {"message": {"role": "assistant", "content": "world"}, "done": False},
+                {"message": {}, "done": True, "model": "qwen3.5:9b-32k", "eval_count": 4,
+                 "eval_duration": 1_000_000_000, "prompt_eval_count": 20,
+                 "prompt_eval_duration": 2_000_000_000},
+            ]
+            return Response([(json.dumps(item) + "\\n").encode() for item in lines])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(core.http.client, "HTTPConnection", Connection)
     token = core._CURRENT_MODEL_OVERRIDE.set("qwen3.5:9b-32k")
     context_token = core._CURRENT_MODEL_CONTEXT.set(32768)
     try:
