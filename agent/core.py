@@ -3468,7 +3468,7 @@ class Agent:
                 thread.start()
                 return db.get_task(pending["id"])
         task = db.create_task(conversation_id, user_message, attachments=attachments or [])
-        selected_model = (client.models().get("selected_model") if settings.llm_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or settings.llama_cpp_model
+        selected_model = (client.models().get("selected_model") if settings.llm_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if settings.llm_provider == "llama_cpp" else settings.model)
         try:
             selected_profile = client.model_profile(selected_model)
         except Exception:
