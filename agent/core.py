@@ -1032,8 +1032,23 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
     if not messages:
         messages = [{"role": "system", "content": TERMINAL_DIAGNOSTIC_SYSTEM_PROMPT}]
         db.create_terminal_diagnostic(diagnostic_id, task_id, conversation_id, operation_id, messages)
+    if messages:
+        # Keep prior decisions without replaying every old host/container snapshot.
+        history_summary = [
+            {"action": item.get("action"), "reason": item.get("reason"),
+             "result": (
+                 {key: item["result"].get(key) for key in ("state", "verified", "error", "workspace_preserved", "container_recreated")}
+                 if isinstance(item.get("result"), dict) else None
+             )}
+            for item in actions[-12:] if isinstance(item, dict)
+        ]
+        messages = [messages[0], {
+            "role": "user",
+            "content": "Краткая история предыдущих диагностических циклов:\\n"
+                       + json.dumps(history_summary, ensure_ascii=False, default=str)[:8000],
+        }]
     messages.append({"role": "user", "content":
-        "Снимок одной terminal operation. Исходная пользовательская задача намеренно не передаётся.\\n"
+        "Текущий снимок одной terminal operation. Исходная пользовательская задача намеренно не передаётся.\\n"
         + json.dumps(snapshot, ensure_ascii=False, default=str)[:30000]})
     db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
 
@@ -1064,7 +1079,6 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                     except json.JSONDecodeError: raw = {}
                 args = raw if isinstance(raw, dict) else {}
                 why = str(args.get("reason") or "Диагностическое действие")[:1000]
-                call_id = str(call.get("id") or uuid.uuid4().hex)
                 if tool_name == "get_additional_terminal_diagnostics":
                     # Two process/resource samples need a small separation to reveal deltas.
                     time.sleep(5)
