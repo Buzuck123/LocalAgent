@@ -3478,7 +3478,7 @@ class Agent:
         try:
             selected_profile = client.model_profile(selected_model)
         except Exception:
-            selected_profile = {"num_ctx": settings.num_ctx, "num_predict": None}
+            selected_profile = {"num_ctx": settings.llama_cpp_context if settings.llm_provider == "llama_cpp" else settings.num_ctx, "num_predict": None}
         initial_checkpoint = {
             "version": 4,
             "mode": "unified",
@@ -3629,7 +3629,7 @@ class Agent:
                     cp["model_num_predict"] = client.model_profile(pinned).get("num_predict")
                     db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
                 except Exception:
-                    pinned_context = int(getattr(settings, "num_ctx", 65536))
+                    pinned_context = int(settings.llama_cpp_context if settings.llm_provider == "llama_cpp" else getattr(settings, "num_ctx", 65536))
             _CURRENT_MODEL_CONTEXT.set(int(pinned_context))
             return self._run_unified_task_impl(task_id, control)
         finally:
