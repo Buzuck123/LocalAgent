@@ -521,7 +521,7 @@ print(json.dumps(result))
         command_started_at = float(active.get("started_monotonic", time.monotonic()))
         call_started_at = time.monotonic()
         idle_limit = max(0.1, float(getattr(settings, "terminal_idle_timeout_seconds", 10)))
-        max_wait = max(idle_limit, float(getattr(settings, "terminal_max_wait_seconds", 300)))
+        max_wait = max(1.0, float(getattr(settings, "terminal_max_wait_seconds", 300)))
         last_output_at = float(active.get("last_output_monotonic", call_started_at))
         state = "running"
         latest: dict[str, Any] = {}
@@ -665,6 +665,10 @@ print(json.dumps(result))
             "idle_seconds": round(max(0.0, float(idle_seconds)), 3),
             "runtime_error": str(runtime_error or "")[:800],
             "container_id": container_id or None,
+            "process_scope_note": (
+                "container_top перечисляет процессы всего контейнера; принадлежность конкретной операции "
+                "не считается доказанной без отдельной корреляции."
+            ),
         }
         runtime = self._runtimes.get(conversation_id)
         if runtime is None and record:
@@ -687,8 +691,12 @@ print(json.dumps(result))
                 try:
                     proc = subprocess.run([settings.podman_path, *args], capture_output=True,
                                           text=True, timeout=8, check=False)
+                    output_text = str(proc.stdout or proc.stderr or "")
+                    secret = str(record.get("auth_token") or "")
+                    if secret:
+                        output_text = output_text.replace(secret, "[REDACTED]")
                     snapshot[key] = {"returncode": int(proc.returncode),
-                                     "output": str(proc.stdout or proc.stderr or "")[:10000]}
+                                     "output": output_text[:10000]}
                 except Exception as exc:
                     snapshot[key] = {"error": type(exc).__name__}
         for key, args in (

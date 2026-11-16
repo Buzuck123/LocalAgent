@@ -1031,6 +1031,7 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
     messages.append({"role": "user", "content":
         "Снимок одной terminal operation. Исходная пользовательская задача намеренно не передаётся.\\n"
         + json.dumps(snapshot, ensure_ascii=False, default=str)[:30000]})
+    db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
 
     action, reason, recovery = "continue_waiting", "Недостаточно оснований для вмешательства.", None
     try:
@@ -1070,26 +1071,37 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                         runtime_error=terminal_result.get("_runtime_error"),
                     )}
                     actions.append({"action": tool_name, "reason": why})
-                elif tool_name == "interrupt_terminal_operation":
-                    recovery = sandbox_manager.interrupt_operation(conversation_id, operation_id)
-                    action, reason, recovered = "interrupt_operation", why, True
+                elif tool_name in {"interrupt_terminal_operation", "reset_bash_session", "restart_sandbox_container"}:
+                    action = {
+                        "interrupt_terminal_operation": "interrupt_operation",
+                        "reset_bash_session": "reset_bash_session",
+                        "restart_sandbox_container": "restart_container",
+                    }[tool_name]
+                    reason = why
+                    recovered = True
+                    try:
+                        if action == "interrupt_operation":
+                            recovery = sandbox_manager.interrupt_operation(conversation_id, operation_id)
+                        elif action == "reset_bash_session":
+                            recovery = sandbox_manager.reset_terminal_session(
+                                conversation_id, confirm_reset=True, reason=why)
+                        else:
+                            recovery = sandbox_manager.restart_container(conversation_id, reason=why)
+                        tool_result = recovery
+                    except Exception as exc:
+                        recovery = {
+                            "state": "recovery_failed",
+                            "action_attempted": action,
+                            "error": f"{type(exc).__name__}: {str(exc)[:1000]}",
+                            "verified": False,
+                        }
+                        tool_result = recovery
                     actions.append({"action": action, "reason": reason, "result": recovery})
-                    tool_result = recovery
-                elif tool_name == "reset_bash_session":
-                    recovery = sandbox_manager.reset_terminal_session(
-                        conversation_id, confirm_reset=True, reason=why)
-                    action, reason, recovered = "reset_bash_session", why, True
-                    actions.append({"action": action, "reason": reason, "result": recovery})
-                    tool_result = recovery
-                elif tool_name == "restart_sandbox_container":
-                    recovery = sandbox_manager.restart_container(conversation_id, reason=why)
-                    action, reason, recovered = "restart_container", why, True
-                    actions.append({"action": action, "reason": reason, "result": recovery})
-                    tool_result = recovery
                 else:
                     tool_result = {"ok": False, "error": "Недоступный диагностический инструмент."}
                 messages.append({"role": "tool", "tool_name": tool_name,
                                  "content": json.dumps(tool_result, ensure_ascii=False, default=str)[:12000]})
+                db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
                 if recovered:
                     break
             if recovered:
@@ -1112,12 +1124,18 @@ def _terminal_recovery_report(action, reason, result):
         consequence = "Bash-сессия пересоздана в прежнем контейнере; команда не считается выполненной, возможны частичные изменения файлов."
     else:
         consequence = "Существующий контейнер перезапущен; команда не считается выполненной, необходимо проверить файлы и окружение."
-    if action == "interrupt_operation" and isinstance(result.get("recovery"), dict):
-        if result["recovery"].get("state") != "interrupted":
-            consequence = (
-                "Попытка прерывания не подтвердила остановку команды; состояние операции остаётся неопределённым. "
-                "Перед продолжением необходимо проверить процессы и файлы."
-            )
+    recovery = result.get("recovery")
+    if isinstance(recovery, dict) and recovery.get("verified") is False:
+        consequence = (
+            f"Действие {action} было предпринято, но восстановление не подтверждено: "
+            f"{str(recovery.get('error') or recovery.get('state') or 'неизвестная ошибка')[:500]}. "
+            "Состояние операции и среды необходимо проверить перед продолжением."
+        )
+    elif action == "interrupt_operation" and isinstance(recovery, dict) and recovery.get("state") != "interrupted":
+        consequence = (
+            "Попытка прерывания не подтвердила остановку команды; состояние операции остаётся неопределённым. "
+            "Перед продолжением необходимо проверить процессы и файлы."
+        )
     return f"Диагностика: {reason}\nВыполнено: {action}. {consequence}"
 
 
