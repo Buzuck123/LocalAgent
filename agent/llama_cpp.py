@@ -130,6 +130,7 @@ class LlamaCppClient:
             _sanitize_messages_for_ollama(messages)
         )
         output = []
+        system_parts: list[str] = []
         pending_call_ids: list[str] = []
         for source in sanitized:
             role = source.get("role")
@@ -138,6 +139,14 @@ class LlamaCppClient:
             content = source.get("content", "")
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False, default=str)
+            if role == "system":
+                # llama.cpp chat templates commonly accept a single system
+                # message, and some (including the Bonsai template) require it
+                # to be the first message. Keep every instruction, but combine
+                # them into one provider-compatible system message.
+                if content:
+                    system_parts.append(content)
+                continue
             item = {"role": role, "content": content}
             if role == "tool":
                 call_id = source.get("tool_call_id")
@@ -208,6 +217,8 @@ class LlamaCppClient:
                         result["note"] = (str(result.get("note") or "").strip() + " " + note).strip()
                         item["content"] = json.dumps(receipt, ensure_ascii=False, default=str)
             output.append(item)
+        if system_parts:
+            output.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
         return output
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
