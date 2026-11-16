@@ -3316,7 +3316,13 @@ class OllamaClient:
                 f"Cannot connect to Ollama at {self.base}: {exc}"
             ) from exc
 
-client = OllamaClient()
+if settings.llm_provider == "llama_cpp":
+    from .llama_cpp import LlamaCppClient
+    client = LlamaCppClient()
+elif settings.llm_provider == "ollama":
+    client = OllamaClient()
+else:
+    raise RuntimeError(f"Unsupported LLM_PROVIDER: {settings.llm_provider!r}")
 
 class TaskControl:
     def __init__(self):
