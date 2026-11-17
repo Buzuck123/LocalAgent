@@ -3356,8 +3356,6 @@ def switch_llm_provider(provider):
         active_llm_provider = name
         if name == "ollama":
             ollama_aux_client = client
-        elif ollama_aux_client is client:
-            ollama_aux_client = OllamaClient()
         db.set_app_setting("selected_llm_provider", name)
         return {"provider": name}
 
