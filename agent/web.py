@@ -467,11 +467,21 @@ def select_llm_provider(payload: ProviderSelect):
     # different active provider because their original provider is pinned below.
     blocking = {"queued", "running", "cancelling"}
     all_tasks = db.list_all_tasks()
-    if any(task.get("status") in blocking for task in all_tasks):
+    blocking_tasks = [
+        task for task in all_tasks if task.get("status") in blocking
+    ]
+    if blocking_tasks:
+        details = ", ".join(
+            f"{task.get('id', '?')} ({task.get('status')})"
+            for task in blocking_tasks[:10]
+        )
+        suffix = f" Блокирующие задачи: {details}."
+        if len(blocking_tasks) > 10:
+            suffix += f" И ещё {len(blocking_tasks) - 10}."
         raise HTTPException(
             409,
             "Нельзя переключить LLM-сервер, пока есть выполняющиеся или ожидающие запуска задачи. "
-            "Дождись их завершения или отмени их и повтори переключение.",
+            "Дождись их завершения или отмени их и повтори переключение." + suffix,
         )
 
     # Older checkpoints did not persist the provider. Capture the currently
