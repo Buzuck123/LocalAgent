@@ -63,6 +63,11 @@ def test_normal_message_routes_to_clarification_task_after_restart(tmp_path, mon
         "messages": [{"role": "user", "content": "Исходная задача"}],
     }
     db.update_task(task["id"], status=status, checkpoint_json=json.dumps(checkpoint))
+    # A newer unrelated task must not steal the clarification reply.
+    other = db.create_task(conversation["id"], "Другая самостоятельная задача")
+    db.update_task(other["id"], status="running", checkpoint_json=json.dumps({
+        "messages": [{"role": "user", "content": "Другая самостоятельная задача"}]
+    }))
 
     started = []
     class FakeThread:
@@ -74,12 +79,25 @@ def test_normal_message_routes_to_clarification_task_after_restart(tmp_path, mon
             return False
 
     monkeypatch.setattr(core.threading, "Thread", FakeThread)
-    result = core.Agent().submit(conversation["id"], "Продолжай с вариантом Б")
+    agent = core.Agent()
+    answer = "Продолжай с вариантом Б"
+    result = agent.submit(conversation["id"], answer)
     assert result["id"] == task["id"]
+    assert result["status"] == "queued"
     assert len(started) == 1
-    saved = json.loads(db.get_task(task["id"])["checkpoint_json"])
+    target, args = started[0]
+    assert target.__self__ is agent
+    assert target.__func__ is core.Agent._run_task
+    assert args[0] == task["id"]
+    assert args[0] != other["id"]
+    saved_task = db.get_task(task["id"])
+    assert saved_task["user_message"] == "Исходная задача"
+    saved = json.loads(saved_task["checkpoint_json"])
     assert saved["clarification"]["resolved"] is True
-    assert saved["clarification"]["answer"] == "Продолжай с вариантом Б"
+    assert saved["clarification"]["answer"] == answer
+    assert saved["phase"] == "loop"
+    assert "pause_reason" not in saved
+    assert db.get_messages(conversation["id"])[-1]["content"] == answer
 
 
 def test_resume_cannot_bypass_required_clarification(tmp_path, monkeypatch):
