@@ -34,6 +34,10 @@ class MessageCreate(BaseModel):
 
 class ModelSelect(BaseModel):
     model: str = Field(min_length=1, max_length=200)
+class ProviderSelect(BaseModel):
+    provider: str = Field(pattern="^(ollama|llama_cpp)$")
+
+
 
 class DebugTraceSettings(BaseModel):
     enabled: bool
@@ -435,12 +439,45 @@ def sandbox_proxy_status():
     return sandbox_manager.proxy_status()
 
 
+@app.get("/api/llm/provider")
+def get_llm_provider():
+    from .core import client, active_llm_provider
+    return {
+        "provider": active_llm_provider,
+        "providers": [
+            {"id": "ollama", "name": "Ollama"},
+            {"id": "llama_cpp", "name": "llama.cpp"},
+        ],
+        "status": client.status(),
+    }
+
+
+@app.post("/api/llm/provider")
+def select_llm_provider(payload: ProviderSelect):
+    from .core import switch_llm_provider
+    active = {"queued", "running", "paused", "interrupted", "cancelling"}
+    if any(task.get("status") in active for task in db.list_tasks()):
+        raise HTTPException(
+            409,
+            "Нельзя переключить LLM-сервер, пока есть незавершённые задачи. "
+            "Заверши или отмени их и повтори переключение.",
+        )
+    try:
+        result = switch_llm_provider(payload.provider)
+        return {**result, "status": get_llm_provider()["status"]}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @app.get("/api/ollama/model-profile")
 def ollama_model_profile():
-    from .core import client
-    fallback_model = settings.llama_cpp_model if settings.llm_provider == "llama_cpp" else settings.model
-    model = db.get_app_setting("selected_ollama_model", fallback_model)
-    if settings.llm_provider == "llama_cpp":
+    from .core import client, active_llm_provider
+    key = "selected_llama_cpp_model" if active_llm_provider == "llama_cpp" else "selected_ollama_model"
+    fallback_model = settings.llama_cpp_model if active_llm_provider == "llama_cpp" else settings.model
+    model = db.get_app_setting(key, fallback_model)
+    if active_llm_provider == "llama_cpp":
         model = client.models().get("selected_model") or model
     try:
         return client.model_profile(model)
