@@ -3634,7 +3634,7 @@ class Agent:
                 # A worker may have disappeared during application restart while
                 # the remote SWE-ReX process continued. Interrupt it out-of-band.
                 db.update_task(task_id, status="cancelling", error=None)
-                client.cancel_generation(task_id)
+                _client_for_task_record(task).cancel_generation(task_id)
                 conversation_id = task.get("conversation_id")
                 def _interrupt_recovered_remote():
                     try:
