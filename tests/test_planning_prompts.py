@@ -189,6 +189,8 @@ def test_plan_context_keeps_current_focus_without_rigid_stage_lock():
     assert "Report completed work and its observable evidence" in context
     assert "Do not begin, implement, or pre-empt any later step" not in context
     assert "Plan overview (orientation, not a rigid script)" in context
+    assert "User goal:" not in context
+    assert "Подготовить проект" not in context
 
 
 def test_workspace_reconciliation_marks_only_future_steps_with_verified_checks(tmp_path):
