@@ -29,6 +29,13 @@ def test_context_compaction_keeps_system_goal_and_recent_tool_pair():
     assert not (compacted[-1].get("role") == "tool")
 
 
+def test_event_id_is_preserved_when_messages_are_reloaded_from_persistent_records():
+    persisted = {"role": "user", "content": "same request", "_event_id": "db-event-123"}
+    restored = dict(persisted)
+    ensure_event_ids([restored])
+    assert restored["_event_id"] == "db-event-123"
+
+
 def test_context_estimator_triggers_before_full_context():
     messages = [{"role": "user", "content": "x" * 80000}]
     assert estimate_tokens(messages) > 10000
