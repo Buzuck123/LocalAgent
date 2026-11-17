@@ -326,7 +326,7 @@ def compact_messages(
     summary = "\n".join(summary_parts)
     if len(summary) > max_summary_chars:
         # Keep the original request intact and trim the oldest factual observations.
-        header = "\n".join(summary_parts[:3])
+        header = "\n".join(summary_parts[:2])
         available = max(0, max_summary_chars - len(header) - 32)
         tail = "\n".join(deduped)[-available:] if available else ""
         summary = header + ("\n…[ранние наблюдения опущены]…\n" + tail if tail else "")
@@ -338,7 +338,7 @@ def compact_messages(
             archived.append(original)
             summary += "\n" + "\n".join(_message_summary(original))
     if len(summary) > max_summary_chars:
-        header = "\n".join(summary.splitlines()[:3])
+        header = "\n".join(summary.splitlines()[:2])
         available = max(0, max_summary_chars - len(header) - 32)
         summary = header + ("\n…[сводка сокращена]…\n" + summary[-available:] if available else "")
 
