@@ -499,6 +499,13 @@ def list_tasks(cid: str | None = None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def list_all_tasks() -> list[dict]:
+    """Return every task; lifecycle decisions must not use the UI's 100-task window."""
+    with connect() as con:
+        rows = con.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
 def record_model_request(task_id: str | None, model: str, response: dict) -> None:
     """Persist Ollama usage statistics for one completed /api/chat request."""
     if not isinstance(response, dict):
