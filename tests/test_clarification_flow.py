@@ -12,6 +12,16 @@ def _isolated_db(tmp_path, monkeypatch):
     return db.create_conversation("clarification test")
 
 
+def test_create_task_atomically_persists_original_user_event(tmp_path, monkeypatch):
+    conversation = _isolated_db(tmp_path, monkeypatch)
+    task = db.create_task(conversation["id"], "Найди и сравни варианты")
+    messages = db.get_messages(conversation["id"])
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == task["user_message"]
+    assert messages[0]["_event_id"] == task["initial_message_event_id"]
+
+
 def test_normal_message_is_saved_and_routes_to_waiting_task(tmp_path, monkeypatch):
     conversation = _isolated_db(tmp_path, monkeypatch)
     task = db.create_task(conversation["id"], "Исходная задача")
