@@ -59,7 +59,7 @@ class LlamaCppClient:
             return False
 
     def model_profile(self, model: str | None = None) -> dict:
-        name = model or db.get_app_setting("selected_ollama_model", self.model)
+        name = model or db.get_app_setting("selected_llama_cpp_model", self.model)
         return {
             "model": name, "num_ctx": int(settings.llama_cpp_context),
             "num_predict": None, "source": "llama_cpp_server_config",
@@ -76,11 +76,11 @@ class LlamaCppClient:
     def models(self) -> dict:
         models = self._available_models()
         names = {item["name"] for item in models}
-        selected = db.get_app_setting("selected_ollama_model")
+        selected = db.get_app_setting("selected_llama_cpp_model")
         if selected not in names:
             selected = self.model if self.model in names else (models[0]["name"] if models else "")
             if selected:
-                db.set_app_setting("selected_ollama_model", selected)
+                db.set_app_setting("selected_llama_cpp_model", selected)
         return {"models": models, "selected_model": selected}
 
     def select_model(self, model: str) -> dict:
@@ -90,7 +90,7 @@ class LlamaCppClient:
         available = {item["name"] for item in self._available_models()}
         if name not in available:
             raise ValueError(f"Модель {name!r} не обслуживается текущим llama.cpp сервером")
-        db.set_app_setting("selected_ollama_model", name)
+        db.set_app_setting("selected_llama_cpp_model", name)
         self.model = name
         return {"selected_model": name}
 
