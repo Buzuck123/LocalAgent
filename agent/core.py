@@ -376,7 +376,7 @@ def reconsider_execution_mode_after_errors(goal: str, failure_history: list[dict
         json.dumps(failure_history[-6:], ensure_ascii=False, default=str)[:7000]
     )
     try:
-        response = client.chat([
+        response = _task_client().chat([
             {"role": "system", "content": "Reconsider the execution strategy based on the actual failures."},
             {"role": "user", "content": prompt},
         ], tools=None, reasoning=reasoning)
