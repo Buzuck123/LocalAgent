@@ -12,8 +12,8 @@ def capability_catalog_prompt() -> str:
         data = json.loads(_MANIFEST.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return (
-            "COMPUTER CAPABILITIES\\n"
-            "- Use the persistent Linux terminal for shell commands, Python, files and network work.\\n"
+            "COMPUTER CAPABILITIES\n"
+            "- Use the persistent Linux terminal for shell commands, Python, files and network work.\n"
             "- Web search: use web-search \"query\"; browser automation: Playwright with Chromium."
         )
     lines = [
@@ -31,4 +31,4 @@ def capability_catalog_prompt() -> str:
     lines.append(
         "- Capabilities are checked when the container starts. If a listed capability is unavailable, inspect /etc/localagent-capabilities.json; do not assume a failed check is usable."
     )
-    return "\\n".join(lines)
+    return "\n".join(lines)
