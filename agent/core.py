@@ -3320,7 +3320,7 @@ class OllamaClient:
             ) from exc
 
 _provider_lock = threading.RLock()
-active_llm_provider = db.get_app_setting("selected_llm_provider", getattr(settings, "llm_provider", "ollama"))
+active_llm_provider = db.get_app_setting("selected_llm_provider", active_llm_provider)
 
 
 def _new_provider_client(provider):
@@ -3501,11 +3501,11 @@ class Agent:
                 thread.start()
                 return db.get_task(pending["id"])
         task = db.create_task(conversation_id, user_message, attachments=attachments or [])
-        selected_model = (client.models().get("selected_model") if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else settings.model)
+        selected_model = (client.models().get("selected_model") if active_llm_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if active_llm_provider == "llama_cpp" else settings.model)
         try:
             selected_profile = client.model_profile(selected_model)
         except Exception:
-            selected_profile = {"num_ctx": settings.llama_cpp_context if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else settings.num_ctx, "num_predict": None}
+            selected_profile = {"num_ctx": settings.llama_cpp_context if active_llm_provider == "llama_cpp" else settings.num_ctx, "num_predict": None}
         initial_checkpoint = {
             "version": 4,
             "mode": "unified",
@@ -3643,7 +3643,7 @@ class Agent:
             except Exception: cp = {}
             pinned = cp.get("model") if isinstance(cp, dict) else None
             if not pinned:
-                pinned = (client.models().get("selected_model") if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else settings.model)
+                pinned = (client.models().get("selected_model") if active_llm_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if active_llm_provider == "llama_cpp" else settings.model)
                 if isinstance(cp, dict):
                     cp["model"] = pinned
                     db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
@@ -3656,7 +3656,7 @@ class Agent:
                     cp["model_num_predict"] = client.model_profile(pinned).get("num_predict")
                     db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
                 except Exception:
-                    pinned_context = int(settings.llama_cpp_context if getattr(settings, "llm_provider", "ollama") == "llama_cpp" else getattr(settings, "num_ctx", 65536))
+                    pinned_context = int(settings.llama_cpp_context if active_llm_provider == "llama_cpp" else getattr(settings, "num_ctx", 65536))
             _CURRENT_MODEL_CONTEXT.set(int(pinned_context))
             return self._run_unified_task_impl(task_id, control)
         finally:
