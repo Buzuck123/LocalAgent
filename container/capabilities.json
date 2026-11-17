@@ -19,7 +19,8 @@
         ],
         "paths": [
           "/opt/playwright"
-        ]
+        ],
+        "playwright_browser": "chromium"
       }
     },
     {
