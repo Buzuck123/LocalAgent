@@ -36,6 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     lsof \
     build-essential \
     pkg-config \
+    cmake \
+    ninja-build \
+    nodejs \
+    npm \
     patch \
     python3 \
     python3-pip \
@@ -47,10 +51,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     poppler-utils \
     qpdf \
+    pandoc \
+    ghostscript \
+    antiword \
+    catdoc \
+    unrtf \
     tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-rus \
+    tesseract-ocr-deu \
     imagemagick \
     libreoffice-calc \
     libreoffice-writer \
+    libreoffice-impress \
+    libreoffice-draw \
     fonts-liberation \
     fonts-dejavu-core \
     fonts-crosextra-carlito \
@@ -65,7 +79,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpng-dev \
     libtiff-dev \
     libopenjp2-7-dev \
+    libmagic1 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install CPU-only PyTorch explicitly: the sandbox has no GPU passthrough.
+# This avoids pulling CUDA runtime libraries into an environment where CUDA
+# cannot be used. The host LLM/GPU stack remains outside this container.
+RUN python3 -m pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.15.0 torchaudio==2.15.0
 
 # Python libraries
 COPY requirements.txt /tmp/requirements.txt
