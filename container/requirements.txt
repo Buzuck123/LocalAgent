@@ -1,26 +1,35 @@
 # SWE-ReX remote runtime
 swe-rex==1.4.0
 
-# Excel and data processing
+# Core Python and data processing
+numpy
 pandas
+scipy
+scikit-learn
+matplotlib
 openpyxl
 XlsxWriter
 xlrd
 pyxlsb
 
-# Word and documents
+# Word, presentations and document conversion
 python-docx
 python-pptx
 odfpy
+pypandoc
+python-magic
 
 # PDF
 pypdf
 PyMuPDF
 pdfplumber
+pypdfium2
+pdfminer.six
 reportlab
 
-# Images and OCR
+# Images, computer vision and OCR
 Pillow
+opencv-python-headless
 pytesseract
 
 # Browser automation
@@ -35,6 +44,15 @@ aiohttp
 
 # SQLite and data formats
 SQLAlchemy
+alembic
 tabulate
 
+# Audio, speech and CPU machine learning
+onnxruntime
+librosa
+pyannote-audio
+
+# Local utilities
+uv
+pytest
 uvicorn
