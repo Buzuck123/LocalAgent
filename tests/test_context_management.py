@@ -125,6 +125,43 @@ def test_event_deduplication_uses_ids_not_equal_text():
     assert len(compacted) == 2
 
 
+def test_event_deduplication_preserves_distinct_identical_messages_and_collapses_system_duplicates():
+    messages = [
+        {"role": "system", "content": "base system prompt"},
+        {"role": "system", "content": "base system prompt"},
+        {"role": "user", "content": "same", "_event_id": "user-event-1"},
+        {"role": "user", "content": "same", "_event_id": "user-event-2"},
+        {"role": "tool", "content": "same result", "_event_id": "tool-operation-1"},
+        {"role": "tool", "content": "same result", "_event_id": "tool-operation-1"},
+    ]
+    compacted, removed = deduplicate_event_ids(messages)
+    assert removed == 2
+    assert sum(m.get("role") == "system" for m in compacted) == 1
+    assert [m["_event_id"] for m in compacted if m.get("role") == "user"] == [
+        "user-event-1", "user-event-2"
+    ]
+    assert sum(m.get("role") == "tool" for m in compacted) == 1
+
+
+def test_compaction_keeps_original_request_as_user_turn_without_copying_it_into_summary():
+    goal = "Найди информацию и сравни варианты"
+    messages = [
+        {"role": "system", "content": "base"},
+        {"role": "user", "content": goal, "_event_id": "goal-event"},
+        {"role": "assistant", "content": "intermediate prose"},
+        {"role": "tool", "content": "observation", "_event_id": "tool-1"},
+        {"role": "assistant", "content": "latest response"},
+    ]
+    compacted, summary, _ = compact_messages(
+        messages, goal=goal, goal_event_id="goal-event", keep_recent=1
+    )
+    user_turns = [m for m in compacted if m.get("role") == "user"]
+    assert len(user_turns) == 1
+    assert user_turns[0]["content"] == goal
+    assert goal not in summary
+    assert any(m.get("role") == "tool" and "observation" in m.get("content", "") for m in compacted)
+
+
 def test_context_growth_forecast_includes_model_and_expected_output():
     messages = [{"role": "user", "content": "x" * 1000}]
     stats = context_growth_forecast(messages, 10000, expected_output_tokens=2000, model="qwen3.5:9b")
@@ -146,8 +183,8 @@ def test_llm_context_compaction_preserves_exact_goal_and_uses_model_summary(monk
         "Создай приложение и проверь его.",
         "История: вызов terminal создал app.py; pytest завершился успешно.",
     )
-    assert summary.startswith("Исходный запрос пользователя (сохранён дословно):")
-    assert "Создай приложение и проверь его." in summary
+    assert summary.startswith("Сжатое состояние работы (LLM-компактизация):")
+    assert "Создай приложение и проверь его." not in summary
     assert "Файл app.py" in summary or "файл app.py" in summary
     assert "Детерминированная фактическая проекция" in captured["messages"][1]["content"]
 
