@@ -43,11 +43,13 @@ def init_db():
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL,
             role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, attachments_json TEXT,
+            event_id TEXT,
             FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id);
         CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, user_message TEXT NOT NULL, attachments_json TEXT,
+            initial_message_event_id TEXT,
             status TEXT NOT NULL, result TEXT, error TEXT, checkpoint_json TEXT,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
             FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
@@ -133,9 +135,16 @@ def init_db():
         message_columns = {row[1] for row in con.execute("PRAGMA table_info(messages)").fetchall()}
         if "attachments_json" not in message_columns:
             con.execute("ALTER TABLE messages ADD COLUMN attachments_json TEXT")
+        if "event_id" not in message_columns:
+            con.execute("ALTER TABLE messages ADD COLUMN event_id TEXT")
+        for row in con.execute("SELECT id FROM messages WHERE event_id IS NULL OR event_id=''").fetchall():
+            con.execute("UPDATE messages SET event_id=? WHERE id=?", (uuid.uuid4().hex, row["id"]))
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_event_id ON messages(event_id) WHERE event_id IS NOT NULL")
         task_columns = {row[1] for row in con.execute("PRAGMA table_info(tasks)").fetchall()}
         if "attachments_json" not in task_columns:
             con.execute("ALTER TABLE tasks ADD COLUMN attachments_json TEXT")
+        if "initial_message_event_id" not in task_columns:
+            con.execute("ALTER TABLE tasks ADD COLUMN initial_message_event_id TEXT")
         # Migrate databases created by older releases without requiring data loss.
         tool_columns = {row[1] for row in con.execute("PRAGMA table_info(tool_operations)").fetchall()}
         if "arguments_json" not in tool_columns:
@@ -266,13 +275,19 @@ def delete_conversation(cid: str) -> bool:
         cur = con.execute("DELETE FROM conversations WHERE id=?", (cid,))
         return cur.rowcount > 0
 
-def add_message(cid: str, role: str, content: str, attachments: list[dict] | None = None) -> dict:
+def add_message(cid: str, role: str, content: str, attachments: list[dict] | None = None,
+                *, event_id: str | None = None) -> dict:
     ts = now()
+    stable_event_id = str(event_id or uuid.uuid4().hex)
     with _lock, connect() as con:
-        cur = con.execute("INSERT INTO messages(conversation_id,role,content,created_at,attachments_json) VALUES (?,?,?,?,?)",
-                          (cid, role, content, ts, json.dumps(attachments or [], ensure_ascii=False)))
+        cur = con.execute(
+            "INSERT INTO messages(conversation_id,role,content,created_at,attachments_json,event_id) VALUES (?,?,?,?,?,?)",
+            (cid, role, content, ts, json.dumps(attachments or [], ensure_ascii=False), stable_event_id),
+        )
         con.execute("UPDATE conversations SET updated_at=? WHERE id=?", (ts, cid))
-        return dict(con.execute("SELECT * FROM messages WHERE id=?", (cur.lastrowid,)).fetchone())
+        item = dict(con.execute("SELECT * FROM messages WHERE id=?", (cur.lastrowid,)).fetchone())
+        item["_event_id"] = item.get("event_id")
+        return item
 
 def get_messages(cid: str, limit: int = 100) -> list[dict]:
     with connect() as con:
@@ -283,6 +298,7 @@ def get_messages(cid: str, limit: int = 100) -> list[dict]:
             item = dict(row)
             try: item["attachments"] = json.loads(item.pop("attachments_json", "[]") or "[]")
             except (TypeError, json.JSONDecodeError): item["attachments"] = []
+            item["_event_id"] = item.get("event_id")
             result.append(item)
         return result
 
@@ -306,10 +322,24 @@ def get_conversation_attachments(cid: str) -> list[dict]:
 
 
 def create_task(cid: str, user_message: str, attachments: list[dict] | None = None) -> dict:
-    tid, ts = str(uuid.uuid4()), now()
+    """Create a task and its original user event atomically."""
+    tid, ts, event_id = str(uuid.uuid4()), now(), uuid.uuid4().hex
+    attachment_json = json.dumps(attachments or [], ensure_ascii=False)
     with _lock, connect() as con:
-        con.execute("""INSERT INTO tasks(id,conversation_id,user_message,attachments_json,status,created_at,updated_at)
-                       VALUES(?,?,?,?,'queued',?,?)""", (tid, cid, user_message, json.dumps(attachments or [], ensure_ascii=False), ts, ts))
+        con.execute(
+            """INSERT INTO tasks
+               (id,conversation_id,user_message,attachments_json,initial_message_event_id,
+                status,created_at,updated_at)
+               VALUES(?,?,?,?,?,'queued',?,?)""",
+            (tid, cid, user_message, attachment_json, event_id, ts, ts),
+        )
+        con.execute(
+            """INSERT INTO messages
+               (conversation_id,role,content,created_at,attachments_json,event_id)
+               VALUES(?,?,?,?,?,?)""",
+            (cid, "user", user_message, ts, attachment_json, event_id),
+        )
+        con.execute("UPDATE conversations SET updated_at=? WHERE id=?", (ts, cid))
     return get_task(tid)
 
 def update_task(tid: str, **fields):
@@ -332,7 +362,9 @@ def get_task(tid: str) -> dict | None:
         return item
 
 
-def accept_task_clarification(tid: str, cid: str, checkpoint_json: str, answer: str, attachments: list[dict] | None = None) -> dict:
+def accept_task_clarification(tid: str, cid: str, checkpoint_json: str, answer: str,
+                              attachments: list[dict] | None = None, *,
+                              event_id: str | None = None) -> dict:
     """Atomically persist a clarification answer, checkpoint, and visible chat message."""
     if not answer or not answer.strip():
         raise ValueError("Ответ на уточнение не может быть пустым.")
@@ -360,8 +392,9 @@ def accept_task_clarification(tid: str, cid: str, checkpoint_json: str, answer: 
             (checkpoint_json, ts, tid),
         )
         con.execute(
-            "INSERT INTO messages(conversation_id,role,content,created_at,attachments_json) VALUES (?,?,?,?,?)",
-            (cid, "user", answer.strip(), ts, json.dumps(attachments or [], ensure_ascii=False)),
+            "INSERT INTO messages(conversation_id,role,content,created_at,attachments_json,event_id) VALUES (?,?,?,?,?,?)",
+            (cid, "user", answer.strip(), ts, json.dumps(attachments or [], ensure_ascii=False),
+             str(event_id or uuid.uuid4().hex)),
         )
         con.execute("UPDATE conversations SET updated_at=? WHERE id=?", (ts, cid))
     task = get_task(tid)
