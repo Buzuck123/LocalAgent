@@ -151,6 +151,20 @@ def test_event_deduplication_uses_ids_not_equal_text():
     assert len(compacted) == 2
 
 
+def test_legacy_tool_results_recover_stable_identity_from_result_id():
+    messages = [
+        {"role": "tool", "tool_name": "terminal", "content": json.dumps({"ok": True, "result_id": "tr_same", "result": {"output": "done"}})},
+        {"role": "tool", "tool_name": "terminal", "content": json.dumps({"ok": True, "result_id": "tr_same", "result": {"output": "done"}})},
+        {"role": "tool", "tool_name": "terminal", "content": json.dumps({"ok": True, "result_id": "tr_other", "result": {"output": "done"}})},
+    ]
+    ensure_event_ids(messages)
+    compacted, removed = deduplicate_event_ids(messages)
+    assert removed == 1
+    assert len(compacted) == 2
+    assert compacted[0]["_event_id"] == "tool-result:tr_same"
+    assert compacted[1]["_event_id"] == "tool-result:tr_other"
+
+
 def test_event_deduplication_preserves_distinct_identical_messages_and_collapses_system_duplicates():
     messages = [
         {"role": "system", "content": "base system prompt"},
