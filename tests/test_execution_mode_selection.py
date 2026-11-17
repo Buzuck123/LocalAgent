@@ -13,6 +13,12 @@ class ModeClient:
         return {"message": {"content": self.response}}
 
 
+def test_llama_cpp_is_treated_as_a_production_provider_for_mode_selection():
+    from agent.llama_cpp import LlamaCppClient
+
+    assert core._is_production_provider_client(LlamaCppClient())
+
+
 def test_llm_can_select_direct_mode(monkeypatch):
     fake = ModeClient(json.dumps({"mode": "direct", "reason": "Simple inspection"}))
     monkeypatch.setattr(core, "client", fake)
