@@ -133,6 +133,9 @@ def messages(cid: str):
         raise HTTPException(404, "Conversation not found")
     result = db.get_messages(cid)
     for message in result:
+        # Stable event IDs are controller/checkpoint metadata, not public chat fields.
+        message.pop("event_id", None)
+        message.pop("_event_id", None)
         message["attachments"] = [
             {key: item.get(key) for key in ("name", "mime_type", "kind", "size_bytes")}
             for item in message.get("attachments", []) if isinstance(item, dict)
