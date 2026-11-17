@@ -3446,6 +3446,16 @@ class TaskControl:
 class TaskCancelled(Exception):
     pass
 
+
+def _client_for_task_record(task):
+    try:
+        checkpoint = json.loads(task.get("checkpoint_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        checkpoint = {}
+    provider = checkpoint.get("provider") if isinstance(checkpoint, dict) else None
+    return _provider_client(provider or active_llm_provider)
+
+
 class Agent:
     def __init__(self):
         self.controls: dict[str, TaskControl] = {}
