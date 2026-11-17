@@ -29,6 +29,25 @@ def test_context_compaction_keeps_system_goal_and_recent_tool_pair():
     assert not (compacted[-1].get("role") == "tool")
 
 
+def test_restored_checkpoint_keeps_one_current_base_system_prompt():
+    from agent import core
+
+    messages = [
+        {"role": "system", "content": "old system prompt"},
+        {"role": "system", "content": core.CONTEXT_SUMMARY_MARKER + "\\nold facts"},
+        {"role": "system", "content": "another stale copy of the old system prompt"},
+        {"role": "system", "content": core.PLAN_CONTEXT_MARKER + "\\nplan facts"},
+        {"role": "user", "content": "continue"},
+    ]
+    refreshed = core._refresh_saved_system_prompt(messages)
+    system_messages = [m for m in refreshed if m.get("role") == "system"]
+    assert system_messages[0]["content"] == core.SYSTEM_PROMPT
+    assert sum(m["content"] == core.SYSTEM_PROMPT for m in system_messages) == 1
+    assert any(core.CONTEXT_SUMMARY_MARKER in m["content"] for m in system_messages)
+    assert any(core.PLAN_CONTEXT_MARKER in m["content"] for m in system_messages)
+    assert len(system_messages) == 3
+
+
 def test_event_id_is_preserved_when_messages_are_reloaded_from_persistent_records():
     persisted = {"role": "user", "content": "same request", "_event_id": "db-event-123"}
     restored = dict(persisted)
