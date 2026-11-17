@@ -3993,16 +3993,16 @@ class Agent:
                 history = db.get_messages(cid, limit=100)
                 initial_event_id = task.get("initial_message_event_id")
                 if initial_event_id:
-                    has_initial_event = any(
-                        m.get("_event_id") == initial_event_id for m in history
-                    )
-                    if not has_initial_event:
-                        db.add_message(
+                    initial_message = db.get_message_by_event_id(cid, initial_event_id)
+                    if initial_message is None:
+                        initial_message = db.add_message(
                             cid, "user", task["user_message"],
                             attachments=task.get("attachments", []),
                             event_id=initial_event_id,
                         )
-                        history = db.get_messages(cid, limit=100)
+                    if not any(m.get("_event_id") == initial_event_id for m in history):
+                        history.append(initial_message)
+                        history.sort(key=lambda m: int(m.get("id") or 0))
                 else:
                     # Legacy tasks predate atomic task/message creation. Reuse
                     # the matching event created at/after this task, then persist
