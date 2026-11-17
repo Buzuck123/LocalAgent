@@ -199,7 +199,7 @@ def test_compaction_keeps_original_request_as_user_turn_without_copying_it_into_
     assert len(user_turns) == 1
     assert user_turns[0]["content"] == goal
     assert goal not in summary
-    assert any(m.get("role") == "tool" and "observation" in m.get("content", "") for m in compacted)
+    assert "observation" in summary
 
 
 def test_context_growth_forecast_includes_model_and_expected_output():
