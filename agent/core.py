@@ -1284,14 +1284,14 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
         raise
 
 
-def _client_chat(messages, tools=None, reasoning=True, model=None):
+def _client_chat(messages, tools=None, reasoning=True, model=None, target_client=None):
     """Call the configured client, retaining compatibility with older test/client adapters.
 
     The production OllamaClient accepts ``reasoning``. Older fake clients and
     third-party adapters may expose only ``chat(messages, tools=None)``; for
     those, omit the optional keyword instead of failing the whole task.
     """
-    chat_method = client.chat
+    chat_method = (target_client or client).chat
     try:
         parameters = inspect.signature(chat_method).parameters.values()
         supports_reasoning = any(
@@ -1314,7 +1314,7 @@ def _client_chat(messages, tools=None, reasoning=True, model=None):
     if supports_model and model_override: kwargs["model"] = model_override
     response = chat_method(messages, tools, **kwargs)
     try:
-        active_model = (response.get("model") if isinstance(response, dict) else None) or model or _CURRENT_MODEL_OVERRIDE.get() or getattr(client, "model", settings.model)
+        active_model = (response.get("model") if isinstance(response, dict) else None) or model or _CURRENT_MODEL_OVERRIDE.get() or getattr(target_client or client, "model", settings.model)
         db.record_model_request(_CURRENT_MODEL_TASK_ID.get(), active_model, response)
     except Exception:
         # Telemetry must never break the task itself.
@@ -1333,8 +1333,8 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("prompt обязателен и должен быть непустой строкой")
 
-    auxiliary_model = ASK_MODEL_NAME if getattr(settings, "llm_provider", "ollama") == "ollama" else main_model
-    auxiliary_label = "Gemma 4" if getattr(settings, "llm_provider", "ollama") == "ollama" else "вспомогательная модель llama.cpp"
+    auxiliary_model = ASK_MODEL_NAME
+    auxiliary_label = "Gemma 4"
     file_path = arguments.get("file")
     user_content = prompt.strip()
     attachments = []
@@ -1357,12 +1357,6 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
         loaded = load_file_for_model(file_path, conversation_id=conversation_id)
         if loaded.get("ok") is not True:
             raise ValueError(str(loaded.get("error") or "Не удалось подготовить файл"))
-        if getattr(settings, "llm_provider", "ollama") == "llama_cpp" and loaded.get("kind") in {"image", "audio", "video"}:
-            return {
-                "ok": False,
-                "error": "Текущий llama.cpp сервер принимает только текст. Изображение, аудио или видео не передавалось модели.",
-                "file": {"path": file_path, "kind": loaded.get("kind"), "name": loaded.get("name")},
-            }
         file_info = {
             "path": file_path,
             "kind": loaded.get("kind"),
@@ -1502,7 +1496,8 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
 
     try:
         response = _client_chat(
-            isolated_messages, tools=None, reasoning=True, model=auxiliary_model
+            isolated_messages, tools=None, reasoning=True, model=auxiliary_model,
+            target_client=ollama_aux_client,
         )
     except Exception as exc:
         if _is_context_overflow_error(exc):
@@ -3324,13 +3319,45 @@ class OllamaClient:
                 f"Cannot connect to Ollama at {self.base}: {exc}"
             ) from exc
 
-if getattr(settings, "llm_provider", "ollama") == "llama_cpp":
-    from .llama_cpp import LlamaCppClient
-    client = LlamaCppClient()
-elif getattr(settings, "llm_provider", "ollama") == "ollama":
-    client = OllamaClient()
-else:
-    raise RuntimeError(f"Unsupported LLM_PROVIDER: {getattr(settings, "llm_provider", "ollama")!r}")
+_provider_lock = threading.RLock()
+active_llm_provider = db.get_app_setting("selected_llm_provider", getattr(settings, "llm_provider", "ollama"))
+
+
+def _new_provider_client(provider):
+    if provider == "ollama":
+        return OllamaClient()
+    if provider == "llama_cpp":
+        from .llama_cpp import LlamaCppClient
+        return LlamaCppClient()
+    raise ValueError(f"Unsupported LLM provider: {provider!r}")
+
+
+client = _new_provider_client(active_llm_provider)
+# ask_model is deliberately pinned to a separate Ollama client and fixed Gemma model.
+ollama_aux_client = client if active_llm_provider == "ollama" else OllamaClient()
+
+
+def switch_llm_provider(provider):
+    global client, active_llm_provider, ollama_aux_client
+    name = str(provider or "").strip().lower()
+    with _provider_lock:
+        if name == active_llm_provider:
+            return {"provider": name}
+        candidate = _new_provider_client(name)
+        status = candidate.status()
+        if not isinstance(status, dict) or status.get("available") is not True:
+            raise RuntimeError(
+                f"LLM-провайдер {name} недоступен: "
+                + str(status.get("error") if isinstance(status, dict) else "проверка сервера не пройдена")
+            )
+        client = candidate
+        active_llm_provider = name
+        if name == "ollama":
+            ollama_aux_client = client
+        elif ollama_aux_client is client:
+            ollama_aux_client = OllamaClient()
+        db.set_app_setting("selected_llm_provider", name)
+        return {"provider": name}
 
 class TaskControl:
     def __init__(self):
