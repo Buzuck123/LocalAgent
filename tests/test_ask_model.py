@@ -13,9 +13,6 @@ def test_ask_model_uses_clean_context_fixed_model_and_no_tools(monkeypatch):
     auxiliary_client = object()
     monkeypatch.setattr(core, "client", object())
     monkeypatch.setattr(core, "ollama_aux_client", auxiliary_client)
-    auxiliary_client = object()
-    monkeypatch.setattr(core, "client", object())
-    monkeypatch.setattr(core, "ollama_aux_client", auxiliary_client)
     monkeypatch.setattr(core, "_client_chat", fake_chat)
     result = core._ask_model_tool(
         {"prompt": "Analyze this independently"},
@@ -64,6 +61,9 @@ def test_ask_model_attaches_supported_container_text_file(monkeypatch):
         calls.append((messages, target_client))
         return {"message": {"content": "reviewed"}}
 
+    auxiliary_client = object()
+    monkeypatch.setattr(core, "client", object())
+    monkeypatch.setattr(core, "ollama_aux_client", auxiliary_client)
     monkeypatch.setattr(tools, "load_file_for_model", fake_load)
     monkeypatch.setattr(core, "_client_chat", fake_chat)
     result = core._ask_model_tool(
