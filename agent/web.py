@@ -466,7 +466,7 @@ def select_llm_provider(payload: ProviderSelect):
     # interrupted tasks are durable checkpoints and may safely coexist with a
     # different active provider because their original provider is pinned below.
     blocking = {"queued", "running", "cancelling"}
-    all_tasks = db.list_tasks()
+    all_tasks = db.list_all_tasks()
     if any(task.get("status") in blocking for task in all_tasks):
         raise HTTPException(
             409,
