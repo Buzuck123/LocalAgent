@@ -291,6 +291,7 @@ def compact_messages(
     # omit assistant prose because it may contain speculative or stale next actions.
     prior = [dict(m) for m in (prior_archived_messages or []) if isinstance(m, dict)]
     factual_history = prior + archived
+    factual_history, _ = deduplicate_event_ids(factual_history)
     # The exact original request is retained separately as a user-role message,
     # so do not copy it into the system summary as well.
     if goal_event_id:
