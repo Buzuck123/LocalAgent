@@ -35,7 +35,7 @@ def test_restored_checkpoint_keeps_one_current_base_system_prompt():
     messages = [
         {"role": "system", "content": "old system prompt"},
         {"role": "system", "content": core.CONTEXT_SUMMARY_MARKER + "\\nold facts"},
-        {"role": "system", "content": "another stale copy of the old system prompt"},
+        {"role": "system", "content": "You are LocalAgent, another stale copy of the old system prompt"},
         {"role": "system", "content": core.PLAN_CONTEXT_MARKER + "\\nplan facts"},
         {"role": "user", "content": "continue"},
     ]
