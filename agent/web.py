@@ -35,7 +35,7 @@ class MessageCreate(BaseModel):
 class ModelSelect(BaseModel):
     model: str = Field(min_length=1, max_length=200)
 class ProviderSelect(BaseModel):
-    provider: str = Field(pattern="^(ollama|llama_cpp)$")
+    provider: str = Field(min_length=1, max_length=20)
 
 
 
