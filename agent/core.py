@@ -2638,7 +2638,6 @@ def _sync_plan_context(messages, plan):
     if current is None:
         instruction = (
             f"{PLAN_CONTEXT_MARKER}\n"
-            f"User goal: {plan['goal']}\n"
             "Saved plan status: all stages are marked complete. Use recorded step verifications, confirmed results, "
             "and the latest relevant observations. Do not reread the full conversation history unless a specific fact is missing. "
             "Prepare the final response without claiming unsupported actions."
@@ -2646,7 +2645,6 @@ def _sync_plan_context(messages, plan):
     else:
         instruction = (
             f"{PLAN_CONTEXT_MARKER}\n"
-            f"User goal: {plan['goal']}\n"
             f"Plan overview (orientation, not a rigid script):\n{plan_overview}\n"
             f"Current focus: {current['id']} — {current['description']}\n"
             f"Expected result: {current['expected_result']}\n"
