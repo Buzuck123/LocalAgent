@@ -442,13 +442,20 @@ def sandbox_proxy_status():
 @app.get("/api/llm/provider")
 def get_llm_provider():
     from .core import client, active_llm_provider
+    try:
+        client.models()
+        status = client.status()
+        if active_llm_provider == "ollama":
+            status = {"provider": "ollama", "available": True, "runtime": status}
+    except Exception as exc:
+        status = {"provider": active_llm_provider, "available": False, "error": str(exc)}
     return {
         "provider": active_llm_provider,
         "providers": [
             {"id": "ollama", "name": "Ollama"},
             {"id": "llama_cpp", "name": "llama.cpp"},
         ],
-        "status": client.status(),
+        "status": status,
     }
 
 
