@@ -27,6 +27,16 @@ def main():
         missing_commands = [name for name in checks.get("commands", []) if shutil.which(name) is None]
         missing_imports = [name for name in checks.get("python_imports", []) if not import_available(name)]
         missing_paths = [name for name in checks.get("paths", []) if not Path(name).exists()]
+        browser_name = checks.get("playwright_browser")
+        if browser_name:
+            try:
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as playwright:
+                    executable = getattr(playwright, str(browser_name)).executable_path
+                if not Path(executable).is_file():
+                    missing_paths.append(executable)
+            except Exception:
+                missing_paths.append(f"playwright:{browser_name}")
         ok = not (missing_commands or missing_imports or missing_paths)
         all_ok = all_ok and ok
         capabilities.append({
