@@ -343,7 +343,7 @@ def create_task(cid: str, user_message: str, attachments: list[dict] | None = No
     return get_task(tid)
 
 def update_task(tid: str, **fields):
-    allowed = {"status", "result", "error", "checkpoint_json"}
+    allowed = {"status", "result", "error", "checkpoint_json", "initial_message_event_id"}
     values = {k: v for k, v in fields.items() if k in allowed}
     values["updated_at"] = now()
     with _lock, connect() as con:
