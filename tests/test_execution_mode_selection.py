@@ -41,6 +41,17 @@ def test_llm_can_choose_direct_for_multiple_independent_files(monkeypatch):
 
 
 
+def test_execution_mode_selection_logs_llm_reason(monkeypatch):
+    fake = ModeClient(json.dumps({"mode": "plan", "reason": "Research requires several independent checks"}))
+    monkeypatch.setattr(core, "client", fake)
+    recorded = []
+    monkeypatch.setattr(core.db, "record_debug_trace", lambda task_id, event_type, payload: recorded.append((event_type, payload)))
+    assert core.select_execution_mode_with_llm("Сравни несколько вариантов") == "planned"
+    assert recorded[-1][0] == "execution_mode_selected"
+    assert recorded[-1][1]["reason"] == "Research requires several independent checks"
+    assert recorded[-1][1]["source"] == "llm"
+
+
 def test_execution_mode_prompt_distinguishes_task_complexity_from_tool_count():
     prompt = core.EXECUTION_MODE_PROMPT
     assert "several independent checks" in prompt
