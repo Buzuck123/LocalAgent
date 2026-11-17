@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 MANIFEST = Path("/usr/local/share/localagent/capabilities.json")
@@ -34,11 +36,41 @@ def main():
             "missing_python_imports": missing_imports,
             "missing_paths": missing_paths,
         })
+    # Keep a machine-readable inventory for diagnostics and automatic drift
+    # inspection. This full package list is not injected into the model prompt.
+    system_inventory = []
+    try:
+        result = subprocess.run(
+            ["dpkg-query", "-W", "-f=${binary:Package}\\t${Version}\\n"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        if result.returncode == 0:
+            system_inventory = [
+                {"name": line.split("\\t", 1)[0], "version": line.split("\\t", 1)[1]}
+                for line in result.stdout.splitlines() if "\\t" in line
+            ]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    python_inventory = []
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "list", "--format=json"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        if result.returncode == 0:
+            python_inventory = json.loads(result.stdout or "[]")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        pass
+
     report = {
         "manifest_version": data.get("version"),
         "checked_at_startup": True,
         "all_available": all_ok,
         "capabilities": capabilities,
+        "installed_packages": {
+            "system": system_inventory,
+            "python": python_inventory,
+        },
     }
     REPORT.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"all_available": all_ok, "capabilities_checked": len(capabilities), "report": str(REPORT)}, ensure_ascii=False))
