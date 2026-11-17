@@ -467,6 +467,31 @@ def select_llm_provider(payload: ProviderSelect):
     # different active provider because their original provider is pinned below.
     blocking = {"queued", "running", "cancelling"}
     all_tasks = db.list_all_tasks()
+
+    # A cancellation can outlive its worker (for example, if the process exits
+    # after accepting the request). Reconcile orphaned "cancelling" records
+    # against the persistent terminal runtime before deciding whether they
+    # still block a provider switch. Never clear the state without confirmation.
+    for task in all_tasks:
+        if task.get("status") != "cancelling":
+            continue
+        worker = agent.threads.get(task.get("id"))
+        if worker is not None and worker.is_alive():
+            continue
+        conversation_id = task.get("conversation_id")
+        try:
+            outcome = (
+                sandbox_manager.interrupt_operation(conversation_id)
+                if conversation_id else {"state": "idle"}
+            )
+        except Exception:
+            outcome = {"state": "unknown"}
+        if outcome.get("state") in {"interrupted", "completed", "timed_out", "failed", "idle"}:
+            db.update_task(
+                task["id"], status="cancelled", error="Cancelled by user"
+            )
+            task["status"] = "cancelled"
+
     blocking_tasks = [
         task for task in all_tasks if task.get("status") in blocking
     ]
