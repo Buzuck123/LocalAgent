@@ -49,8 +49,13 @@ def test_normal_message_is_saved_and_routes_to_waiting_task(tmp_path, monkeypatc
     assert saved["plan"]["status"] == "in_progress"
     assert saved["plan"]["steps"][0]["status"] == "in_progress"
     assert saved["plan"]["current_step_id"] == "step_1"
-    assert saved["messages"][-1] == {"role": "user", "content": "Используй фактические данные"}
-    assert db.get_messages(conversation["id"])[-1]["content"] == "Используй фактические данные"
+    saved_answer = saved["messages"][-1]
+    persisted_answer = db.get_messages(conversation["id"])[-1]
+    assert saved_answer["role"] == "user"
+    assert saved_answer["content"] == "Используй фактические данные"
+    assert saved_answer["_event_id"]
+    assert persisted_answer["content"] == "Используй фактические данные"
+    assert persisted_answer["_event_id"] == saved_answer["_event_id"]
 
 
 @pytest.mark.parametrize("status", ["paused", "interrupted"])
