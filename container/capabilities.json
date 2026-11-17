@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "capabilities": [
     {
       "name": "Веб-поиск",
@@ -12,7 +12,7 @@
     },
     {
       "name": "Браузер",
-      "example": "Playwright + Chromium: открыть сайт, исследовать DOM, нажимать кнопки, заполнять формы и скачивать файлы.",
+      "example": "Playwright + Chromium: открытие сайтов, DOM, JavaScript, формы, взаимодействия и загрузка файлов.",
       "checks": {
         "python_imports": [
           "playwright"
@@ -25,7 +25,7 @@
     },
     {
       "name": "HTTP и API",
-      "example": "requests.get(url), httpx.AsyncClient(), aiohttp.ClientSession().",
+      "example": "requests, httpx, aiohttp и localagent_http с поддержкой прокси через переменные окружения.",
       "checks": {
         "python_imports": [
           "requests",
@@ -37,64 +37,96 @@
     },
     {
       "name": "Python и анализ данных",
-      "example": "python3; pandas для анализа таблиц, openpyxl для XLSX, sqlite3 для больших выборок.",
+      "example": "Python, NumPy, pandas, SciPy, scikit-learn, Matplotlib, Excel и SQLAlchemy.",
       "checks": {
         "commands": [
           "python3"
         ],
         "python_imports": [
+          "numpy",
           "pandas",
-          "openpyxl"
+          "scipy",
+          "sklearn",
+          "matplotlib",
+          "openpyxl",
+          "xlsxwriter",
+          "xlrd",
+          "pyxlsb",
+          "sqlalchemy",
+          "alembic"
         ]
       }
     },
     {
       "name": "Документы и офисные форматы",
-      "example": "python-docx для DOCX, python-pptx для PPTX, odfpy для ODT/ODS; LibreOffice для конвертации.",
+      "example": "DOCX, PPTX, ODT/ODS, LibreOffice, Pandoc и извлечение текста из старых офисных форматов.",
       "checks": {
         "commands": [
-          "libreoffice"
+          "libreoffice",
+          "pandoc"
         ],
         "python_imports": [
           "docx",
           "pptx",
-          "odf"
+          "odf",
+          "pypandoc"
         ]
       }
     },
     {
       "name": "PDF",
-      "example": "pypdf, PyMuPDF (fitz), pdfplumber и reportlab для чтения и создания PDF.",
+      "example": "Чтение, извлечение, рендеринг и создание PDF через pypdf, PyMuPDF, pdfplumber, pdfium и ReportLab.",
       "checks": {
         "commands": [
-          "pdftotext"
+          "pdftotext",
+          "pdfinfo"
         ],
         "python_imports": [
           "pypdf",
           "fitz",
           "pdfplumber",
+          "pypdfium2",
+          "pdfminer",
           "reportlab"
         ]
       }
     },
     {
-      "name": "Изображения, OCR и мультимедиа",
-      "example": "Pillow, pytesseract, Tesseract OCR, ImageMagick и ffmpeg.",
+      "name": "Изображения, компьютерное зрение и OCR",
+      "example": "Pillow, OpenCV, Tesseract OCR, ImageMagick и Ghostscript.",
       "checks": {
         "commands": [
           "tesseract",
           "convert",
-          "ffmpeg"
+          "gs"
         ],
         "python_imports": [
           "PIL",
+          "cv2",
           "pytesseract"
         ]
       }
     },
     {
+      "name": "Аудио, видео и ML на CPU",
+      "example": "FFmpeg/ffprobe, PyTorch CPU, torchaudio, ONNX Runtime, librosa и pyannote.audio. GPU контейнеру не требуется.",
+      "checks": {
+        "commands": [
+          "ffmpeg",
+          "ffprobe"
+        ],
+        "python_imports": [
+          "torch",
+          "torchaudio",
+          "onnxruntime",
+          "librosa",
+          "pyannote.audio"
+        ]
+      }
+    },
+    {
       "name": "Linux и разработка",
-      "example": "Bash, Git, curl/wget, jq, SQLite; apt и pip доступны внутри контейнера.",
+      "example": "Bash, Git, curl/wget, jq, SQLite, CMake, Ninja, Node.js/npm, uv, компиляторы и системные библиотеки.",
       "checks": {
         "commands": [
           "bash",
@@ -103,7 +135,15 @@
           "wget",
           "jq",
           "sqlite3",
-          "pip3"
+          "pip3",
+          "cmake",
+          "ninja",
+          "node",
+          "npm",
+          "uv",
+          "gcc",
+          "g++",
+          "make"
         ]
       }
     }
