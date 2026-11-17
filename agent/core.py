@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 _CURRENT_MODEL_TASK_ID = contextvars.ContextVar("localagent_model_task_id", default=None)
 _CURRENT_MODEL_OVERRIDE = contextvars.ContextVar("localagent_model_override", default=None)
 _CURRENT_MODEL_CONTEXT = contextvars.ContextVar("localagent_model_context", default=None)
+_CURRENT_TASK_CLIENT = contextvars.ContextVar("localagent_task_client", default=None)
 
 SYSTEM_PROMPT = """You are LocalAgent, a capable local AI agent.
 
@@ -339,7 +340,7 @@ def select_execution_mode_with_llm(goal: str, attachments=None, reasoning: bool 
         for item in (attachments if isinstance(attachments, list) else []) if isinstance(item, dict)
     ]
     try:
-        response = client.chat([
+        response = _task_client().chat([
             {"role": "system", "content": EXECUTION_MODE_PROMPT},
             {"role": "user", "content": json.dumps({"request": str(goal or ""), "attachments": items}, ensure_ascii=False)},
         ], tools=None, reasoning=reasoning)
@@ -1291,7 +1292,7 @@ def _client_chat(messages, tools=None, reasoning=True, model=None, target_client
     third-party adapters may expose only ``chat(messages, tools=None)``; for
     those, omit the optional keyword instead of failing the whole task.
     """
-    chat_method = (target_client or client).chat
+    chat_method = (target_client or _task_client()).chat
     try:
         parameters = inspect.signature(chat_method).parameters.values()
         supports_reasoning = any(
@@ -3333,8 +3334,27 @@ def _new_provider_client(provider):
 
 
 client = _new_provider_client(active_llm_provider)
+# Keep provider instances available so paused tasks can resume on their original
+# backend after the UI's active provider has changed.
+_provider_clients = {active_llm_provider: client}
 # ask_model is deliberately pinned to a separate Ollama client and fixed Gemma model.
 ollama_aux_client = client if active_llm_provider == "ollama" else OllamaClient()
+_provider_clients.setdefault("ollama", ollama_aux_client)
+
+
+def _provider_client(provider):
+    name = str(provider or "").strip().lower()
+    with _provider_lock:
+        cached = _provider_clients.get(name)
+        if cached is not None:
+            return cached
+        instance = _new_provider_client(name)
+        _provider_clients[name] = instance
+        return instance
+
+
+def _task_client():
+    return _CURRENT_TASK_CLIENT.get() or client
 
 
 def switch_llm_provider(provider):
@@ -3354,6 +3374,7 @@ def switch_llm_provider(provider):
             raise RuntimeError(f"LLM-провайдер {name} недоступен: {exc}") from exc
         client = candidate
         active_llm_provider = name
+        _provider_clients[name] = candidate
         if name == "ollama":
             ollama_aux_client = client
         db.set_app_setting("selected_llm_provider", name)
@@ -3501,15 +3522,19 @@ class Agent:
                 thread.start()
                 return db.get_task(pending["id"])
         task = db.create_task(conversation_id, user_message, attachments=attachments or [])
-        selected_model = (client.models().get("selected_model") if active_llm_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if active_llm_provider == "llama_cpp" else settings.model)
+        with _provider_lock:
+            task_provider = active_llm_provider
+            task_client = client
+        selected_model = (task_client.models().get("selected_model") if task_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if task_provider == "llama_cpp" else settings.model)
         try:
-            selected_profile = client.model_profile(selected_model)
+            selected_profile = task_client.model_profile(selected_model)
         except Exception:
-            selected_profile = {"num_ctx": settings.llama_cpp_context if active_llm_provider == "llama_cpp" else settings.num_ctx, "num_predict": None}
+            selected_profile = {"num_ctx": settings.llama_cpp_context if task_provider == "llama_cpp" else settings.num_ctx, "num_predict": None}
         initial_checkpoint = {
             "version": 4,
             "mode": "unified",
             "reasoning": bool(reasoning),
+            "provider": task_provider,
             "model": selected_model,
             "model_num_ctx": int(selected_profile["num_ctx"]),
             "model_num_predict": selected_profile.get("num_predict"),
@@ -3581,7 +3606,7 @@ class Agent:
                 return db.get_task(task_id)
             # Control plane: close Ollama's active stream and interrupt the remote
             # SWE-ReX process independently of the task worker's polling call.
-            client.cancel_generation(task_id)
+            _client_for_task_record(task).cancel_generation(task_id)
             # Persist the accepted state before the control thread can complete;
             # otherwise a very fast interrupt could be overwritten by `cancelling`.
             db.update_task(task_id, status="cancelling")
@@ -3636,30 +3661,59 @@ class Agent:
         token = _CURRENT_MODEL_TASK_ID.set(task_id)
         model_token = _CURRENT_MODEL_OVERRIDE.set(None)
         context_token = _CURRENT_MODEL_CONTEXT.set(None)
+        task_client_token = None
         try:
             task = db.get_task(task_id)
             cp = {}
-            try: cp = json.loads(task.get("checkpoint_json") or "{}") if task else {}
-            except Exception: cp = {}
-            pinned = cp.get("model") if isinstance(cp, dict) else None
+            try:
+                cp = json.loads(task.get("checkpoint_json") or "{}") if task else {}
+            except Exception:
+                cp = {}
+            if not isinstance(cp, dict):
+                cp = {}
+
+            # Provider and model are a durable pair. Legacy checkpoints predate
+            # provider pinning; bind them to the currently selected backend once.
+            task_provider = str(cp.get("provider") or active_llm_provider).strip().lower()
+            task_client = _provider_client(task_provider)
+            task_client_token = _CURRENT_TASK_CLIENT.set(task_client)
+            if not cp.get("provider"):
+                cp["provider"] = task_provider
+
+            pinned = cp.get("model")
             if not pinned:
-                pinned = (client.models().get("selected_model") if active_llm_provider == "llama_cpp" else db.get_app_setting("selected_ollama_model", getattr(settings, "model", "qwen3.5:9b"))) or (settings.llama_cpp_model if active_llm_provider == "llama_cpp" else settings.model)
-                if isinstance(cp, dict):
-                    cp["model"] = pinned
-                    db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
+                pinned = (
+                    task_client.models().get("selected_model")
+                    if task_provider == "llama_cpp"
+                    else db.get_app_setting(
+                        "selected_ollama_model",
+                        getattr(settings, "model", "qwen3.5:9b"),
+                    )
+                ) or (
+                    settings.llama_cpp_model if task_provider == "llama_cpp"
+                    else settings.model
+                )
+                cp["model"] = pinned
+
             _CURRENT_MODEL_OVERRIDE.set(pinned)
-            pinned_context = cp.get("model_num_ctx") if isinstance(cp, dict) else None
+            pinned_context = cp.get("model_num_ctx")
             if not pinned_context:
                 try:
-                    pinned_context = client.model_profile(pinned)["num_ctx"]
+                    profile = task_client.model_profile(pinned)
+                    pinned_context = profile["num_ctx"]
                     cp["model_num_ctx"] = pinned_context
-                    cp["model_num_predict"] = client.model_profile(pinned).get("num_predict")
-                    db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
+                    cp["model_num_predict"] = profile.get("num_predict")
                 except Exception:
-                    pinned_context = int(settings.llama_cpp_context if active_llm_provider == "llama_cpp" else getattr(settings, "num_ctx", 65536))
+                    pinned_context = int(
+                        settings.llama_cpp_context if task_provider == "llama_cpp"
+                        else getattr(settings, "num_ctx", 65536)
+                    )
+            db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
             _CURRENT_MODEL_CONTEXT.set(int(pinned_context))
             return self._run_unified_task_impl(task_id, control)
         finally:
+            if task_client_token is not None:
+                _CURRENT_TASK_CLIENT.reset(task_client_token)
             _CURRENT_MODEL_CONTEXT.reset(context_token)
             _CURRENT_MODEL_OVERRIDE.reset(model_token)
             _CURRENT_MODEL_TASK_ID.reset(token)
