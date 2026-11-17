@@ -121,7 +121,7 @@ Edit `.env` for the Ollama endpoint/model if required. Sandbox defaults match th
 
 ## LLM providers
 
-The default provider is selected by `LLM_PROVIDER`. The existing Ollama path remains the default and is unchanged. Set `LLM_PROVIDER=llama_cpp` to use the OpenAI-compatible `llama-server` endpoint. The model itself is selected through the existing UI and stored in the application settings; each task pins its selected model and context size in its checkpoint, so changing the UI selection does not change a running or resumed task.
+The initial provider is selected by `LLM_PROVIDER` (default: `ollama`). The web interface also has a server selector for switching between Ollama and the OpenAI-compatible `llama-server` endpoint at runtime; the selected provider is persisted in application settings and takes effect after the current tasks have finished. Switching is rejected while tasks are queued, running, paused, or interrupted, so an in-flight task cannot change backend. The model selector lists models from the active server, and Ollama/llama.cpp selections are stored independently. Each task pins its selected model and context size in its checkpoint. The separate `ask_model` tool always uses Ollama with the fixed `gemma4:12b-64k-32k-42gpu` model, regardless of the primary provider.
 
 For llama.cpp:
 
