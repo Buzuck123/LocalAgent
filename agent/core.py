@@ -83,7 +83,7 @@ EXECUTION
 - Diagnose errors and change the approach instead of repeating an identical failed action.
 - Verify requested outputs by inspecting the actual files or results. A successful tool call alone does not prove that the user's goal was achieved.
 - Do not claim actions have been completed without evidence.
-""" + "\\n\\n" + capability_catalog_prompt()
+""" + "\n\n" + capability_catalog_prompt()
 
 
 def _parse_json_object(value):
@@ -4920,11 +4920,7 @@ class Agent:
                     assistant_message["tool_calls"] = tool_calls[:1]
                     tool_calls = tool_calls[:1]
                 if tool_calls:
-                    call_id = tool_calls[0].get("id") if isinstance(tool_calls[0], dict) else None
-                    assistant_message.setdefault(
-                        "_event_id",
-                        f"assistant-tool-call:{call_id}" if call_id else uuid.uuid4().hex,
-                    )
+                    assistant_message.setdefault("_event_id", uuid.uuid4().hex)
                 messages.append(assistant_message)
 
                 if not tool_calls:
