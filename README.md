@@ -119,6 +119,24 @@ The host-side patch step is required as well as the patch inside the container i
 
 Edit `.env` for the Ollama endpoint/model if required. Sandbox defaults match the prepared host infrastructure. Do not put the SWE-ReX auth token in `.env`: Sandbox Manager generates a separate token per conversation and stores it in SQLite.
 
+## LLM providers
+
+The initial provider is selected by `LLM_PROVIDER` (default: `ollama`). The web interface also has a server selector for switching between Ollama and the OpenAI-compatible `llama-server` endpoint at runtime; the selected provider is persisted in application settings. Switching is rejected while tasks are queued, running, or cancelling. Paused and interrupted tasks may remain: each task pins its original provider, model, and context size in its checkpoint, and resumes on that same backend even after the active server is changed. Legacy paused/interrupted checkpoints are pinned to the currently selected provider immediately before the first switch. The model selector lists models from the active server, and Ollama/llama.cpp selections are stored independently. The separate `ask_model` tool always uses Ollama with the fixed `gemma4:12b-64k-32k-42gpu` model, regardless of the primary provider.
+
+For llama.cpp:
+
+```dotenv
+LLM_PROVIDER=llama_cpp
+LLAMA_CPP_URL=http://127.0.0.1:8081/v1
+LLAMA_CPP_MODEL=/home/buzuck/AI/Bonsai2/models/27B/Ternary-Bonsai-2-27B-PTQ1_0.gguf
+LLAMA_CPP_CONTEXT=32768
+LLAMA_CPP_TIMEOUT=600
+```
+
+`LLAMA_CPP_MODEL` is only the initial selection fallback. The canonical model identifier is read from `GET /v1/models`; the UI model selector remains authoritative. The adapter uses `POST /v1/chat/completions`, Server-Sent Events, OpenAI function tools, and maps the response into LocalAgent's internal response contract. Cancellation closes the active HTTP response. llama.cpp owns model lifetime, so the unload action reports that unloading is not supported instead of pretending the model was unloaded.
+
+The current Bonsai 2 27B server launch advertises text-only input. Text/code and extracted document text can be sent to the model. Image/audio/video payloads are **not** sent through the llama.cpp adapter; the adapter adds an explicit note to the model-visible receipt rather than silently dropping media or claiming it was analysed. To enable visual input, start llama-server with the matching `--mmproj` and verify that `/v1/models` advertises image input before extending the adapter's image transport. Audio transport is not implemented for llama.cpp in this patch.
+
 ## Configuration
 
 | Setting | Default | Purpose |

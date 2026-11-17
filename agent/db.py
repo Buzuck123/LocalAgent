@@ -344,7 +344,7 @@ def accept_task_clarification(tid: str, cid: str, checkpoint_json: str, answer: 
         ).fetchone()
         if row is None:
             raise ValueError("Задача для уточнения не найдена.")
-        if row["status"] != "paused":
+        if row["status"] not in {"paused", "interrupted"}:
             raise ValueError("Задача больше не ожидает уточнения.")
         try:
             old_checkpoint = json.loads(row["checkpoint_json"] or "{}")
@@ -356,7 +356,7 @@ def accept_task_clarification(tid: str, cid: str, checkpoint_json: str, answer: 
         ):
             raise ValueError("Задача больше не ожидает ответа на уточнение.")
         con.execute(
-            "UPDATE tasks SET status='paused', checkpoint_json=?, error=NULL, updated_at=? WHERE id=?",
+            "UPDATE tasks SET status='queued', checkpoint_json=?, error=NULL, updated_at=? WHERE id=?",
             (checkpoint_json, ts, tid),
         )
         con.execute(
@@ -496,6 +496,13 @@ def list_tasks(cid: str | None = None) -> list[dict]:
             rows = con.execute("SELECT * FROM tasks WHERE conversation_id=? ORDER BY created_at DESC", (cid,)).fetchall()
         else:
             rows = con.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT 100").fetchall()
+        return [dict(r) for r in rows]
+
+
+def list_all_tasks() -> list[dict]:
+    """Return every task; lifecycle decisions must not use the UI's 100-task window."""
+    with connect() as con:
+        rows = con.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()
         return [dict(r) for r in rows]
 
 

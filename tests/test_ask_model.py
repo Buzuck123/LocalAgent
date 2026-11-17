@@ -6,10 +6,13 @@ from agent import core, tools
 def test_ask_model_uses_clean_context_fixed_model_and_no_tools(monkeypatch):
     calls = []
 
-    def fake_chat(messages, tools=None, reasoning=True, model=None):
-        calls.append((messages, tools, reasoning, model))
+    def fake_chat(messages, tools=None, reasoning=True, model=None, target_client=None):
+        calls.append((messages, tools, reasoning, model, target_client))
         return {"model": model, "message": {"content": "isolated answer"}}
 
+    auxiliary_client = object()
+    monkeypatch.setattr(core, "client", object())
+    monkeypatch.setattr(core, "ollama_aux_client", auxiliary_client)
     monkeypatch.setattr(core, "_client_chat", fake_chat)
     result = core._ask_model_tool(
         {"prompt": "Analyze this independently"},
@@ -22,9 +25,10 @@ def test_ask_model_uses_clean_context_fixed_model_and_no_tools(monkeypatch):
     assert result["ok"] is True
     assert result["answer"] == "isolated answer"
     assert len(calls) == 1
-    messages, tool_schemas, reasoning, model = calls[0]
+    messages, tool_schemas, reasoning, model, target_client = calls[0]
     assert tool_schemas is None
     assert model == "gemma4:12b-64k-32k-42gpu"
+    assert target_client is auxiliary_client
     assert reasoning is True
     assert len(messages) == 2
     assert "PRIVATE MAIN TASK CONTEXT" not in str(messages)
@@ -53,10 +57,13 @@ def test_ask_model_attaches_supported_container_text_file(monkeypatch):
             "extracted_text": "file payload", "size_bytes": 12,
         }
 
-    def fake_chat(messages, tools=None, reasoning=True, model=None):
-        calls.append(messages)
+    def fake_chat(messages, tools=None, reasoning=True, model=None, target_client=None):
+        calls.append((messages, target_client))
         return {"message": {"content": "reviewed"}}
 
+    auxiliary_client = object()
+    monkeypatch.setattr(core, "client", object())
+    monkeypatch.setattr(core, "ollama_aux_client", auxiliary_client)
     monkeypatch.setattr(tools, "load_file_for_model", fake_load)
     monkeypatch.setattr(core, "_client_chat", fake_chat)
     result = core._ask_model_tool(
@@ -69,7 +76,8 @@ def test_ask_model_attaches_supported_container_text_file(monkeypatch):
 
     assert result["answer"] == "reviewed"
     assert loaded_paths == [("/etc/notes.txt", "conversation-2")]
-    assert "file payload" in calls[0][1]["content"]
+    assert "file payload" in calls[0][0][1]["content"]
+    assert calls[0][1] is auxiliary_client
 
 
 def test_ask_model_rejects_unsupported_file_type_before_download(monkeypatch):
@@ -91,7 +99,7 @@ def test_ask_model_reports_gemma_context_overflow(monkeypatch):
     def overflow(*args, **kwargs):
         raise RuntimeError("prompt exceeds context length")
 
-    monkeypatch.setattr(core, "_client_chat", overflow)
+    monkeypatch.setattr(core, "_client_chat", lambda *args, **kwargs: overflow(*args, **kwargs))
     result = core._ask_model_tool(
         {"prompt": "Analyze"},
         conversation_id="conversation-4",

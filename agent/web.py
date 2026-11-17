@@ -34,6 +34,10 @@ class MessageCreate(BaseModel):
 
 class ModelSelect(BaseModel):
     model: str = Field(min_length=1, max_length=200)
+class ProviderSelect(BaseModel):
+    provider: str = Field(min_length=1, max_length=20)
+
+
 
 class DebugTraceSettings(BaseModel):
     enabled: bool
@@ -349,6 +353,16 @@ def tasks(conversation_id: str | None = None):
             checkpoint = {}
         item["activity"] = checkpoint.get("activity") or _fallback_activity(item)
         item["reasoning"] = bool(checkpoint.get("reasoning", True))
+        clarification = checkpoint.get("clarification")
+        item["awaiting_clarification"] = bool(
+            checkpoint.get("pause_reason") == "needs_user_input"
+            and isinstance(clarification, dict)
+            and not clarification.get("resolved")
+        )
+        if item["awaiting_clarification"]:
+            item["clarification_question"] = str(
+                clarification.get("question") or checkpoint.get("pending_question") or ""
+            )[:1000]
         item.pop("attachments_json", None)
         item.pop("attachments", None)
         if item.get("status") == "paused":
@@ -435,10 +449,112 @@ def sandbox_proxy_status():
     return sandbox_manager.proxy_status()
 
 
+@app.get("/api/llm/provider")
+def get_llm_provider():
+    from .core import client, active_llm_provider
+    try:
+        client.models()
+        status = client.status()
+        if active_llm_provider == "ollama":
+            status = {"provider": "ollama", "available": True, "runtime": status}
+    except Exception as exc:
+        status = {"provider": active_llm_provider, "available": False, "error": str(exc)}
+    return {
+        "provider": active_llm_provider,
+        "providers": [
+            {"id": "ollama", "name": "Ollama"},
+            {"id": "llama_cpp", "name": "llama.cpp"},
+        ],
+        "status": status,
+    }
+
+
+@app.post("/api/llm/provider")
+def select_llm_provider(payload: ProviderSelect):
+    from .core import active_llm_provider, switch_llm_provider
+    # A live worker must never have its backend replaced mid-request. Paused and
+    # interrupted tasks are durable checkpoints and may safely coexist with a
+    # different active provider because their original provider is pinned below.
+    blocking = {"queued", "running", "cancelling"}
+    all_tasks = db.list_all_tasks()
+
+    # A cancellation can outlive its worker (for example, if the process exits
+    # after accepting the request). Reconcile orphaned "cancelling" records
+    # against the persistent terminal runtime before deciding whether they
+    # still block a provider switch. Never clear the state without confirmation.
+    for task in all_tasks:
+        if task.get("status") != "cancelling":
+            continue
+        worker = agent.threads.get(task.get("id"))
+        if worker is not None and worker.is_alive():
+            continue
+        conversation_id = task.get("conversation_id")
+        try:
+            outcome = (
+                sandbox_manager.interrupt_operation(conversation_id)
+                if conversation_id else {"state": "idle"}
+            )
+        except Exception:
+            outcome = {"state": "unknown"}
+        if outcome.get("state") in {"interrupted", "completed", "timed_out", "failed", "idle"}:
+            db.update_task(
+                task["id"], status="cancelled", error="Cancelled by user"
+            )
+            task["status"] = "cancelled"
+
+    blocking_tasks = [
+        task for task in all_tasks if task.get("status") in blocking
+    ]
+    if blocking_tasks:
+        details = ", ".join(
+            f"{task.get('id', '?')} ({task.get('status')})"
+            for task in blocking_tasks[:10]
+        )
+        suffix = f" Блокирующие задачи: {details}."
+        if len(blocking_tasks) > 10:
+            suffix += f" И ещё {len(blocking_tasks) - 10}."
+        raise HTTPException(
+            409,
+            "Нельзя переключить LLM-сервер, пока есть выполняющиеся или ожидающие запуска задачи. "
+            "Дождись их завершения или отмени их и повтори переключение." + suffix,
+        )
+
+    # Older checkpoints did not persist the provider. Capture the currently
+    # selected backend BEFORE switching, otherwise a legacy paused Qwen task
+    # could accidentally resume against the newly selected server.
+    for task in all_tasks:
+        if task.get("status") not in {"paused", "interrupted"}:
+            continue
+        try:
+            checkpoint = json.loads(task.get("checkpoint_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            checkpoint = {}
+        if not isinstance(checkpoint, dict):
+            checkpoint = {}
+        if not checkpoint.get("provider"):
+            checkpoint["provider"] = active_llm_provider
+            db.update_task(
+                task["id"],
+                checkpoint_json=json.dumps(checkpoint, ensure_ascii=False),
+            )
+
+    try:
+        result = switch_llm_provider(payload.provider)
+        return {**result, "status": get_llm_provider()["status"]}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @app.get("/api/ollama/model-profile")
 def ollama_model_profile():
-    from .core import client
-    model = db.get_app_setting("selected_ollama_model", settings.model)
+    from .core import client, active_llm_provider
+    key = "selected_llama_cpp_model" if active_llm_provider == "llama_cpp" else "selected_ollama_model"
+    fallback_model = settings.llama_cpp_model if active_llm_provider == "llama_cpp" else settings.model
+    model = db.get_app_setting(key, fallback_model)
+    if active_llm_provider == "llama_cpp":
+        model = client.models().get("selected_model") or model
     try:
         return client.model_profile(model)
     except Exception as exc:
