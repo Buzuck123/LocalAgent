@@ -10,6 +10,12 @@ def test_ask_model_uses_clean_context_fixed_model_and_no_tools(monkeypatch):
         calls.append((messages, tools, reasoning, model, target_client))
         return {"model": model, "message": {"content": "isolated answer"}}
 
+    auxiliary_client = object()
+    monkeypatch.setattr(core, "client", object())
+    monkeypatch.setattr(core, "ollama_aux_client", auxiliary_client)
+    auxiliary_client = object()
+    monkeypatch.setattr(core, "client", object())
+    monkeypatch.setattr(core, "ollama_aux_client", auxiliary_client)
     monkeypatch.setattr(core, "_client_chat", fake_chat)
     result = core._ask_model_tool(
         {"prompt": "Analyze this independently"},
@@ -25,7 +31,7 @@ def test_ask_model_uses_clean_context_fixed_model_and_no_tools(monkeypatch):
     messages, tool_schemas, reasoning, model, target_client = calls[0]
     assert tool_schemas is None
     assert model == "gemma4:12b-64k-32k-42gpu"
-    assert target_client is core.ollama_aux_client
+    assert target_client is auxiliary_client
     assert reasoning is True
     assert len(messages) == 2
     assert "PRIVATE MAIN TASK CONTEXT" not in str(messages)
@@ -71,7 +77,7 @@ def test_ask_model_attaches_supported_container_text_file(monkeypatch):
     assert result["answer"] == "reviewed"
     assert loaded_paths == [("/etc/notes.txt", "conversation-2")]
     assert "file payload" in calls[0][0][1]["content"]
-    assert calls[0][1] is core.ollama_aux_client
+    assert calls[0][1] is auxiliary_client
 
 
 def test_ask_model_rejects_unsupported_file_type_before_download(monkeypatch):
