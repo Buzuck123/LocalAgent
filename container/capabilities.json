@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "capabilities": [
+    {
+      "name": "Веб-поиск",
+      "example": "web-search \"запрос\" --json --limit 10",
+      "checks": {
+        "commands": [
+          "web-search"
+        ]
+      }
+    },
+    {
+      "name": "Браузер",
+      "example": "Playwright + Chromium: открыть сайт, исследовать DOM, нажимать кнопки, заполнять формы и скачивать файлы.",
+      "checks": {
+        "python_imports": [
+          "playwright"
+        ],
+        "paths": [
+          "/opt/playwright"
+        ]
+      }
+    },
+    {
+      "name": "HTTP и API",
+      "example": "requests.get(url), httpx.AsyncClient(), aiohttp.ClientSession().",
+      "checks": {
+        "python_imports": [
+          "requests",
+          "httpx",
+          "aiohttp",
+          "localagent_http"
+        ]
+      }
+    },
+    {
+      "name": "Python и анализ данных",
+      "example": "python3; pandas для анализа таблиц, openpyxl для XLSX, sqlite3 для больших выборок.",
+      "checks": {
+        "commands": [
+          "python3"
+        ],
+        "python_imports": [
+          "pandas",
+          "openpyxl"
+        ]
+      }
+    },
+    {
+      "name": "Документы и офисные форматы",
+      "example": "python-docx для DOCX, python-pptx для PPTX, odfpy для ODT/ODS; LibreOffice для конвертации.",
+      "checks": {
+        "commands": [
+          "libreoffice"
+        ],
+        "python_imports": [
+          "docx",
+          "pptx",
+          "odf"
+        ]
+      }
+    },
+    {
+      "name": "PDF",
+      "example": "pypdf, PyMuPDF (fitz), pdfplumber и reportlab для чтения и создания PDF.",
+      "checks": {
+        "commands": [
+          "pdftotext"
+        ],
+        "python_imports": [
+          "pypdf",
+          "fitz",
+          "pdfplumber",
+          "reportlab"
+        ]
+      }
+    },
+    {
+      "name": "Изображения, OCR и мультимедиа",
+      "example": "Pillow, pytesseract, Tesseract OCR, ImageMagick и ffmpeg.",
+      "checks": {
+        "commands": [
+          "tesseract",
+          "convert",
+          "ffmpeg"
+        ],
+        "python_imports": [
+          "PIL",
+          "pytesseract"
+        ]
+      }
+    },
+    {
+      "name": "Linux и разработка",
+      "example": "Bash, Git, curl/wget, jq, SQLite; apt и pip доступны внутри контейнера.",
+      "checks": {
+        "commands": [
+          "bash",
+          "git",
+          "curl",
+          "wget",
+          "jq",
+          "sqlite3",
+          "pip3"
+        ]
+      }
+    }
+  ]
+}
