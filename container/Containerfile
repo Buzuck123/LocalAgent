@@ -91,6 +91,11 @@ RUN python3 /tmp/patch_swerex_background.py \
 RUN python3 /tmp/patch_swerex_ansi.py \
     && rm /tmp/patch_swerex_ansi.py
 
+# Shared capability manifest and startup verifier
+COPY capabilities.json /usr/local/share/localagent/capabilities.json
+COPY check_capabilities.py /usr/local/bin/localagent-check-capabilities.py
+RUN chmod 755 /usr/local/bin/localagent-check-capabilities.py
+
 # Chromium and its runtime dependencies
 RUN python3 -m playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
