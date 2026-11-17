@@ -320,7 +320,10 @@ async function loadTasks(){
     for(const t of ts){
         let d=document.createElement('div');d.className='task';
         let label=document.createElement('span');label.textContent=t.status+' · '+(t.activity||'Состояние задачи');d.append(label);
-        for(const [action,caption] of [['pause','Пауза'],['resume','Продолжить'],['cancel','Отмена']]){
+        const taskActions = t.status==='interrupted'
+            ? [['resume','Возобновить'],['cancel','Отмена']]
+            : [['pause','Пауза'],['resume','Продолжить'],['cancel','Отмена']];
+        for(const [action,caption] of taskActions){
             if(['completed','failed','cancelled'].includes(t.status))continue;
             if(t.status==='cancelling' && action!=='cancel')continue;
             let b=document.createElement('button');b.textContent=t.status==='cancelling'&&action==='cancel'?'Отмена…':caption;b.disabled=t.status==='cancelling';b.style.margin='2px';
