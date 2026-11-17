@@ -227,7 +227,7 @@ class LlamaCppClient:
         # particular, cancel_generation closes the active HTTP response.
         with self._request_lock:
             self._recover_after_timeout()
-            selected = model or db.get_app_setting("selected_ollama_model", self.model)
+            selected = model or db.get_app_setting("selected_llama_cpp_model", self.model)
             model_messages = self._safe_messages(messages, selected)
             payload = {
                 "model": selected,
