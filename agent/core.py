@@ -4843,6 +4843,7 @@ class Agent:
                         previous_summary="",  # raw archived messages remain the authoritative source
                         keep_recent=12,
                         prior_archived_messages=prior_archive,
+                        goal_event_id=task.get("initial_message_event_id"),
                     )
                     llm_summary = _compact_context_summary_with_llm(
                         task["user_message"], summary, reasoning=reasoning,
