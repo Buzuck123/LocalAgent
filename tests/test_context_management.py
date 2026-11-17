@@ -20,7 +20,7 @@ def test_context_compaction_keeps_system_goal_and_recent_tool_pair():
         ], previous_summary="stale next_actions: build the whole project now", keep_recent=3
     )
     assert compacted[0]["content"] == "system prompt"
-    assert any("current task" in m.get("content", "") for m in compacted if m.get("role") == "system")
+    assert any(m.get("role") == "user" and m.get("content") == "current task" for m in compacted)
     assert "prior.txt" in summary
     assert "stale next_actions" not in summary
     assert "LOCAL_AGENT_CONTEXT_SUMMARY_V2" in summary
