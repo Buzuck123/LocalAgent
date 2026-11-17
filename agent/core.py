@@ -3367,6 +3367,17 @@ def _task_client():
     return _CURRENT_TASK_CLIENT.get() or client
 
 
+def _is_production_provider_client(candidate) -> bool:
+    """Recognize both supported production backends; test doubles keep deterministic routing."""
+    if isinstance(candidate, OllamaClient):
+        return True
+    try:
+        from .llama_cpp import LlamaCppClient
+        return isinstance(candidate, LlamaCppClient)
+    except ImportError:
+        return False
+
+
 def switch_llm_provider(provider):
     global client, active_llm_provider, ollama_aux_client
     name = str(provider or "").strip().lower()
@@ -4063,7 +4074,7 @@ class Agent:
                     # deterministic fallback is retained only for malformed model
                     # output or unavailable Ollama; injected test clients keep the
                     # historical deterministic route unless they explicitly test the selector.
-                    if isinstance(client, OllamaClient):
+                    if _is_production_provider_client(_task_client()):
                         execution_mode = select_execution_mode_with_llm(
                             task["user_message"], task.get("attachments", []), reasoning=reasoning
                         )
