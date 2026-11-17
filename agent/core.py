@@ -3471,7 +3471,7 @@ class Agent:
             all_conversation_tasks = db.list_tasks(conversation_id)
             answer_text = str(user_message or "").strip()
             for candidate in all_conversation_tasks:
-                if candidate.get("status") not in {"queued", "running", "paused"}:
+                if candidate.get("status") not in {"queued", "running", "paused", "interrupted"}:
                     continue
                 try:
                     active_cp = json.loads(candidate.get("checkpoint_json") or "{}")
@@ -3482,7 +3482,7 @@ class Agent:
                     raise ValueError("Этот ответ на уточнение уже принят; дождитесь результата задачи.")
             waiting = []
             for candidate in all_conversation_tasks:
-                if candidate.get("status") != "paused":
+                if candidate.get("status") not in {"paused", "interrupted"}:
                     continue
                 try:
                     cp = json.loads(candidate.get("checkpoint_json") or "{}")
