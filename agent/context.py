@@ -15,12 +15,25 @@ PLAN_CONTEXT_MARKER = "[LOCAL_AGENT_PLAN_CONTEXT]"
 
 
 def ensure_event_ids(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Assign IDs once; callers must preserve them when copying or restoring events."""
+    """Assign IDs once, deriving legacy tool-result identity from its durable result ID."""
     for message in messages:
         if not isinstance(message, dict) or message.get("role") == "system":
             continue
-        if not isinstance(message.get("_event_id"), str) or not message.get("_event_id"):
-            message["_event_id"] = uuid.uuid4().hex
+        if isinstance(message.get("_event_id"), str) and message.get("_event_id"):
+            continue
+        if message.get("role") == "tool":
+            internal = message.get("_localagent_internal")
+            result_id = internal.get("result_id") if isinstance(internal, dict) else None
+            if not result_id:
+                try:
+                    payload = json.loads(str(message.get("content") or ""))
+                    result_id = payload.get("result_id") if isinstance(payload, dict) else None
+                except (TypeError, json.JSONDecodeError):
+                    result_id = None
+            if isinstance(result_id, str) and result_id:
+                message["_event_id"] = f"tool-result:{result_id}"
+                continue
+        message["_event_id"] = uuid.uuid4().hex
     return messages
 
 
