@@ -15,7 +15,7 @@ PLAN_CONTEXT_MARKER = "[LOCAL_AGENT_PLAN_CONTEXT]"
 
 
 def ensure_event_ids(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Assign stable IDs to non-system events; never infer duplicates from text."""
+    """Assign IDs once; callers must preserve them when copying or restoring events."""
     for message in messages:
         if not isinstance(message, dict) or message.get("role") == "system":
             continue
@@ -25,12 +25,27 @@ def ensure_event_ids(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def deduplicate_event_ids(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
-    """Remove only repeated copies carrying the exact same event ID."""
+    """Remove repeated event IDs and exact duplicate system instructions.
+
+    User/tool content is never compared: two independently-created events may
+    legitimately contain identical text. System instructions have no event ID,
+    so exact duplicate system messages are collapsed by content.
+    """
     seen: set[str] = set()
+    seen_system: set[str] = set()
     result = []
     removed = 0
     for message in messages:
-        if not isinstance(message, dict) or message.get("role") == "system":
+        if not isinstance(message, dict):
+            result.append(message)
+            continue
+        if message.get("role") == "system":
+            content = message.get("content")
+            if isinstance(content, str):
+                if content in seen_system:
+                    removed += 1
+                    continue
+                seen_system.add(content)
             result.append(message)
             continue
         event_id = message.get("_event_id")
@@ -230,6 +245,8 @@ def compact_messages(
     archived transcript is retained in the checkpoint and is the source for rebuilding
     the compact factual projection.
     """
+    ensure_event_ids(messages)
+    messages, _duplicate_count = deduplicate_event_ids(messages)
     system_messages = [
         dict(m) for m in messages
         if isinstance(m, dict) and m.get("role") == "system"
