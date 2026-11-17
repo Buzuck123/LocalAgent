@@ -353,6 +353,16 @@ def tasks(conversation_id: str | None = None):
             checkpoint = {}
         item["activity"] = checkpoint.get("activity") or _fallback_activity(item)
         item["reasoning"] = bool(checkpoint.get("reasoning", True))
+        clarification = checkpoint.get("clarification")
+        item["awaiting_clarification"] = bool(
+            checkpoint.get("pause_reason") == "needs_user_input"
+            and isinstance(clarification, dict)
+            and not clarification.get("resolved")
+        )
+        if item["awaiting_clarification"]:
+            item["clarification_question"] = str(
+                clarification.get("question") or checkpoint.get("pending_question") or ""
+            )[:1000]
         item.pop("attachments_json", None)
         item.pop("attachments", None)
         if item.get("status") == "paused":
