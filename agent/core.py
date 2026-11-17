@@ -4046,6 +4046,17 @@ class Agent:
                 # Existing paused checkpoints receive current operational rules;
                 # their conversation, plan, tool receipts and pending calls remain intact.
                 messages = _refresh_saved_system_prompt(messages)
+                initial_event_id = task.get("initial_message_event_id")
+                if initial_event_id and not any(
+                    isinstance(item, dict) and item.get("_event_id") == initial_event_id
+                    for item in messages
+                ):
+                    for item in messages:
+                        if (isinstance(item, dict) and item.get("role") == "user"
+                                and item.get("content") == task.get("user_message")):
+                            item["_event_id"] = initial_event_id
+                            break
+                ensure_event_ids(messages)
                 messages, _ = deduplicate_event_ids(messages)
                 checkpoint["messages"] = messages
                 # Старые checkpoints не фиксировали фазу выполнения инструмента.
