@@ -236,6 +236,7 @@ def compact_messages(
     keep_recent: int = 12,
     max_summary_chars: int = 24000,
     prior_archived_messages: list[dict[str, Any]] | None = None,
+    goal_event_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str, list[dict[str, Any]]]:
     """Return working messages, a factual summary, and newly archived messages.
 
@@ -253,6 +254,28 @@ def compact_messages(
         and not str(m.get("content", "")).startswith((CONTEXT_SUMMARY_MARKER, PLAN_CONTEXT_MARKER))
     ]
     non_system = [dict(m) for m in messages if isinstance(m, dict) and m.get("role") != "system"]
+    # Keep the original request as a real user message even after old turns are
+    # compacted. Some chat templates (including Gemma) require a user turn; the
+    # request must not exist only as text embedded in a system summary.
+    goal_message = None
+    goal_index = None
+    for index, message in enumerate(non_system):
+        if message.get("role") != "user":
+            continue
+        if goal_event_id and message.get("_event_id") == goal_event_id:
+            goal_message, goal_index = dict(message), index
+            break
+    if goal_message is None:
+        for index, message in enumerate(non_system):
+            if message.get("role") == "user" and message.get("content") == goal:
+                goal_message, goal_index = dict(message), index
+                break
+    if goal_message is None:
+        goal_message = {"role": "user", "content": str(goal or "")}
+        ensure_event_ids([goal_message])
+    elif goal_index is not None:
+        non_system.pop(goal_index)
+
     cut = max(0, len(non_system) - keep_recent)
     # Never start the retained tail with an orphan tool reply. Keep its assistant
     # tool-call message too, so the LLM sees a valid call/result pair.
@@ -268,7 +291,23 @@ def compact_messages(
     # omit assistant prose because it may contain speculative or stale next actions.
     prior = [dict(m) for m in (prior_archived_messages or []) if isinstance(m, dict)]
     factual_history = prior + archived
-    goal_line = "Текущая задача пользователя (оригинальный запрос; authoritative):\n" + str(goal or "")[:20000]
+    # The exact original request is retained separately as a user-role message,
+    # so do not copy it into the system summary as well.
+    if goal_event_id:
+        factual_history = [
+            message for message in factual_history
+            if message.get("_event_id") != goal_event_id
+        ]
+    else:
+        skipped_goal = False
+        filtered_history = []
+        for message in factual_history:
+            if (not skipped_goal and message.get("role") == "user"
+                    and message.get("content") == goal):
+                skipped_goal = True
+                continue
+            filtered_history.append(message)
+        factual_history = filtered_history
     history_lines: list[str] = []
     # Bound the projection while retaining a useful window of actual interactions.
     for message in factual_history[-120:]:
@@ -280,8 +319,7 @@ def compact_messages(
             deduped.append(line)
     summary_parts = [
         "[LOCAL_AGENT_CONTEXT_SUMMARY_V2]",
-        goal_line,
-        "Фактическая история (пользовательские сообщения, вызовы и результаты инструментов; не является новым планом):",
+        "Оригинальный запрос сохранён отдельным сообщением пользователя. Ниже — фактическая история выполнения, а не новый план:",
         *deduped,
     ]
     summary = "\n".join(summary_parts)
@@ -308,9 +346,9 @@ def compact_messages(
         "content": CONTEXT_SUMMARY_MARKER + "\n" + summary
     }
     if system_messages:
-        working = [system_messages[0], summary_message, *system_messages[1:], *clipped_recent]
+        working = [system_messages[0], summary_message, *system_messages[1:], goal_message, *clipped_recent]
     else:
-        working = [summary_message, *clipped_recent]
+        working = [summary_message, goal_message, *clipped_recent]
     return working, summary, archived
 
 
