@@ -46,7 +46,7 @@ def main():
         )
         if result.returncode == 0:
             system_inventory = [
-                {"name": line.split("\t", 1)[0], "version": line.split("\\t", 1)[1]}
+                {"name": line.split("\t", 1)[0], "version": line.split("\t", 1)[1]}
                 for line in result.stdout.splitlines() if "\t" in line
             ]
     except (OSError, subprocess.TimeoutExpired):
