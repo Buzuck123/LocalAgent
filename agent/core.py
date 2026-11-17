@@ -552,18 +552,34 @@ def _goal_requires_action(goal):
 
 
 def _refresh_saved_system_prompt(messages):
-    """Apply current operational rules to resumable checkpoints created by older releases."""
+    """Refresh one base prompt and retain only explicitly marked system context."""
     if not isinstance(messages, list):
         return messages
-    for item in messages:
-        if not isinstance(item, dict) or item.get("role") != "system":
+    refreshed = []
+    base_prompt_seen = False
+    preserved_markers = (
+        CONTEXT_SUMMARY_MARKER,
+        PLAN_CONTEXT_MARKER,
+        "[LOCAL_AGENT_TOOL_SCOPE]",
+    )
+    for original in messages:
+        if not isinstance(original, dict) or original.get("role") != "system":
+            refreshed.append(original)
             continue
-        # The first system message is the durable operational prompt. Always
-        # refresh it so resumed checkpoints receive current sandbox capabilities
-        # and no longer retain retired host-side web-tool instructions.
-        item["content"] = SYSTEM_PROMPT
-        break
-    return messages
+        item = dict(original)
+        content = item.get("content")
+        if isinstance(content, str) and content.startswith(preserved_markers):
+            refreshed.append(item)
+            continue
+        if not base_prompt_seen:
+            item["content"] = SYSTEM_PROMPT
+            refreshed.append(item)
+            base_prompt_seen = True
+        # Additional unmarked system messages in old checkpoints were duplicate
+        # base prompts. Do not carry stale copies into the resumed conversation.
+    if not base_prompt_seen:
+        refreshed.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+    return refreshed
 
 
 def _tool_activity_label(tool_name, arguments):
