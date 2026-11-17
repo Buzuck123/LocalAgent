@@ -302,6 +302,26 @@ def get_messages(cid: str, limit: int = 100) -> list[dict]:
             result.append(item)
         return result
 
+def get_message_by_event_id(cid: str, event_id: str) -> dict | None:
+    """Fetch one durable conversation event independently of the history page limit."""
+    if not cid or not event_id:
+        return None
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM messages WHERE conversation_id=? AND event_id=?",
+            (cid, event_id),
+        ).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    try:
+        item["attachments"] = json.loads(item.pop("attachments_json", "[]") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        item["attachments"] = []
+    item["_event_id"] = item.get("event_id")
+    return item
+
+
 def get_conversation_attachments(cid: str) -> list[dict]:
     """Return all attachment metadata for a conversation, including old messages."""
     result: list[dict] = []
