@@ -59,3 +59,58 @@ def test_task_client_context_overrides_active_provider_client(monkeypatch):
     finally:
         core._CURRENT_TASK_CLIENT.reset(token)
     assert core._task_client() is original
+
+
+
+def test_provider_switch_reconciles_orphaned_cancellation(monkeypatch):
+    task = {
+        "id": "orphaned-cancel",
+        "conversation_id": "conversation",
+        "status": "cancelling",
+        "checkpoint_json": "{}",
+    }
+    updates = []
+    switched = []
+    monkeypatch.setattr(web.db, "list_all_tasks", lambda: [task])
+    monkeypatch.setattr(web.db, "update_task", lambda task_id, **kwargs: updates.append((task_id, kwargs)))
+    monkeypatch.setattr(web.agent, "threads", {})
+    monkeypatch.setattr(
+        web.sandbox_manager,
+        "interrupt_operation",
+        lambda conversation_id: {"state": "idle", "interrupted": False},
+    )
+    monkeypatch.setattr(core, "active_llm_provider", "ollama")
+    monkeypatch.setattr(core, "switch_llm_provider", lambda provider: switched.append(provider) or {"provider": provider})
+    monkeypatch.setattr(web, "get_llm_provider", lambda: {"status": {"available": True}})
+
+    result = web.select_llm_provider(web.ProviderSelect(provider="llama_cpp"))
+
+    assert result["provider"] == "llama_cpp"
+    assert switched == ["llama_cpp"]
+    assert updates[0][1]["status"] == "cancelled"
+    assert task["status"] == "cancelled"
+
+
+def test_provider_switch_does_not_reconcile_live_cancellation_worker(monkeypatch):
+    class LiveWorker:
+        def is_alive(self):
+            return True
+
+    task = {
+        "id": "live-cancel",
+        "conversation_id": "conversation",
+        "status": "cancelling",
+        "checkpoint_json": "{}",
+    }
+    monkeypatch.setattr(web.db, "list_all_tasks", lambda: [task])
+    monkeypatch.setattr(web.agent, "threads", {"live-cancel": LiveWorker()})
+    monkeypatch.setattr(
+        web.sandbox_manager,
+        "interrupt_operation",
+        lambda conversation_id: pytest.fail("must not interrupt a live worker here"),
+    )
+
+    with pytest.raises(web.HTTPException) as exc:
+        web.select_llm_provider(web.ProviderSelect(provider="llama_cpp"))
+
+    assert exc.value.status_code == 409
