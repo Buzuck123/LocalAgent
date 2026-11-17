@@ -84,12 +84,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install a matching CPU-only PyTorch pair explicitly. The sandbox has no GPU
-# passthrough, so CUDA-enabled wheels would only increase image size.
-# Keep the +cpu local version suffix to select the wheels from this index.
+# Install CPU-only PyTorch. TorchAudio 2.11 uses the stable LibTorch ABI and
+# supports PyTorch 2.11 and later. Install it without dependency resolution:
+# its wheel metadata may still pin the matching 2.11.x torch release exactly.
+# The sandbox has no GPU passthrough, so CUDA-enabled wheels are unnecessary.
 RUN python3 -m pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu \
-    torch==2.11.1+cpu torchaudio==2.11.1+cpu
+    torch==2.15.0+cpu \
+    && python3 -m pip install --no-cache-dir --no-deps \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torchaudio==2.11.1+cpu
 
 # Python libraries
 COPY requirements.txt /tmp/requirements.txt
