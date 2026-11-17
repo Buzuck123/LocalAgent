@@ -461,14 +461,38 @@ def get_llm_provider():
 
 @app.post("/api/llm/provider")
 def select_llm_provider(payload: ProviderSelect):
-    from .core import switch_llm_provider
-    active = {"queued", "running", "paused", "interrupted", "cancelling"}
-    if any(task.get("status") in active for task in db.list_tasks()):
+    from .core import active_llm_provider, switch_llm_provider
+    # A live worker must never have its backend replaced mid-request. Paused and
+    # interrupted tasks are durable checkpoints and may safely coexist with a
+    # different active provider because their original provider is pinned below.
+    blocking = {"queued", "running", "cancelling"}
+    all_tasks = db.list_tasks()
+    if any(task.get("status") in blocking for task in all_tasks):
         raise HTTPException(
             409,
-            "Нельзя переключить LLM-сервер, пока есть незавершённые задачи. "
-            "Заверши или отмени их и повтори переключение.",
+            "Нельзя переключить LLM-сервер, пока есть выполняющиеся или ожидающие запуска задачи. "
+            "Дождись их завершения или отмени их и повтори переключение.",
         )
+
+    # Older checkpoints did not persist the provider. Capture the currently
+    # selected backend BEFORE switching, otherwise a legacy paused Qwen task
+    # could accidentally resume against the newly selected server.
+    for task in all_tasks:
+        if task.get("status") not in {"paused", "interrupted"}:
+            continue
+        try:
+            checkpoint = json.loads(task.get("checkpoint_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            checkpoint = {}
+        if not isinstance(checkpoint, dict):
+            checkpoint = {}
+        if not checkpoint.get("provider"):
+            checkpoint["provider"] = active_llm_provider
+            db.update_task(
+                task["id"],
+                checkpoint_json=json.dumps(checkpoint, ensure_ascii=False),
+            )
+
     try:
         result = switch_llm_provider(payload.provider)
         return {**result, "status": get_llm_provider()["status"]}
