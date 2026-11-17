@@ -3954,14 +3954,30 @@ class Agent:
                         )
                         history = db.get_messages(cid, limit=100)
                 else:
-                    # Legacy tasks predate atomic task/message creation.
-                    last_is_same_user = (
-                        bool(history)
-                        and history[-1].get("role") == "user"
-                        and history[-1].get("content") == task["user_message"]
-                    )
-                    if not last_is_same_user:
-                        db.add_message(cid, "user", task["user_message"], attachments=task.get("attachments", []))
+                    # Legacy tasks predate atomic task/message creation. Reuse
+                    # the matching event created at/after this task, then persist
+                    # its identity so subsequent recovery does not infer by text.
+                    task_created_at = str(task.get("created_at") or "")
+                    legacy_initial = next((
+                        m for m in history
+                        if m.get("role") == "user"
+                        and m.get("content") == task["user_message"]
+                        and str(m.get("created_at") or "") >= task_created_at
+                    ), None)
+                    if legacy_initial and legacy_initial.get("_event_id"):
+                        db.update_task(
+                            task_id,
+                            initial_message_event_id=legacy_initial["_event_id"],
+                        )
+                    else:
+                        inserted = db.add_message(
+                            cid, "user", task["user_message"],
+                            attachments=task.get("attachments", []),
+                        )
+                        db.update_task(
+                            task_id,
+                            initial_message_event_id=inserted.get("_event_id"),
+                        )
                         history = db.get_messages(cid, limit=100)
 
                 messages = [{"role": "system", "content": SYSTEM_PROMPT}]
