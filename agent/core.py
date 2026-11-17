@@ -3320,7 +3320,7 @@ class OllamaClient:
             ) from exc
 
 _provider_lock = threading.RLock()
-active_llm_provider = db.get_app_setting("selected_llm_provider", active_llm_provider)
+active_llm_provider = db.get_app_setting("selected_llm_provider", getattr(settings, "llm_provider", "ollama"))
 
 
 def _new_provider_client(provider):
