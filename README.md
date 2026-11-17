@@ -88,7 +88,7 @@ podman image exists localhost/localagent-sandbox:ubuntu24.04
 
 ### Container image
 
-The image is based on Ubuntu 24.04 and contains SWE-ReX 1.4.0, Python, Privoxy, Playwright/Chromium, document and spreadsheet libraries, PDF/OCR and image tools, and common Linux utilities. These packages are installed when building the image, not on each conversation startup.
+The image is based on Ubuntu 24.04 and contains SWE-ReX 1.4.0, Python, Privoxy, Playwright/Chromium, a broad scientific/data stack (NumPy, pandas, SciPy, scikit-learn, Matplotlib), office/document and PDF conversion tools, OpenCV/Pillow/OCR, FFmpeg, CPU-only PyTorch/torchaudio and audio ML libraries, plus a development toolchain including Git, compilers, CMake, Ninja, Node.js/npm and uv. Tesseract includes English, Russian and German data. These packages are installed when building the image, not on each conversation startup. GPU acceleration is intentionally not configured because the conversation container has no GPU passthrough.
 
 Build or rebuild the image from the `container/` directory context:
 
