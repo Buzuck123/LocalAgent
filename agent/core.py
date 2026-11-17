@@ -2064,6 +2064,20 @@ def _unresolved_tool_errors_problem(task_state: Any) -> str | None:
     )
 
 
+def _build_tool_messages_for_operation(
+    tool_name: str, content: str, operation_id: str | None
+) -> list[dict]:
+    """Attach the durable operation identity to every model-visible result event."""
+    identity = str(operation_id or uuid.uuid4().hex)
+    built = _build_tool_messages(tool_name, content)
+    for index, message in enumerate(built):
+        if message.get("role") == "tool":
+            message["_event_id"] = f"tool-operation:{identity}"
+        elif message.get("role") == "user":
+            message["_event_id"] = f"tool-operation:{identity}:media:{index}"
+    return built
+
+
 def _build_tool_messages(tool_name: str, content: str) -> list[dict]:
     """Build a tool receipt and, for images, a following user image message.
 
@@ -3854,8 +3868,10 @@ class Agent:
                             recovered_payload = _restore_tool_operation_payload(
                                 stored_result, tool_name, tool_arguments, checkpoint
                             )
-                            messages.extend(_build_tool_messages(
-                                tool_name, json.dumps(recovered_payload, ensure_ascii=False, default=str)
+                            messages.extend(_build_tool_messages_for_operation(
+                                tool_name,
+                                json.dumps(recovered_payload, ensure_ascii=False, default=str),
+                                operation_id,
                             ))
                             checkpoint["messages"] = messages
                             checkpoint["phase"] = "loop"
@@ -3912,9 +3928,10 @@ class Agent:
                             recovered_payload = _restore_tool_operation_payload(
                                 stored_result, tool_name, tool_arguments, checkpoint
                             )
-                            saved_messages.extend(_build_tool_messages(
+                            saved_messages.extend(_build_tool_messages_for_operation(
                                 tool_name,
                                 json.dumps(recovered_payload, ensure_ascii=False, default=str),
+                                current_tool.get("operation_id"),
                             ))
                             checkpoint["activity"] = _tool_activity_summary(
                                 tool_name, tool_arguments, recovered_payload
@@ -4683,13 +4700,9 @@ class Agent:
                                 content = json.dumps(parsed_content, ensure_ascii=False, default=str)
                         except (TypeError, json.JSONDecodeError):
                             content = json.dumps({"ok": False, "result_id": result_id, "content": content}, ensure_ascii=False)
-                        built_tool_messages = _build_tool_messages(name, content)
-                        for built_index, built_message in enumerate(built_tool_messages):
-                            if built_message.get("role") == "tool":
-                                built_message["_event_id"] = f"tool-operation:{operation_id}"
-                            elif built_message.get("role") == "user":
-                                built_message["_event_id"] = f"tool-operation:{operation_id}:media:{built_index}"
-                        messages.extend(built_tool_messages)
+                        messages.extend(
+                            _build_tool_messages_for_operation(name, content, operation_id)
+                        )
 
                         # Persist the result before starting another tool.
                         next_tool_index = index + 1
