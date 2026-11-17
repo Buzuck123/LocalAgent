@@ -571,12 +571,18 @@ def _refresh_saved_system_prompt(messages):
         if isinstance(content, str) and content.startswith(preserved_markers):
             refreshed.append(item)
             continue
-        if not base_prompt_seen:
+        is_base_prompt = isinstance(content, str) and content.startswith("You are LocalAgent")
+        if is_base_prompt and not base_prompt_seen:
             item["content"] = SYSTEM_PROMPT
             refreshed.append(item)
             base_prompt_seen = True
-        # Additional unmarked system messages in old checkpoints were duplicate
-        # base prompts. Do not carry stale copies into the resumed conversation.
+        elif is_base_prompt:
+            # Drop additional copies of the old operational prompt, even if their
+            # wording differs from the current version.
+            continue
+        else:
+            # Preserve other explicitly-authored system context.
+            refreshed.append(item)
     if not base_prompt_seen:
         refreshed.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
     return refreshed
