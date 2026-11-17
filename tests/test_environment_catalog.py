@@ -1,4 +1,5 @@
 from agent.environment import capability_catalog_prompt
+from agent.core import SYSTEM_PROMPT
 
 
 def test_model_capability_catalog_is_compact_and_explains_web_search():
@@ -9,6 +10,12 @@ def test_model_capability_catalog_is_compact_and_explains_web_search():
     assert "requests" in prompt
     assert "checked when the container starts" in prompt
     assert "XlsxWriter" not in prompt
+
+
+def test_system_prompt_describes_web_search_as_a_terminal_capability():
+    assert 'web-search "query"' in SYSTEM_PROMPT
+    assert "LocalAgent web-search tool" not in SYSTEM_PROMPT
+    assert "persistent Linux container" in SYSTEM_PROMPT
 
 
 def test_shared_manifest_contains_runtime_checks():
