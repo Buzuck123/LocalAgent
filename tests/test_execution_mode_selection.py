@@ -38,3 +38,13 @@ def test_llm_can_choose_direct_for_multiple_independent_files(monkeypatch):
     fake = ModeClient(json.dumps({"mode": "direct", "reason": "Two independent outputs"}))
     monkeypatch.setattr(core, "client", fake)
     assert core.select_execution_mode_with_llm("Создай два независимых текстовых файла") == "simple"
+
+
+
+def test_execution_mode_prompt_distinguishes_task_complexity_from_tool_count():
+    prompt = core.EXECUTION_MODE_PROMPT
+    assert "several independent checks" in prompt
+    assert "comparing alternatives" in prompt
+    assert "multiple sources" in prompt
+    assert "number of tool calls" in prompt
+    assert "merely for formality" in prompt
