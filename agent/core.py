@@ -3344,12 +3344,14 @@ def switch_llm_provider(provider):
         if name == active_llm_provider:
             return {"provider": name}
         candidate = _new_provider_client(name)
-        status = candidate.status()
-        if not isinstance(status, dict) or status.get("available") is not True:
-            raise RuntimeError(
-                f"LLM-провайдер {name} недоступен: "
-                + str(status.get("error") if isinstance(status, dict) else "проверка сервера не пройдена")
-            )
+        try:
+            # models() is the common connectivity probe for both providers.
+            candidate.models()
+            status = candidate.status()
+            if isinstance(status, dict) and status.get("available") is False:
+                raise RuntimeError(str(status.get("error") or "сервер недоступен"))
+        except Exception as exc:
+            raise RuntimeError(f"LLM-провайдер {name} недоступен: {exc}") from exc
         client = candidate
         active_llm_provider = name
         if name == "ollama":
