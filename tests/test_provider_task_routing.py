@@ -8,7 +8,7 @@ from agent import core, web
 def test_provider_switch_is_blocked_by_queued_or_running_tasks(monkeypatch):
     monkeypatch.setattr(
         web.db,
-        "list_tasks",
+        "list_all_tasks",
         lambda: [{"id": "live", "status": "running", "checkpoint_json": "{}"}],
     )
     with pytest.raises(web.HTTPException) as exc:
@@ -24,7 +24,7 @@ def test_provider_switch_pins_legacy_paused_tasks_before_switch(monkeypatch):
     ]
     updates = []
     switched = []
-    monkeypatch.setattr(web.db, "list_tasks", lambda: tasks)
+    monkeypatch.setattr(web.db, "list_all_tasks", lambda: tasks)
     monkeypatch.setattr(
         web.db,
         "update_task",
