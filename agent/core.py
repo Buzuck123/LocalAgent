@@ -701,8 +701,8 @@ def _restore_tool_operation_payload(record, tool_name, arguments, diagnosis_stat
 
 
 CONTEXT_COMPACTION_SYSTEM_PROMPT = """You are compacting the working memory of a long-running software agent.
-Produce a concise, factual state summary in Russian. Preserve all information needed to continue the task:
-- the exact original user goal and constraints;
+Produce a concise, factual state summary in Russian. The exact original user request is retained separately as a user-role message; do not restate or quote it. Preserve only constraints and context needed to continue:
+- important user constraints not obvious from the current request;
 - explicit decisions and accepted/rejected approaches;
 - verified facts, file paths, identifiers, versions and important numeric values;
 - completed work and verification results;
@@ -917,12 +917,7 @@ def _compact_context_summary_with_llm(goal: str, factual_summary: str,
         summary = str(message.get("content", "") if isinstance(message, dict) else "").strip()
         if not summary or len(summary) > 24000:
             return None
-        return (
-            "Исходный запрос пользователя (сохранён дословно):\n"
-            + str(goal or "")[:20000]
-            + "\n\nСжатое состояние работы (LLM-компактизация):\n"
-            + summary
-        )
+        return "Сжатое состояние работы (LLM-компактизация):\n" + summary
     except Exception as exc:
         logger.warning("LLM context compaction failed; deterministic summary retained (%s)", type(exc).__name__)
         return None
