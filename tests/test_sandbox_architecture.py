@@ -144,7 +144,8 @@ def test_new_sandbox_is_created_once_with_rootless_limits_and_dynamic_loopback_p
     assert state["record"]["host_port"] == 32777
     assert state["record"]["session_name"] == "main"
     run_call = next(args for args, _env, _check in podman.calls if args[1:2] == ["run"])
-    assert "--cpus" in run_call and "2.0" in run_call
+    assert "--cpus" in run_call
+    assert run_call[run_call.index("--cpus") + 1] == str(test_settings.sandbox_cpus)
     assert "--memory" in run_call and "4g" in run_call
     assert "--network" in run_call and "localagent-sandbox-internal-test" in run_call
     assert "127.0.0.1::8000" in run_call
