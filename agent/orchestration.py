@@ -365,6 +365,22 @@ def should_block_repeated_call(tool_name: str, arguments: dict[str, Any], histor
                 ),
             }
 
+    # A successful later analysis of the same bytes proves that the file can
+    # now be processed; it clears the older file-specific guard.
+    if tool_name == "ask_model":
+        for index, item in enumerate(history):
+            if not (isinstance(item, dict) and item.get("tool_name") == "ask_model"
+                    and item.get("status") != "success" and item.get("file_error") is True):
+                continue
+            old_hash = item.get("file_snapshot")
+            if old_hash is not None and any(
+                isinstance(later, dict) and later.get("status") == "success"
+                and later.get("tool_name") == "ask_model"
+                and later.get("file_snapshot") == old_hash
+                for later in history[index + 1:]
+            ):
+                return None
+
     # A file-specific error cannot be cleared by changing only the prompt or path.
     file_content_changed = False
     if tool_name == "ask_model" and isinstance(arguments, dict):
