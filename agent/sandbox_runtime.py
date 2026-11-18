@@ -68,6 +68,31 @@ class SwerexRemoteRuntime:
         return False
 
     @staticmethod
+    def _exception_chain_summary(exc: BaseException, *, limit: int = 12) -> str:
+        """Return bounded diagnostics for wrapped/chained client exceptions."""
+        pending = [exc]
+        seen: set[int] = set()
+        parts: list[str] = []
+        while pending and len(parts) < limit:
+            current = pending.pop(0)
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            parts.append(f"{type(current).__module__}.{type(current).__name__}: {str(current)[:500]!r}")
+            nested = getattr(current, "exceptions", None)
+            if nested:
+                pending.extend(item for item in nested if isinstance(item, BaseException))
+            cause = getattr(current, "__cause__", None)
+            context = getattr(current, "__context__", None)
+            if isinstance(cause, BaseException):
+                pending.append(cause)
+            if isinstance(context, BaseException):
+                pending.append(context)
+        if pending:
+            parts.append("…")
+        return " <- ".join(parts)
+
+    @staticmethod
     def _is_timeout_exception(exc: BaseException) -> bool:
         name = type(exc).__name__.lower()
         return isinstance(exc, TimeoutError) or "timeout" in name or "timed out" in str(exc).lower()
@@ -88,6 +113,10 @@ class SwerexRemoteRuntime:
         except Exception as exc:
             if self._has_exception_named(exc, "SessionExistsError"):
                 return False
+            logger.exception(
+                "SWE-ReX create_session failed; client exception chain: %s",
+                self._exception_chain_summary(exc),
+            )
             raise
 
     @staticmethod
