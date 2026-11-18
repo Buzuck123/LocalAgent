@@ -173,7 +173,7 @@ def test_saved_checkpoint_refreshes_the_operational_system_prompt():
     from agent.core import SYSTEM_PROMPT, _refresh_saved_system_prompt
 
     messages = [
-        {"role": "system", "content": "obsolete host web-search instructions"},
+        {"role": "system", "content": "You are LocalAgent, obsolete host web-search instructions"},
         {"role": "user", "content": "continue"},
     ]
     refreshed = _refresh_saved_system_prompt(messages)

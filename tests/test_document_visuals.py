@@ -30,7 +30,7 @@ def test_tool_receipt_delivers_multiple_document_visuals():
             "name": "report.pdf",
             "extracted_text": "Extracted report text",
             "_model_attachments": [
-                {"kind": "image", "name": "page 1", "path": str(image_path), "source": "managed_attachment"},
+                {"kind": "image", "name": "page 1", "path": "/tmp/page1.jpg", "source": "managed_attachment"},
                 {"kind": "image", "name": "page 2", "path": "/tmp/page2.jpg", "source": "managed_attachment"},
             ],
         }
