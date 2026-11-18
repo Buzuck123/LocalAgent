@@ -499,7 +499,9 @@ def save_attachments(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]
                 raise ValueError("Видео должно длиться от 0.5 до 60 секунд")
             host_workspace_path = _persist_original_in_host_work(name, raw)
             result.append({"name": name, "mime_type": mime, "kind": "video",
-                           "path": str(path), "size_bytes": len(raw), "host_workspace_path": host_workspace_path})
+                           "path": str(path), "size_bytes": len(raw),
+                           "duration_seconds": round(duration, 2),
+                           "host_workspace_path": host_workspace_path})
         elif ext in AUDIO_EXTENSIONS or mime in AUDIO_MIME_TYPES:
             if ext not in AUDIO_EXTENSIONS:
                 raise ValueError(f"Unsupported audio format: {name}")
