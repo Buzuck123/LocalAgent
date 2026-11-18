@@ -4772,6 +4772,7 @@ class Agent:
                                 "tool_name": name,
                                 "arguments": args,
                                 "call_fingerprint": tool_call_fingerprint(name, args),
+                                "file_snapshot": ask_model_snapshot if name == "ask_model" else None,
                                 "at_round": round_index,
                             })
                             del history[:-40]
