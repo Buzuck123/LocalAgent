@@ -326,11 +326,40 @@ def should_block_repeated_call(tool_name: str, arguments: dict[str, Any], histor
     previous = history[matching_indexes[-1]] if matching_indexes else None
     last_failure_index = matching_indexes[-1] if matching_indexes else -1
 
-    # Permit one retry after a transient ask_model service failure.
-    if tool_name == "ask_model" and previous:
-        recovery = previous.get("recovery") if isinstance(previous.get("recovery"), dict) else {}
-        if recovery.get("category") == "transient_service" and len(matching_indexes) == 1:
+    # Permit one retry after a transient ask_model service failure, regardless
+    # of prompt edits. A second consecutive service failure exhausts the budget.
+    if tool_name == "ask_model":
+        ask_model_events = [
+            (index, item) for index, item in enumerate(history)
+            if isinstance(item, dict) and item.get("tool_name") == "ask_model"
+        ]
+        last_success = max(
+            (index for index, item in ask_model_events if item.get("status") == "success"),
+            default=-1,
+        )
+        transient_failures = [
+            item for index, item in ask_model_events
+            if index > last_success and item.get("status") != "success"
+            and isinstance(item.get("recovery"), dict)
+            and item["recovery"].get("category") == "transient_service"
+        ]
+        if len(transient_failures) == 1:
             return None
+        if len(transient_failures) >= 2:
+            return {
+                "blocked": True,
+                "category": "transient_service_retry_exhausted",
+                "recovery_action": "wait_for_service_or_ask_user",
+                "retry_safe_without_state_check": False,
+                "same_call_should_repeat": False,
+                "repeat_count": len(transient_failures) + 1,
+                "previous_error": str(transient_failures[-1].get("error", ""))[:500],
+                "message": (
+                    "ask_model дважды подряд завершился временной ошибкой сервиса. "
+                    "Автоматические повторы исчерпаны: дождись восстановления сервиса "
+                    "или сообщи пользователю о недоступности вспомогательной модели."
+                ),
+            }
 
     # A file-specific error cannot be cleared by changing only the prompt or path.
     file_content_changed = False
