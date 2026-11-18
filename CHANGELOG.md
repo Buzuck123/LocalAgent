@@ -1,3 +1,14 @@
+# Changelog
+
+## 0.8.0
+
+- Route `ask_model` to Gemma 4 12B through the dedicated llama.cpp Router, independent of the primary provider.
+- Before `ask_model` starts, unload the actual task-pinned Ollama model with `keep_alive=0` and verify that `/api/ps` no longer reports it as resident.
+- Add OpenAI-compatible multimodal transport for images, document visuals, sampled video frames, and normalized WAV audio; redact media payloads from debug traces.
+- Request streaming usage from llama.cpp and expose live generation speed plus prompt/context token counts in the web status area.
+- Read model context metadata from `/v1/models` when the Router provides it; retain the configured context as a fallback.
+- Update provider documentation and configuration for the fixed `gemma4-12b` auxiliary model.
+
 ## 0.7.2 — Single terminal, plan lifecycle and context safety — 2026-11-11
 
 - Replaced the model-visible terminal start/poll/input/interrupt/resize tool set with one `terminal` tool. SWE-ReX operation IDs, cursors and background polling are internal manager details.

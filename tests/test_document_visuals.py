@@ -41,8 +41,12 @@ def test_tool_receipt_delivers_multiple_document_visuals():
     assert len(messages[1]["attachments"]) == 2
 
 
-def test_ask_model_includes_text_and_document_visuals(monkeypatch):
+def test_ask_model_includes_text_and_document_visuals(monkeypatch, tmp_path):
     captured = {}
+    from PIL import Image
+    image_path = tmp_path / "page1.jpg"
+    Image.new("RGB", (20, 20), "white").save(image_path)
+    monkeypatch.setattr(core, "client", object())
 
     def fake_load(path, *, conversation_id):
         return {
@@ -52,11 +56,11 @@ def test_ask_model_includes_text_and_document_visuals(monkeypatch):
             "extracted_text": "PDF body",
             "size_bytes": 100,
             "_model_attachments": [
-                {"kind": "image", "name": "page 1", "path": "/tmp/page1.jpg", "source": "managed_attachment"},
+                {"kind": "image", "name": "page 1", "path": str(image_path), "source": "managed_attachment"},
             ],
         }
 
-    def fake_chat(messages, tools=None, reasoning=True, model=None):
+    def fake_chat(messages, tools=None, reasoning=True, model=None, target_client=None):
         captured["messages"] = messages
         return {"message": {"content": "reviewed"}}
 

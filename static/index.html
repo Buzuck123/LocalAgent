@@ -131,9 +131,18 @@ async function refreshGenerationSpeed(){
         else{$('generation-speed').textContent=`Генерация: ${Number.isFinite(speed)?speed.toFixed(1):'—'} tok/s${inputRate}`}
         const details=[data.model||'модель неизвестна',`${data.eval_count||0} выходных токенов`];
         if(Number.isFinite(data.prompt_tokens_per_second))details.push(`скорость обработки входа: ${data.prompt_tokens_per_second.toFixed(0)} tok/s`);
-        if(data.num_ctx)details.push(`контекст: ${data.num_ctx}`);
+        const used=Number(data.current_prompt_tokens??data.context_used_tokens??data.prompt_eval_count);
+        const limit=Number(data.num_ctx);
+        if(Number.isFinite(used)&&used>0){
+            const contextLabel=`Контекст: ${used.toLocaleString('ru-RU')}${limit>0?' / '+limit.toLocaleString('ru-RU'):''} ток.`;
+            details.push(contextLabel);
+        }
         if(data.estimated)details.push('скорость предварительная');
         $('generation-speed').title=details.join(' · ');
+        if(Number.isFinite(used)&&used>0){
+            const limitText=limit>0?' / '+limit.toLocaleString('ru-RU'):'';
+            $('generation-speed').textContent+=` · контекст ${used.toLocaleString('ru-RU')}${limitText}`;
+        }
     }catch(_){$('generation-speed').textContent='Генерация: — tok/s'}
 }
 setInterval(refreshGenerationSpeed,1000);refreshGenerationSpeed();

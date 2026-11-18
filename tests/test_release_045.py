@@ -281,7 +281,7 @@ def test_release_version_is_synchronized():
     from agent.version import VERSION
 
     root = Path(__file__).resolve().parents[1]
-    assert VERSION == "0.7.2"
+    assert VERSION == "0.8.0"
     assert (root / "VERSION").read_text(encoding="utf-8").strip() == VERSION
     assert f"Версия: {VERSION}" in (root / "README.md").read_text(encoding="utf-8")
 

@@ -5,7 +5,10 @@ existing agent loop. Provider-specific HTTP and streaming details stay here.
 """
 from __future__ import annotations
 
+import base64
+import mimetypes
 import json
+from pathlib import Path
 import threading
 import time
 import uuid
@@ -60,8 +63,15 @@ class LlamaCppClient:
 
     def model_profile(self, model: str | None = None) -> dict:
         name = model or db.get_app_setting("selected_llama_cpp_model", self.model)
+        context = int(settings.llama_cpp_context)
+        try:
+            item = next((x for x in self._available_models() if x["name"] == name), None)
+            if item and item.get("context_length"):
+                context = int(item["context_length"])
+        except Exception:
+            pass
         return {
-            "model": name, "num_ctx": int(settings.llama_cpp_context),
+            "model": name, "num_ctx": context,
             "num_predict": None, "source": "llama_cpp_server_config",
         }
 
@@ -70,7 +80,11 @@ class LlamaCppClient:
         models = []
         for item in payload.get("data", []) if isinstance(payload, dict) else []:
             if isinstance(item, dict) and isinstance(item.get("id"), str):
-                models.append({"name": item["id"], "size": None, "modified_at": None})
+                meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                models.append({
+                    "name": item["id"], "size": None, "modified_at": None,
+                    "context_length": item.get("context_length") or meta.get("n_ctx_train"),
+                })
         return models
 
     def models(self) -> dict:
@@ -124,6 +138,63 @@ class LlamaCppClient:
                 "message": "Модель загружена процессом llama-server; остановка выполняется на стороне сервера."}
 
     @staticmethod
+    def _media_parts(attachments: list[dict], text: str) -> list[dict]:
+        """Convert managed media files to OpenAI-compatible content parts."""
+        parts: list[dict] = [{"type": "text", "text": text}] if text else []
+
+        def read_managed(path_value: object) -> bytes:
+            path = Path(str(path_value or "")).resolve(strict=True)
+            if not path.is_file():
+                raise ValueError("Мультимодальное вложение не является обычным файлом")
+            size = path.stat().st_size
+            if size <= 0 or size > 100 * 1024 * 1024:
+                raise ValueError("Мультимодальное вложение пустое или превышает 100 МБ")
+            return path.read_bytes()
+
+        def add_image(path: str, label: str = "") -> None:
+            raw = read_managed(path)
+            mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+            if mime not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+                mime = "image/jpeg"
+            if label:
+                parts.append({"type": "text", "text": label})
+            encoded = base64.b64encode(raw).decode("ascii")
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}})
+
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            kind = str(attachment.get("kind") or "")
+            path = str(attachment.get("path") or "")
+            name = str(attachment.get("name") or kind or "media")
+            if kind == "image":
+                add_image(path, f"Прикреплённое изображение: {name}")
+            elif kind == "audio":
+                raw = read_managed(path)
+                encoded = base64.b64encode(raw).decode("ascii")
+                parts.append({"type": "text", "text": f"Аудиовложение: {name}. Прослушай и проанализируй звук."})
+                parts.append({"type": "input_audio", "input_audio": {"data": encoded, "format": "wav"}})
+            elif kind == "video":
+                from .attachments import extract_video_frames, extract_video_audio, ATTACHMENT_ROOT
+                sampled = extract_video_frames(path, max_frames=60)
+                parts.append({"type": "text", "text": f"Видео: {name}, длительность {sampled['duration_seconds']} с. Кадры передаются по порядку с временными метками."})
+                root = ATTACHMENT_ROOT.resolve()
+                for index, frame in enumerate(sampled.get("frames", []), 1):
+                    frame_path = Path(frame["path"]).resolve(strict=True)
+                    if frame_path == root or root not in frame_path.parents:
+                        raise ValueError("Извлечённый кадр видео находится вне каталога вложений")
+                    add_image(str(frame_path), f"Кадр {index}, {frame['timestamp_seconds']:.2f} с")
+                audio = extract_video_audio(path, max_seconds=30.0)
+                if audio:
+                    audio_path = Path(audio["path"]).resolve(strict=True)
+                    if audio_path == root or root not in audio_path.parents:
+                        raise ValueError("Извлечённая звуковая дорожка находится вне каталога вложений")
+                    encoded = base64.b64encode(read_managed(audio_path)).decode("ascii")
+                    parts.append({"type": "text", "text": "Звуковая дорожка видео (первые 30 секунд):"})
+                    parts.append({"type": "input_audio", "input_audio": {"data": encoded, "format": "wav"}})
+        return parts
+
+    @staticmethod
     def _safe_messages(messages: list[dict], model: str) -> list[dict]:
         from .core import _sanitize_messages_for_ollama, _prepare_messages_for_next_model_turn
         sanitized = _prepare_messages_for_next_model_turn(
@@ -140,10 +211,6 @@ class LlamaCppClient:
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False, default=str)
             if role == "system":
-                # llama.cpp chat templates commonly accept a single system
-                # message, and some (including the Bonsai template) require it
-                # to be the first message. Keep every instruction, but combine
-                # them into one provider-compatible system message.
                 if content:
                     system_parts.append(content)
                 continue
@@ -153,9 +220,6 @@ class LlamaCppClient:
                 if not call_id and pending_call_ids:
                     call_id = pending_call_ids.pop(0)
                 if not call_id:
-                    # Older checkpoints may not have a provider call id. Such
-                    # receipts are retained as user-visible context, not invalid
-                    # OpenAI tool messages.
                     item = {"role": "user", "content": "[Предыдущий результат инструмента]\n" + content}
                 else:
                     item["tool_call_id"] = call_id
@@ -174,32 +238,18 @@ class LlamaCppClient:
                 if calls:
                     item["tool_calls"] = calls
                     pending_call_ids.extend(str(call["id"]) for call in calls if call.get("id"))
-            # The active Bonsai server currently advertises text-only input.
-            # Never send Ollama's non-standard images[] field or silently claim
-            # that image/audio/video bytes were analysed.
             attachments = source.get("attachments")
-            if isinstance(attachments, list) and attachments:
-                names = [str(x.get("name") or x.get("kind") or "media")
-                         for x in attachments if isinstance(x, dict)]
-                warning = (
-                    "[Медиа не переданы модели: текущий llama.cpp endpoint объявляет text-only input. "
-                    "Файлы: " + ", ".join(names) + ".] "
-                    "Продолжай выполнение исходного запроса пользователя."
-                )
-                if "Media extracted from " in item["content"] and "has been supplied" in item["content"]:
-                    item["content"] = warning
-                else:
-                    item["content"] = item["content"].rstrip() + "\n\n" + warning
+            if role == "user" and isinstance(attachments, list) and attachments:
+                item["content"] = LlamaCppClient._media_parts(attachments, content)
                 if output and output[-1].get("role") == "tool":
                     try:
                         prior_receipt = json.loads(output[-1].get("content", ""))
                     except (TypeError, json.JSONDecodeError):
                         prior_receipt = None
                     if isinstance(prior_receipt, dict) and isinstance(prior_receipt.get("result"), dict):
-                        prior_result = prior_receipt["result"]
-                        prior_result["visual_media_delivery"] = "not_attached_llama_cpp_text_mode"
-                        prior_note = str(prior_result.get("note") or "").strip()
-                        prior_result["note"] = (prior_note + " Визуальные вложения не передавались модели; был передан только извлечённый текст.").strip()
+                        prior_receipt["result"]["visual_media_delivery"] = "attached_to_llama_cpp_multimodal_request"
+                        note = str(prior_receipt["result"].get("note") or "").strip()
+                        prior_receipt["result"]["note"] = (note + " Визуальные вложения передаются следующему запросу через мультимодальный API llama.cpp.").strip()
                         output[-1]["content"] = json.dumps(prior_receipt, ensure_ascii=False, default=str)
             if role == "tool" and source.get("tool_name") == "load_file_for_model":
                 try:
@@ -209,17 +259,28 @@ class LlamaCppClient:
                 if isinstance(receipt, dict) and isinstance(receipt.get("result"), dict):
                     result = receipt["result"]
                     if result.get("kind") in {"image", "audio", "video"}:
-                        kind = result["kind"]
-                        result["delivery"] = "not_attached_llama_cpp_text_mode"
-                        if kind == "video":
-                            result["audio_track_handling"] = "not_attached"
-                        note = "Текущий llama.cpp сервер объявляет text-only input; медиа-байты не передавались модели."
-                        result["note"] = (str(result.get("note") or "").strip() + " " + note).strip()
+                        result["delivery"] = "attached_to_llama_cpp_multimodal_request"
+                        result["note"] = "Медиафайл будет передан в мультимодальном запросе следующего хода."
                         item["content"] = json.dumps(receipt, ensure_ascii=False, default=str)
             output.append(item)
         if system_parts:
             output.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
         return output
+
+    @staticmethod
+    def _trace_safe_messages(messages: list[dict]) -> list[dict]:
+        safe = []
+        for message in messages:
+            item = dict(message)
+            content = item.get("content")
+            if isinstance(content, list):
+                item["content"] = [
+                    ({"type": part.get("type"), "text": part.get("text", "[media payload omitted]")}
+                     if part.get("type") == "text" else {"type": part.get("type"), "payload": "[omitted]"})
+                    for part in content if isinstance(part, dict)
+                ]
+            safe.append(item)
+        return safe
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              reasoning: bool = True, model: str | None = None) -> dict:
@@ -233,7 +294,8 @@ class LlamaCppClient:
                 "model": selected,
                 "messages": model_messages,
                 "stream": True,
-                            }
+                "stream_options": {"include_usage": True},
+            }
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
@@ -241,12 +303,17 @@ class LlamaCppClient:
             task_id = _current_task_id()
             from .core import _CURRENT_MODEL_CONTEXT
             context_limit = _CURRENT_MODEL_CONTEXT.get() or settings.llama_cpp_context
+            from .core import estimate_tokens
+            try:
+                estimated_prompt_tokens = int(estimate_tokens(model_messages, model=selected))
+            except Exception:
+                estimated_prompt_tokens = 0
             db.record_debug_trace(task_id, "llm_request", {
                 "model": selected,
                 "reasoning_requested": bool(reasoning),
                 "model_profile": self.model_profile(selected),
                 "generation_parameters": {"stream": True, "request_options_sent": False},
-                "messages": model_messages,
+                "messages": self._trace_safe_messages(model_messages),
                 "tools": tools or [],
                 "context_estimate": context_limit,
                 "provider": "llama_cpp",
@@ -262,7 +329,10 @@ class LlamaCppClient:
             stream_done = False
             self.last_generation_stats = {
                 "active": True, "tokens_per_second": 0.0, "estimated": True,
-                "eval_count": 0, "model": selected, "started_at": time.time(),
+                "eval_count": 0, "prompt_eval_count": 0,
+                "current_prompt_tokens": estimated_prompt_tokens,
+                "context_used_tokens": estimated_prompt_tokens, "num_ctx": int(context_limit),
+                "model": selected, "started_at": time.time(),
                 "request_id": request_id,
             }
             try:
@@ -286,6 +356,11 @@ class LlamaCppClient:
                         raise RuntimeError(f"llama.cpp stream error: {str(chunk['error'])[:1500]}")
                     if isinstance(chunk.get("usage"), dict):
                         usage.update(chunk["usage"])
+                        prompt_now = int(usage.get("prompt_tokens") or 0)
+                        self.last_generation_stats.update({
+                            "prompt_eval_count": prompt_now,
+                            "current_prompt_tokens": prompt_now,
+                        })
                     choices = chunk.get("choices") or []
                     if not choices:
                         continue
@@ -302,6 +377,8 @@ class LlamaCppClient:
                         "active": True, "estimated": True,
                         "tokens_per_second": round((generated_chars / 4) / elapsed_now, 1),
                         "generated_chars": generated_chars,
+                        "current_prompt_tokens": int(usage.get("prompt_tokens") or estimated_prompt_tokens),
+                        "context_used_tokens": int(usage.get("prompt_tokens") or estimated_prompt_tokens),
                         "elapsed_seconds": round(elapsed_now, 1),
                     })
                     for part in delta.get("tool_calls") or []:
@@ -339,13 +416,16 @@ class LlamaCppClient:
                     message["tool_calls"] = normalized
                 elapsed = max(0.001, time.monotonic() - started)
                 completion_tokens = int(usage.get("completion_tokens") or max(0, len(message["content"]) // 4))
-                prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                prompt_tokens = int(usage.get("prompt_tokens") or estimated_prompt_tokens)
                 self.last_generation_stats = {
                     "active": False, "model": selected, "request_id": request_id,
                     "eval_count": completion_tokens, "prompt_eval_count": prompt_tokens,
                     "tokens_per_second": round(completion_tokens / elapsed, 2) if completion_tokens else None,
                     "elapsed_seconds": round(elapsed, 2), "usage": usage,
-                    "num_ctx": int(settings.llama_cpp_context), "num_predict": None,
+                    "num_ctx": int(context_limit), "num_predict": None,
+                    "current_prompt_tokens": prompt_tokens,
+                    "context_used_tokens": prompt_tokens,
+                    "prompt_tokens_per_second": None,
                 }
                 result = {
                     "model": selected, "message": message,

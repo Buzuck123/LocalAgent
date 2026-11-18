@@ -32,17 +32,31 @@ def test_openai_tool_receipt_is_paired_with_call_id():
     }
 
 
-def test_text_only_media_is_never_silently_claimed_as_attached():
+def test_image_attachment_uses_openai_multimodal_content_parts(tmp_path):
+    from PIL import Image
+    image_path = tmp_path / "diagram.png"
+    Image.new("RGB", (16, 12), "white").save(image_path)
     messages = [{
-        "role": "user",
-        "content": "Inspect this image",
-        "attachments": [{"kind": "image", "name": "diagram.png"}],
+        "role": "user", "content": "Inspect this image",
+        "attachments": [{"kind": "image", "name": "diagram.png", "path": str(image_path)}],
     }]
-    result = LlamaCppClient._safe_messages(messages, "bonsai")
-    assert "Медиа не переданы модели" in result[0]["content"]
-    assert "diagram.png" in result[0]["content"]
-    assert "Inspect this image" in result[0]["content"]
-    assert "images" not in result[0]
+    result = LlamaCppClient._safe_messages(messages, "gemma4-12b")
+    parts = result[0]["content"]
+    assert parts[0] == {"type": "text", "text": "Inspect this image"}
+    assert parts[1]["type"] == "text"
+    assert parts[2]["type"] == "image_url"
+    assert parts[2]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_trace_redacts_multimodal_payloads():
+    result = LlamaCppClient._trace_safe_messages([{
+        "role": "user", "content": [
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRET"}},
+        ],
+    }])
+    assert result[0]["content"][0]["text"] == "look"
+    assert result[0]["content"][1] == {"type": "image_url", "payload": "[omitted]"}
 
 
 def test_streaming_openai_tool_call_is_normalized(monkeypatch):
@@ -97,10 +111,13 @@ def test_streaming_openai_tool_call_is_normalized(monkeypatch):
     assert result["eval_count"] == 8
     assert response.closed is True
     assert opener.request.full_url.endswith("/chat/completions")
+    sent_payload = json.loads(opener.request.data.decode("utf-8"))
+    assert sent_payload["stream_options"] == {"include_usage": True}
+    assert client.last_generation_stats["current_prompt_tokens"] == 120
 
 
 
-def test_document_visuals_are_not_claimed_as_delivered():
+def test_document_visuals_are_marked_for_multimodal_delivery(tmp_path):
     receipt = {
         "ok": True,
         "result": {
@@ -109,6 +126,9 @@ def test_document_visuals_are_not_claimed_as_delivered():
             "note": "Document has rendered visual pages.",
         },
     }
+    from PIL import Image
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (10, 10), "white").save(image_path)
     messages = [
         {
             "role": "assistant",
@@ -128,15 +148,15 @@ def test_document_visuals_are_not_claimed_as_delivered():
         {
             "role": "user",
             "content": "Media extracted from report.pdf has been supplied alongside the tool result.",
-            "attachments": [{"kind": "image", "name": "report-page-1.png"}],
+            "attachments": [{"kind": "image", "name": "report-page-1.png", "path": str(image_path)}],
         },
     ]
     result = LlamaCppClient._safe_messages(messages, "bonsai")
     prior = json.loads(result[1]["content"])
-    assert prior["result"]["visual_media_delivery"] == "not_attached_llama_cpp_text_mode"
-    assert "только извлечённый текст" in prior["result"]["note"]
-    assert "Медиа не переданы модели" in result[2]["content"]
-    assert "has been supplied" not in result[2]["content"]
+    assert prior["result"]["visual_media_delivery"] == "attached_to_llama_cpp_multimodal_request"
+    assert "мультимодальный API llama.cpp" in prior["result"]["note"]
+    assert result[2]["content"][0]["text"].startswith("Media extracted")
+    assert result[2]["content"][-1]["type"] == "image_url"
 
 
 def test_multiple_system_messages_are_merged_at_the_beginning():
@@ -161,3 +181,32 @@ def test_multiple_system_messages_are_merged_at_the_beginning():
     assert [item["role"] for item in result[1:]] == [
         "user", "assistant", "user"
     ]
+
+
+def test_router_model_list_and_selection_use_server_ids(monkeypatch):
+    client = LlamaCppClient()
+    monkeypatch.setattr(client, "_json_request", lambda path: {
+        "data": [
+            {"id": "gemma4-12b", "context_length": 65536},
+            {"id": "qwen35-9b", "context_length": 65536},
+        ]
+    })
+    models = client.models()
+    assert [item["name"] for item in models["models"]] == ["gemma4-12b", "qwen35-9b"]
+    assert models["selected_model"] in {"gemma4-12b", "qwen35-9b"}
+    profile = client.model_profile("gemma4-12b")
+    assert profile["num_ctx"] == 65536
+    assert client.select_model("qwen35-9b")["selected_model"] == "qwen35-9b"
+
+
+def test_audio_attachment_uses_openai_input_audio_shape(tmp_path):
+    audio_path = tmp_path / "speech.wav"
+    audio_path.write_bytes(b"RIFF" + b"\x00" * 40)
+    messages = [{
+        "role": "user", "content": "Transcribe this",
+        "attachments": [{"kind": "audio", "name": "speech.wav", "path": str(audio_path)}],
+    }]
+    result = LlamaCppClient._safe_messages(messages, "gemma4-12b")
+    audio_part = next(part for part in result[0]["content"] if part["type"] == "input_audio")
+    assert audio_part["input_audio"]["format"] == "wav"
+    assert audio_part["input_audio"]["data"]

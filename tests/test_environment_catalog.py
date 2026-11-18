@@ -25,6 +25,6 @@ def test_shared_manifest_contains_runtime_checks():
     manifest = json.loads(
         (Path(__file__).resolve().parents[1] / "container" / "capabilities.json").read_text(encoding="utf-8")
     )
-    assert manifest["version"] == 1
+    assert manifest["version"] == 2
     assert any(item["name"] == "Веб-поиск" and "web-search" in item["checks"]["commands"] for item in manifest["capabilities"])
     assert any(item["name"] == "Браузер" and "playwright" in item["checks"]["python_imports"] for item in manifest["capabilities"])

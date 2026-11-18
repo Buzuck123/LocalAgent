@@ -12,7 +12,7 @@ def test_ask_model_uses_clean_context_fixed_model_and_no_tools(monkeypatch):
 
     auxiliary_client = object()
     monkeypatch.setattr(core, "client", object())
-    monkeypatch.setattr(core, "ollama_aux_client", auxiliary_client)
+    monkeypatch.setattr(core, "llama_cpp_aux_client", auxiliary_client)
     monkeypatch.setattr(core, "_client_chat", fake_chat)
     result = core._ask_model_tool(
         {"prompt": "Analyze this independently"},
@@ -27,7 +27,7 @@ def test_ask_model_uses_clean_context_fixed_model_and_no_tools(monkeypatch):
     assert len(calls) == 1
     messages, tool_schemas, reasoning, model, target_client = calls[0]
     assert tool_schemas is None
-    assert model == "gemma4:12b-64k-32k-42gpu"
+    assert model == "gemma4-12b"
     assert target_client is auxiliary_client
     assert reasoning is True
     assert len(messages) == 2
@@ -63,7 +63,7 @@ def test_ask_model_attaches_supported_container_text_file(monkeypatch):
 
     auxiliary_client = object()
     monkeypatch.setattr(core, "client", object())
-    monkeypatch.setattr(core, "ollama_aux_client", auxiliary_client)
+    monkeypatch.setattr(core, "llama_cpp_aux_client", auxiliary_client)
     monkeypatch.setattr(tools, "load_file_for_model", fake_load)
     monkeypatch.setattr(core, "_client_chat", fake_chat)
     result = core._ask_model_tool(
@@ -96,6 +96,7 @@ def test_ask_model_rejects_unsupported_file_type_before_download(monkeypatch):
 
 
 def test_ask_model_reports_gemma_context_overflow(monkeypatch):
+    monkeypatch.setattr(core, "client", object())
     def overflow(*args, **kwargs):
         raise RuntimeError("prompt exceeds context length")
 
@@ -156,4 +157,40 @@ def test_ask_model_rejects_input_above_shared_32k_budget(monkeypatch):
     )
     assert result["ok"] is False
     assert result["input_budget_tokens"] == 32000
+    assert not called
+
+
+def test_ask_model_unloads_primary_ollama_before_calling_llama_cpp(monkeypatch):
+    events = []
+    primary = core.OllamaClient()
+    monkeypatch.setattr(primary, "unload", lambda model=None: events.append(("unload", model)) or {"unloaded": True})
+    auxiliary = object()
+    monkeypatch.setattr(core, "client", primary)
+    monkeypatch.setattr(core, "llama_cpp_aux_client", auxiliary)
+
+    def fake_chat(messages, tools=None, reasoning=True, model=None, target_client=None):
+        events.append(("chat", model, target_client))
+        return {"model": model, "message": {"content": "Gemma answer"}}
+
+    monkeypatch.setattr(core, "_client_chat", fake_chat)
+    result = core._ask_model_tool(
+        {"prompt": "Analyze"}, conversation_id="conversation-unload",
+        context_messages=[], main_model="qwen35-9b", context_limit=65536,
+    )
+    assert result["answer"] == "Gemma answer"
+    assert events[0] == ("unload", "qwen35-9b")
+    assert events[1] == ("chat", "gemma4-12b", auxiliary)
+
+
+def test_ask_model_does_not_start_gemma_if_ollama_unload_fails(monkeypatch):
+    primary = core.OllamaClient()
+    monkeypatch.setattr(primary, "unload", lambda model=None: (_ for _ in ()).throw(RuntimeError("unload failed")))
+    monkeypatch.setattr(core, "client", primary)
+    called = []
+    monkeypatch.setattr(core, "_client_chat", lambda *args, **kwargs: called.append(True))
+    with pytest.raises(RuntimeError, match="unload failed"):
+        core._ask_model_tool(
+            {"prompt": "Analyze"}, conversation_id="conversation-unload-failed",
+            context_messages=[], main_model="qwen35-9b", context_limit=65536,
+        )
     assert not called

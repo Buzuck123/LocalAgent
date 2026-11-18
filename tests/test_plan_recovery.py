@@ -120,7 +120,7 @@ def test_resume_continues_from_saved_in_progress_step(tmp_path, monkeypatch):
             if self.calls == 1:
                 names = {item["function"]["name"] for item in (tools or [])}
                 assert "terminal" in names
-                assert "web_search" in names
+                assert "web_search" not in names  # search is handled inside terminal
                 return {
                     "message": {
                         "role": "assistant",

@@ -240,3 +240,19 @@ def test_failed_ollama_recovery_check_blocks_the_next_generation(monkeypatch):
         client.chat([{"role": "user", "content": "retry"}])
     assert generation_calls == []
     assert client._recovery_state is not None
+
+
+def test_unload_waits_for_model_to_disappear_from_running_processes(monkeypatch):
+    from agent.core import OllamaClient
+    client = OllamaClient()
+    monkeypatch.setattr("agent.core.db.get_app_setting", lambda *args: "qwen35-9b")
+    posts = []
+    monkeypatch.setattr(client, "_post", lambda endpoint, payload, timeout=None: posts.append((endpoint, payload)) or {"done": True})
+    states = iter([{"models": [{"name": "qwen35-9b"}]}, {"models": []}])
+    monkeypatch.setattr(client, "status", lambda: next(states))
+    monkeypatch.setattr("agent.core.time.sleep", lambda seconds: None)
+    result = client.unload()
+    assert posts[0][0] == "/api/generate"
+    assert posts[0][1]["keep_alive"] == 0
+    assert result["unloaded"] is True
+    assert result["model"] == "qwen35-9b"

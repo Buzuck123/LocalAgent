@@ -129,14 +129,15 @@ def test_excel_strategy_remains_in_planner_and_step_prompts():
 
 def test_resume_refreshes_old_agent_system_prompt_only():
     from agent.core import SYSTEM_PROMPT, _refresh_saved_system_prompt
+    from agent.context import CONTEXT_SUMMARY_MARKER
     messages = [
         {"role": "system", "content": "Ты — локальный ИИ-агент пользователя. Старые правила."},
-        {"role": "system", "content": "Контекстная сводка: оставить как есть"},
+        {"role": "system", "content": CONTEXT_SUMMARY_MARKER + "\nКонтекстная сводка: оставить как есть"},
         {"role": "user", "content": "Продолжи задачу"},
     ]
     result = _refresh_saved_system_prompt(messages)
     assert result[0]["content"] == SYSTEM_PROMPT
-    assert result[1]["content"] == "Контекстная сводка: оставить как есть"
+    assert result[1]["content"] == CONTEXT_SUMMARY_MARKER + "\nКонтекстная сводка: оставить как есть"
     assert result[2]["content"] == "Продолжи задачу"
 
 

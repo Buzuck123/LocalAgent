@@ -571,7 +571,9 @@ def _refresh_saved_system_prompt(messages):
         if isinstance(content, str) and content.startswith(preserved_markers):
             refreshed.append(item)
             continue
-        is_base_prompt = isinstance(content, str) and content.startswith("You are LocalAgent")
+        is_base_prompt = isinstance(content, str) and content.startswith((
+            "You are LocalAgent", "Ты — локальный ИИ-агент пользователя."
+        ))
         if is_base_prompt and not base_prompt_seen:
             item["content"] = SYSTEM_PROMPT
             refreshed.append(item)
@@ -1355,7 +1357,7 @@ def _client_chat(messages, tools=None, reasoning=True, model=None, target_client
     return response
 
 
-ASK_MODEL_NAME = "gemma4:12b-64k-32k-42gpu"
+ASK_MODEL_NAME = getattr(settings, "llama_cpp_aux_model", "gemma4-12b")
 
 
 def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model, context_limit):
@@ -1527,10 +1529,18 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
             "file": file_info,
         }
 
+    # Gemma 4 is served by the dedicated llama.cpp Router, independent of the
+    # primary provider. Ollama must release its loaded model first: both
+    # backends may otherwise compete for the same GPU memory. The unload call
+    # is synchronous and verifies /api/ps before the auxiliary request starts.
     try:
+        main_client = _task_client()
+        if isinstance(main_client, OllamaClient):
+            main_client.unload(model=main_model)
+        auxiliary_client = llama_cpp_aux_client
         response = _client_chat(
             isolated_messages, tools=None, reasoning=True, model=auxiliary_model,
-            target_client=ollama_aux_client,
+            target_client=auxiliary_client,
         )
     except Exception as exc:
         if _is_context_overflow_error(exc):
@@ -3299,9 +3309,17 @@ class OllamaClient:
             raise RuntimeError("Ollama returned an unexpected response without a message")
         return response
 
-    def unload(self) -> dict:
+    def unload(self, model: str | None = None) -> dict:
         # Ollama unloads a model by issuing an empty request with keep_alive=0.
-        return self._post("/api/generate", {"model": db.get_app_setting("selected_ollama_model", self.model), "keep_alive": 0, "prompt": ""}, timeout=60)
+        model = model or db.get_app_setting("selected_ollama_model", self.model)
+        result = self._post("/api/generate", {"model": model, "keep_alive": 0, "prompt": ""}, timeout=60)
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            running = self.status().get("models", [])
+            if not any(isinstance(item, dict) and item.get("name") == model for item in running):
+                return {**(result if isinstance(result, dict) else {}), "unloaded": True, "model": model}
+            time.sleep(0.25)
+        raise RuntimeError(f"Ollama не подтвердил выгрузку модели {model!r} за 15 секунд")
 
     def models(self) -> dict:
         with self._request_lock:
@@ -3381,9 +3399,13 @@ client = _new_provider_client(active_llm_provider)
 # Keep provider instances available so paused tasks can resume on their original
 # backend after the UI's active provider has changed.
 _provider_clients = {active_llm_provider: client}
-# ask_model is deliberately pinned to a separate Ollama client and fixed Gemma model.
+# ask_model is deliberately pinned to Gemma 4 on the dedicated llama.cpp
+# Router, regardless of the primary provider.
 ollama_aux_client = client if active_llm_provider == "ollama" else OllamaClient()
 _provider_clients.setdefault("ollama", ollama_aux_client)
+from .llama_cpp import LlamaCppClient as _LlamaCppClient
+llama_cpp_aux_client = client if isinstance(client, _LlamaCppClient) else _LlamaCppClient()
+_provider_clients.setdefault("llama_cpp", llama_cpp_aux_client)
 
 
 def _provider_client(provider):
@@ -3600,7 +3622,11 @@ class Agent:
         try:
             selected_profile = task_client.model_profile(selected_model)
         except Exception:
-            selected_profile = {"num_ctx": settings.llama_cpp_context if task_provider == "llama_cpp" else settings.num_ctx, "num_predict": None}
+            selected_profile = {
+                "num_ctx": getattr(settings, "llama_cpp_context", 32768) if task_provider == "llama_cpp"
+                else getattr(settings, "num_ctx", 65536),
+                "num_predict": None,
+            }
         initial_checkpoint = {
             "version": 4,
             "mode": "unified",
@@ -3746,7 +3772,9 @@ class Agent:
             # Provider and model are a durable pair. Legacy checkpoints predate
             # provider pinning; bind them to the currently selected backend once.
             task_provider = str(cp.get("provider") or active_llm_provider).strip().lower()
-            task_client = _provider_client(task_provider)
+            # The active provider client is the authoritative live instance.
+            # Cached instances are only needed for tasks pinned to another provider.
+            task_client = client if task_provider == active_llm_provider else _provider_client(task_provider)
             task_client_token = _CURRENT_TASK_CLIENT.set(task_client)
             if not cp.get("provider"):
                 cp["provider"] = task_provider

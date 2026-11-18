@@ -19,6 +19,7 @@ class Settings:
     ollama_url: str = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
     llama_cpp_url: str = os.getenv("LLAMA_CPP_URL", "http://127.0.0.1:8081/v1")
     llama_cpp_model: str = os.getenv("LLAMA_CPP_MODEL", "/home/buzuck/AI/Bonsai2/models/27B/Ternary-Bonsai-2-27B-PTQ1_0.gguf")
+    llama_cpp_aux_model: str = os.getenv("LLAMA_CPP_AUX_MODEL", "gemma4-12b")
     llama_cpp_context: int = int(os.getenv("LLAMA_CPP_CONTEXT", "32768"))
     llama_cpp_timeout: int = int(os.getenv("LLAMA_CPP_TIMEOUT", "600"))
     model: str = os.getenv("OLLAMA_MODEL", "ornith-1.5:9b")
