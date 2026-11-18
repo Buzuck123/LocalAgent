@@ -3847,10 +3847,19 @@ class Agent:
         def save_checkpoint(saved_state):
             if isinstance(saved_state.get("messages"), list):
                 ensure_event_ids(saved_state["messages"])
-            db.record_debug_trace(task_id, "controller_checkpoint", {
-                "phase": saved_state.get("phase"), "execution_mode": saved_state.get("execution_mode"),
-                "plan": saved_state.get("plan"), "activity": saved_state.get("activity"),
-            })
+            # Debug tracing is best-effort: a diagnostics database/settings
+            # failure must never prevent the durable task checkpoint from being saved.
+            try:
+                db.record_debug_trace(task_id, "controller_checkpoint", {
+                    "phase": saved_state.get("phase"), "execution_mode": saved_state.get("execution_mode"),
+                    "plan": saved_state.get("plan"), "activity": saved_state.get("activity"),
+                })
+            except Exception:
+                logger.debug(
+                    "Could not record controller checkpoint trace for task %s",
+                    task_id,
+                    exc_info=True,
+                )
             saved_state["mode"] = "unified"
             saved_state["version"] = max(4, int(saved_state.get("version", 0) or 0))
             saved_state.setdefault("reasoning", checkpoint.get("reasoning", True))
