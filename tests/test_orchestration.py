@@ -256,3 +256,21 @@ def test_ask_model_transient_retry_budget_cannot_be_bypassed_by_prompt_change():
     )
     assert blocked is not None
     assert blocked["category"] == "transient_service_retry_exhausted"
+
+
+def test_ask_model_success_with_same_file_content_resolves_prior_file_failure():
+    history = [{
+        "tool_name": "ask_model", "status": "failed",
+        "call_fingerprint": 'ask_model|{"file":"/work/source.pdf","prompt":"Summarize"}',
+        "arguments": {"file": "/work/source.pdf", "prompt": "Summarize"},
+        "file_error": True, "file_snapshot": "a" * 64,
+        "error": "ValueError: unsupported document format",
+    }, {
+        "tool_name": "ask_model", "status": "success",
+        "arguments": {"file": "/work/source.pdf", "prompt": "Describe"},
+        "file_snapshot": "a" * 64,
+    }]
+    assert should_block_repeated_call(
+        "ask_model", {"file": "/work/source.pdf", "prompt": "Summarize"},
+        history, current_file_snapshot="a" * 64,
+    ) is None
