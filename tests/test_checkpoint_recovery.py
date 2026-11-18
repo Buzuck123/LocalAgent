@@ -157,6 +157,12 @@ def test_pending_tool_resumes_and_continues(monkeypatch):
 
     monkeypatch.setattr(core, "client", FakeClient())
     monkeypatch.setattr(core, "settings", SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False))
+    # Diagnostics are optional and must not block checkpoint recovery.
+    monkeypatch.setattr(
+        core.db,
+        "record_debug_trace",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("debug trace unavailable")),
+    )
 
     agent = make_agent()
     agent._run_task(task["id"], core.TaskControl())
