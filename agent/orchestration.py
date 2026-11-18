@@ -147,15 +147,17 @@ def classify_failure(tool_name: str, arguments: dict, error_text: str) -> dict:
         category, action = "environment_dependency", "check_available_runtime"
     elif nonzero_exit or any(x in low for x in ("assertionerror", "assertion failed", "verification failed", "exit_code=1", '"exit_code": 1')):
         category, action = "verification_failure", "inspect_evidence_and_fix_cause"
-    elif any(x in low for x in ("connectionerror", "connection refused", "temporarily unavailable", "503", "429")):
+    elif any(x in low for x in ("connectionerror", "connection refused", "temporarily unavailable", "503", "429", "bad gateway", "gateway timeout")):
         category, action = "transient_service", "bounded_retry_if_safe"
     else:
         category, action = "tool_failure", "diagnose_then_change_strategy"
 
-    effect = "read_only" if tool_name in READ_ONLY_TOOLS else ("mutating" if tool_name in MUTATING_TOOLS else "unknown")
-    # A transient error does not make a write safe to repeat: the remote/local
-    # operation may have committed before the acknowledgement was lost.
-    retry_safe = effect == "read_only"
+    if tool_name == "ask_model" and category == "timeout":
+        category, action = "transient_service", "bounded_retry_if_safe"
+    effect = ("read_only" if tool_name in READ_ONLY_TOOLS or tool_name == "ask_model"
+              else ("mutating" if tool_name in MUTATING_TOOLS else "unknown"))
+    # ask_model is non-mutating; only transient service failures get a bounded retry.
+    retry_safe = effect == "read_only" and category == "transient_service"
     if action == "inspect_state_before_retry":
         retry_safe = False
     return {
@@ -307,24 +309,68 @@ def _successful_action_repairs_failure(failure: dict, success: dict) -> bool:
     return False
 
 
-def should_block_repeated_call(tool_name: str, arguments: dict[str, Any], history: Any) -> dict[str, Any] | None:
-    """Block an exact repeat unless a later successful action repaired its cause.
+def should_block_repeated_call(tool_name: str, arguments: dict[str, Any], history: Any,
+                               *, current_file_snapshot: str | None = None) -> dict[str, Any] | None:
+    """Block repeats unless the failed cause has changed or a bounded retry is safe.
 
-    An unrelated success never clears a failure. A narrowly matched terminal
-    state change can clear a missing-file error before model inspection is retried.
+    ask_model file-processing failures are compared by content hash, not path alone.
     """
     if not isinstance(history, list):
         return None
     fingerprint = tool_call_fingerprint(tool_name, arguments)
-    matching_indexes = [index for index, item in enumerate(history)
-                        if isinstance(item, dict) and item.get("call_fingerprint") == fingerprint
-                        and item.get("status") != "success"]
+    matching_indexes = [
+        index for index, item in enumerate(history)
+        if isinstance(item, dict) and item.get("call_fingerprint") == fingerprint
+        and item.get("status") != "success"
+    ]
+    previous = history[matching_indexes[-1]] if matching_indexes else None
+    last_failure_index = matching_indexes[-1] if matching_indexes else -1
+
+    # Permit one retry after a transient ask_model service failure.
+    if tool_name == "ask_model" and previous:
+        recovery = previous.get("recovery") if isinstance(previous.get("recovery"), dict) else {}
+        if recovery.get("category") == "transient_service" and len(matching_indexes) == 1:
+            return None
+
+    # A file-specific error cannot be cleared by changing only the prompt or path.
+    file_content_changed = False
+    if tool_name == "ask_model" and isinstance(arguments, dict):
+        file_failures = [
+            item for item in history
+            if isinstance(item, dict) and item.get("status") != "success"
+            and item.get("tool_name") == "ask_model" and item.get("file_error") is True
+        ]
+        if file_failures:
+            prior = file_failures[-1]
+            old_hash = prior.get("file_snapshot")
+            if current_file_snapshot and old_hash and current_file_snapshot != old_hash:
+                file_content_changed = True
+            elif old_hash is None and current_file_snapshot:
+                file_content_changed = True
+            else:
+                return {
+                    "blocked": True,
+                    "category": "repeated_failed_call",
+                    "recovery_action": "prepare_or_change_file_content",
+                    "retry_safe_without_state_check": False,
+                    "same_call_should_repeat": False,
+                    "repeat_count": len(file_failures) + 1,
+                    "previous_error": str(prior.get("error", ""))[:500],
+                    "message": (
+                        "ask_model уже завершился ошибкой для файла с тем же или неподтверждённым содержимым. "
+                        "Измени содержимое и проверь файл: новый путь или другой prompt "
+                        "сами по себе не подтверждают исправление."
+                    ),
+                }
+
+    if file_content_changed:
+        return None
     if not matching_indexes:
         return None
-    last_failure_index = matching_indexes[-1]
-    previous = history[last_failure_index]
-    later_successes = [item for item in history[last_failure_index + 1:]
-                       if isinstance(item, dict) and item.get("status") == "success"]
+    later_successes = [
+        item for item in history[last_failure_index + 1:]
+        if isinstance(item, dict) and item.get("status") == "success"
+    ]
     if any(item.get("call_fingerprint") == fingerprint for item in later_successes):
         return None
     if any(_successful_action_repairs_failure(previous, item) for item in later_successes):
@@ -342,6 +388,7 @@ def should_block_repeated_call(tool_name: str, arguments: dict[str, Any], histor
             "сначала проверь состояние/результат предыдущей операции или измени аргументы и стратегию."
         ),
     }
+
 
 def append_execution_event(checkpoint: dict, event_type: str, *, tool_name: str | None = None,
                            detail: str = "", status: str | None = None) -> dict:
