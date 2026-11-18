@@ -368,11 +368,20 @@ def should_block_repeated_call(tool_name: str, arguments: dict[str, Any], histor
     # A file-specific error cannot be cleared by changing only the prompt or path.
     file_content_changed = False
     if tool_name == "ask_model" and isinstance(arguments, dict):
-        file_failures = [
-            item for item in history
-            if isinstance(item, dict) and item.get("status") != "success"
-            and item.get("tool_name") == "ask_model" and item.get("file_error") is True
-        ]
+        file_failures = []
+        for index, item in enumerate(history):
+            if not (isinstance(item, dict) and item.get("status") != "success"
+                    and item.get("tool_name") == "ask_model" and item.get("file_error") is True):
+                continue
+            old_hash = item.get("file_snapshot")
+            repaired_later = any(
+                isinstance(later, dict) and later.get("status") == "success"
+                and later.get("tool_name") == "ask_model"
+                and old_hash is not None and later.get("file_snapshot") == old_hash
+                for later in history[index + 1:]
+            )
+            if not repaired_later:
+                file_failures.append(item)
         if file_failures:
             prior = file_failures[-1]
             old_hash = prior.get("file_snapshot")
