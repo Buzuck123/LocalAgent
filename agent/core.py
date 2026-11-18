@@ -1635,7 +1635,30 @@ Rules:
 """
 
 
-def _diagnose_tool_failure(tool_name, arguments, error_text, state):
+def _snapshot_ask_model_file(conversation_id, tool_name, arguments):
+    """Return SHA-256 for an ask_model input file inside its Linux container."""
+    if tool_name != "ask_model" or not isinstance(arguments, dict):
+        return None
+    path = arguments.get("file")
+    if not isinstance(path, str) or not path.startswith("/") or "\x00" in path:
+        return None
+    try:
+        import shlex
+        from .sandbox_manager import sandbox_manager
+        result = sandbox_manager.execute(
+            conversation_id, "sha256sum -- " + shlex.quote(path),
+            timeout=10, output_limit=1000,
+        )
+        if result.get("exit_code") != 0:
+            return None
+        digest = str(result.get("stdout") or "").strip().split()[0]
+        return digest if re.fullmatch(r"[0-9a-fA-F]{64}", digest) else None
+    except Exception:
+        logger.debug("Could not snapshot ask_model input file", exc_info=True)
+        return None
+
+
+def _diagnose_tool_failure(tool_name, arguments, error_text, state, *, file_snapshot=None):
     """Classify tool failures and record identical unsuccessful attempts."""
     text = str(error_text or "")
     lowered = text.lower()
@@ -1686,6 +1709,7 @@ def _diagnose_tool_failure(tool_name, arguments, error_text, state):
         "arguments": args_text[:900],
         "category": category,
         "error": normalized_error,
+        "file_snapshot": file_snapshot,
         "attempt": prior_same + 1,
     })
     del history[:-40]
@@ -1695,6 +1719,16 @@ def _diagnose_tool_failure(tool_name, arguments, error_text, state):
     if repeated >= max(3, int(getattr(settings, "loop_warning_threshold", 3))):
         guidance += " The warning threshold has been reached: stop this approach and choose a different tool, path, or plan."
     recovery = classify_failure(tool_name, arguments if isinstance(arguments, dict) else {}, text)
+    history[-1]["recovery"] = recovery
+    history[-1]["file_error"] = bool(
+        tool_name == "ask_model" and isinstance(arguments, dict)
+        and arguments.get("file") and recovery.get("category") != "transient_service"
+        and any(token in normalized_error.lower() for token in (
+            "file", "format", "unsupported", "size", "duration", "decode", "read",
+            "not found", "permission", "ffmpeg", "convert", "attachment", "document",
+            "image", "audio", "video", "exceeds", "budget", "no such", "empty",
+        ))
+    )
     return {
         "category": category,
         "repeat_count": repeated,
@@ -4516,8 +4550,10 @@ class Agent:
                             terminal_recovery_call = _is_safe_terminal_recovery_call(
                                 name, args, cid
                             )
+                            ask_model_snapshot = _snapshot_ask_model_file(cid, name, args)
                             repeat_guard = None if terminal_recovery_call else should_block_repeated_call(
-                                name, args, state.get("tool_failure_history", [])
+                                name, args, state.get("tool_failure_history", []),
+                                current_file_snapshot=ask_model_snapshot,
                             )
                             if repeat_guard:
                                 raise ToolContractError(
@@ -4587,7 +4623,8 @@ class Agent:
                                 "exception_type": type(exc).__name__,
                             }
                             failure["agent_diagnosis"] = _diagnose_tool_failure(
-                                name, args, error_text, state
+                                name, args, error_text, state,
+                                file_snapshot=_snapshot_ask_model_file(cid, name, args),
                             )
                             content = json.dumps(failure, ensure_ascii=False)
                         else:
@@ -4616,7 +4653,8 @@ class Agent:
                                 except Exception:
                                     error_text = str(result)[:6000]
                                 result["agent_diagnosis"] = _diagnose_tool_failure(
-                                    name, args, error_text, state
+                                    name, args, error_text, state,
+                                    file_snapshot=ask_model_snapshot,
                                 )
                             # If saving the receipt fails, do not advance the
                             # checkpoint: recovery must treat the operation as
