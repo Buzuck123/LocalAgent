@@ -242,3 +242,17 @@ def test_ask_model_changed_file_content_allows_retry():
         "ask_model", {"file": "/work/source.pdf", "prompt": "Summarize"},
         history, current_file_snapshot="b" * 64,
     ) is None
+
+
+def test_ask_model_transient_retry_budget_cannot_be_bypassed_by_prompt_change():
+    failure = {
+        "tool_name": "ask_model", "status": "failed",
+        "recovery": {"category": "transient_service"},
+        "error": "ConnectionError: service unavailable",
+    }
+    blocked = should_block_repeated_call(
+        "ask_model", {"prompt": "A different prompt"},
+        [dict(failure), dict(failure)],
+    )
+    assert blocked is not None
+    assert blocked["category"] == "transient_service_retry_exhausted"
