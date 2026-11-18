@@ -343,7 +343,11 @@ def should_block_repeated_call(tool_name: str, arguments: dict[str, Any], histor
             and isinstance(item.get("recovery"), dict)
             and item["recovery"].get("category") == "transient_service"
         ]
-        if len(transient_failures) == 1:
+        unresolved_file_failure = any(
+            index > last_success and item.get("file_error") is True
+            for index, item in ask_model_events
+        )
+        if len(transient_failures) == 1 and not unresolved_file_failure:
             return None
         if len(transient_failures) >= 2:
             return {
