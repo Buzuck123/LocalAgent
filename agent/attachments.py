@@ -573,7 +573,7 @@ def model_message_content(content: str, attachments: list[dict[str, Any]] | None
         host_path = attachment.get("host_workspace_path")
         path_line = f"\nОригинал файла сохранён в контейнере: {host_path}" if host_path else ""
         metadata_line = attachment_metadata_summary(attachment.get("metadata"))
-        metadata_line = f"\\nMetadata: {metadata_line}" if metadata_line else ""
+        metadata_line = f"\nMetadata: {metadata_line}" if metadata_line else ""
         if attachment.get("kind") == "document":
             parts.append(f"\n\n--- Вложенный документ: {attachment.get('name','document')}{path_line}{metadata_line} ---\n{attachment.get('extracted_text','')}")
         elif attachment.get("kind") == "video":
