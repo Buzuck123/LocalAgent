@@ -271,8 +271,8 @@ def test_swerex_adapter_uses_main_session_and_preserves_nonzero_exit(monkeypatch
 
 def test_project_version_and_swerex_pin_are_consistent():
     root = Path(__file__).resolve().parents[1]
-    assert (root / "VERSION").read_text().strip() == "0.7.2"
-    assert 'VERSION = "0.7.2"' in (root / "agent" / "version.py").read_text()
+    assert (root / "VERSION").read_text().strip() == "0.8.0"
+    assert 'VERSION = "0.8.0"' in (root / "agent" / "version.py").read_text()
     assert "swe-rex==1.4.0" in (root / "requirements.txt").read_text()
     assert "swe-rex==1.4.0" in (root / "container" / "requirements.txt").read_text()
 

@@ -1,10 +1,10 @@
 # LocalAgent
 
-### Version 0.7.2
+### Version 0.8.0
 
-Версия: 0.7.2
+Версия: 0.8.0
 
-LocalAgent is a local AI agent built around Ollama, a persistent conversation planner, and a conversation-scoped Linux execution environment.
+LocalAgent is a local AI agent with switchable Ollama and llama.cpp providers, a persistent conversation planner, and a conversation-scoped Linux execution environment.
 
 ## What's new in 0.7.1
 
@@ -32,7 +32,7 @@ LocalAgent is a local AI agent built around Ollama, a persistent conversation pl
 ## Architecture
 
 ```text
-Ollama LLM
+Ollama / llama.cpp LLM provider
    |
    v
 LocalAgent agent loop / planner
@@ -65,7 +65,7 @@ The container is created on the first `terminal` call for a conversation. It is 
 ### Host
 
 - Ubuntu/Linux with Python 3.11+ (the project uses Python 3.12 in its supported development environment).
-- Ollama with a working model.
+- Ollama and/or an OpenAI-compatible llama.cpp Router with the configured model(s).
 - Rootless Podman configured for the LocalAgent user.
 - The existing Podman network `localagent-sandbox-internal-test`.
 - The existing image `localhost/localagent-sandbox:ubuntu24.04`.
@@ -121,7 +121,7 @@ Edit `.env` for the Ollama endpoint/model if required. Sandbox defaults match th
 
 ## LLM providers
 
-The initial provider is selected by `LLM_PROVIDER` (default: `ollama`). The web interface also has a server selector for switching between Ollama and the OpenAI-compatible `llama-server` endpoint at runtime; the selected provider is persisted in application settings. Switching is rejected while tasks are queued, running, or cancelling. Paused and interrupted tasks may remain: each task pins its original provider, model, and context size in its checkpoint, and resumes on that same backend even after the active server is changed. Legacy paused/interrupted checkpoints are pinned to the currently selected provider immediately before the first switch. The model selector lists models from the active server, and Ollama/llama.cpp selections are stored independently. The separate `ask_model` tool always uses Ollama with the fixed `gemma4:12b-64k-32k-42gpu` model, regardless of the primary provider.
+The initial provider is selected by `LLM_PROVIDER` (default: `ollama`). The web interface also has a server selector for switching between Ollama and the OpenAI-compatible `llama-server` endpoint at runtime; the selected provider is persisted in application settings. Switching is rejected while tasks are queued, running, or cancelling. Paused and interrupted tasks may remain: each task pins its original provider, model, and context size in its checkpoint, and resumes on that same backend even after the active server is changed. Legacy paused/interrupted checkpoints are pinned to the currently selected provider immediately before the first switch. The model selector lists models from the active server, and Ollama/llama.cpp selections are stored independently. The separate `ask_model` tool always uses the fixed `gemma4-12b` model through the llama.cpp Router, regardless of the primary provider. When the primary task is running on Ollama, LocalAgent sends `keep_alive=0` for the task's actual model and waits until `/api/ps` confirms it is no longer resident before starting Gemma. The next primary request reloads its pinned model normally.
 
 For llama.cpp:
 
@@ -131,11 +131,12 @@ LLAMA_CPP_URL=http://127.0.0.1:8081/v1
 LLAMA_CPP_MODEL=/home/buzuck/AI/Bonsai2/models/27B/Ternary-Bonsai-2-27B-PTQ1_0.gguf
 LLAMA_CPP_CONTEXT=32768
 LLAMA_CPP_TIMEOUT=600
+LLAMA_CPP_AUX_MODEL=gemma4-12b
 ```
 
 `LLAMA_CPP_MODEL` is only the initial selection fallback. The canonical model identifier is read from `GET /v1/models`; the UI model selector remains authoritative. The adapter uses `POST /v1/chat/completions`, Server-Sent Events, OpenAI function tools, and maps the response into LocalAgent's internal response contract. Cancellation closes the active HTTP response. llama.cpp owns model lifetime, so the unload action reports that unloading is not supported instead of pretending the model was unloaded.
 
-The current Bonsai 2 27B server launch advertises text-only input. Text/code and extracted document text can be sent to the model. Image/audio/video payloads are **not** sent through the llama.cpp adapter; the adapter adds an explicit note to the model-visible receipt rather than silently dropping media or claiming it was analysed. To enable visual input, start llama-server with the matching `--mmproj` and verify that `/v1/models` advertises image input before extending the adapter's image transport. Audio transport is not implemented for llama.cpp in this patch.
+The llama.cpp adapter uses OpenAI-compatible multimodal content parts: images and sampled video frames are sent as `image_url` data URLs, and normalized mono 16 kHz WAV audio is sent as `input_audio`. The server/model must have the matching multimodal projector and chat template enabled; a text-only model cannot process these payloads. Debug traces redact media bytes. `LLAMA_CPP_AUX_MODEL` selects the Router model used by `ask_model` (default `gemma4-12b`). The main provider and model selector remain independent from this fixed auxiliary route.
 
 ## Configuration
 

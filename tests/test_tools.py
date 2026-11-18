@@ -161,7 +161,7 @@ def test_host_side_web_tools_are_not_exposed_or_executed():
 def test_system_prompt_describes_container_web_capabilities_and_permissions():
     from agent.core import SYSTEM_PROMPT
 
-    assert "`web-search`" in SYSTEM_PROMPT
+    assert 'web-search "query"' in SYSTEM_PROMPT
     assert "Playwright" in SYSTEM_PROMPT
     assert "localagent_http" in SYSTEM_PROMPT
     assert "root INSIDE the container" in SYSTEM_PROMPT

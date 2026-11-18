@@ -21,7 +21,7 @@ def capability_catalog_prompt() -> str:
         "- terminal is a persistent Linux Bash environment. Run ordinary shell commands, Python scripts, file operations and programs there.",
         "- Web search: use web-search \"query\" (add --json or --limit when useful).",
         "- Browser: use Playwright with Chromium for JavaScript-rendered pages, DOM inspection, clicks, forms and downloads.",
-        "- HTTP/API: use requests, httpx or aiohttp for ordinary requests.",
+        "- HTTP/API: use requests, httpx, aiohttp or localagent_http for ordinary requests and proxy-aware API access.",
     ]
     for item in data.get("capabilities", []):
         name = str(item.get("name") or "").strip()
