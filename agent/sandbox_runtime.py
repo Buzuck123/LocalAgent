@@ -40,6 +40,30 @@ class SwerexRemoteRuntime:
         return self._runner(awaitable, timeout=timeout)
 
     @staticmethod
+    def _has_exception_named(exc: BaseException, *names: str) -> bool:
+        """Find an exception type through AnyIO groups and chained exceptions."""
+        pending = [exc]
+        seen: set[int] = set()
+        wanted = set(names)
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            if type(current).__name__ in wanted:
+                return True
+            nested = getattr(current, "exceptions", None)
+            if nested:
+                pending.extend(item for item in nested if isinstance(item, BaseException))
+            cause = getattr(current, "__cause__", None)
+            context = getattr(current, "__context__", None)
+            if isinstance(cause, BaseException):
+                pending.append(cause)
+            if isinstance(context, BaseException):
+                pending.append(context)
+        return False
+
+    @staticmethod
     def _name(exc: BaseException) -> str:
         return type(exc).__name__
 
@@ -62,7 +86,7 @@ class SwerexRemoteRuntime:
             self._call(self._runtime.create_session(CreateBashSessionRequest(session=session)), timeout=30)
             return True
         except Exception as exc:
-            if self._name(exc) == "SessionExistsError":
+            if self._has_exception_named(exc, "SessionExistsError"):
                 return False
             raise
 
@@ -134,7 +158,7 @@ class SwerexRemoteRuntime:
         try:
             result = invoke()
         except Exception as exc:
-            if self._name(exc) == "SessionDoesNotExistError":
+            if self._has_exception_named(exc, "SessionDoesNotExistError"):
                 self.ensure_session(session)
                 result = invoke()
             elif self._is_timeout_exception(exc):
@@ -212,7 +236,7 @@ class SwerexRemoteRuntime:
         try:
             self._call(self._runtime.close_session(CloseSessionRequest(session=session)), timeout=30)
         except Exception as exc:
-            if self._name(exc) != "SessionDoesNotExistError":
+            if not self._has_exception_named(exc, "SessionDoesNotExistError"):
                 raise
 
     def upload_file(self, source_path: str, target_path: str) -> None:
