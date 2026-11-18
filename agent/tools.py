@@ -514,12 +514,11 @@ TOOL_DEFINITIONS = [
             "required": ["result_id"], "additionalProperties": False}}},
     {"type": "function", "function": {
         "name": "ask_model",
-        "description": ("Ask an independent Gemma 4 model a question in a clean, isolated context. "
-                        "The required prompt is the only text context. Optionally attach one file from the conversation's Linux container. "
-                        "Supported files: text/code, PDF, DOCX, XLSX, PNG/JPEG/WebP/GIF, supported audio and video. "
-                        "Limits: about 32k input tokens; images/audio up to 12 MB; audio up to 30 seconds; video up to 100 MB and 60 seconds; documents up to 50 MB. "
-                        "For longer or detailed analyses, consider meaningful segments with a modest overlap; retain timestamps/offsets and remove duplicated boundary findings when combining results. "
-                        "Oversized answers are archived and can be retrieved with get_tool_result."),
+        "description": ("Ask an independent Gemma 4 model a question in a clean, isolated context. The required prompt is the only text context; optionally attach one file from the conversation's Linux container. "
+                        "FIXED ask_model allow-list (extension-based): text/code .txt .md .rst .csv .tsv .json .jsonl .py .html .htm .xml .yaml .yml .log .ini .toml .cfg .conf .js .ts .jsx .tsx .css .sql .sh .bat .ps1 .java .c .h .cpp .hpp .rs .go .php .rb .kt .swift .env .properties; documents .pdf .docx .xlsx; images .png .jpg .jpeg .webp .gif; audio .wav .mp3 .m4a .aac .ogg .opus .flac .wma; video .mp4 .m4v .mov .mkv .avi .webm .flv .wmv. This list is fixed for ask_model and is not the dynamic file-type detection policy of load_file_for_model. "
+                        "Limits: about 32k input tokens; images/audio up to 12 MB; audio up to 30 seconds; video up to 100 MB and 60 seconds, converted to at most 60 timestamped JPEG frames at up to 1 frame/second; documents up to 50 MB. "
+                        "The file metadata object reports the original MIME type and size, and after probing/conversion the actual duration, extracted frame_count and conversion status/output format. "
+                        "For longer or detailed analyses, consider meaningful segments with a modest overlap; retain timestamps/offsets and remove duplicated boundary findings when combining results. Oversized answers are archived and can be retrieved with get_tool_result."),
         "parameters": {"type": "object", "properties": {
             "prompt": {"type": "string", "minLength": 1},
             "file": {"type": "string"}},
