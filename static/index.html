@@ -136,11 +136,10 @@ async function refreshGenerationSpeed(){
         if(Number.isFinite(used)&&used>0){
             const contextLabel=`Контекст: ${used.toLocaleString('ru-RU')}${limit>0?' / '+limit.toLocaleString('ru-RU'):''} ток.`;
             details.push(contextLabel);
-            $('status').textContent=(data.model||'Модель')+' · '+contextLabel;
         }
         if(data.estimated)details.push('скорость предварительная');
         $('generation-speed').title=details.join(' · ');
-        if(data.active&&Number.isFinite(used)&&used>0){
+        if(Number.isFinite(used)&&used>0){
             const limitText=limit>0?' / '+limit.toLocaleString('ru-RU'):'';
             $('generation-speed').textContent+=` · контекст ${used.toLocaleString('ru-RU')}${limitText}`;
         }
