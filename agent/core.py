@@ -1193,10 +1193,23 @@ def _terminal_recovery_report(action, reason, result):
     return f"Диагностика: {reason}\nВыполнено: {action}. {consequence}"
 
 
+def _record_tool_debug_trace(task_id, event_type, payload):
+    """Record optional tool diagnostics without affecting tool execution."""
+    try:
+        db.record_debug_trace(task_id, event_type, payload)
+    except Exception:
+        logger.debug(
+            "Could not record tool debug trace (%s) for task %s",
+            event_type,
+            task_id,
+            exc_info=True,
+        )
+
+
 def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                             context_messages=None, main_model=None, context_limit=None):
     if name == "ask_model":
-        db.record_debug_trace(task_id, "tool_call", {"name": name, "arguments": arguments})
+        _record_tool_debug_trace(task_id, "tool_call", {"name": name, "arguments": arguments})
         started = time.monotonic()
         try:
             task = db.get_task(task_id) if task_id else None
@@ -1209,19 +1222,19 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 main_model=main_model or settings.model,
                 context_limit=context_limit or settings.num_ctx,
             )
-            db.record_debug_trace(task_id, "tool_result", {
+            _record_tool_debug_trace(task_id, "tool_result", {
                 "name": name, "duration_seconds": round(time.monotonic() - started, 3),
                 "result": result,
             })
             return result
         except Exception as exc:
-            db.record_debug_trace(task_id, "tool_error", {
+            _record_tool_debug_trace(task_id, "tool_error", {
                 "name": name, "duration_seconds": round(time.monotonic() - started, 3),
                 "error_type": type(exc).__name__, "error": str(exc)[:2000],
             })
             raise
 
-    db.record_debug_trace(task_id, "tool_call", {"name": name, "arguments": arguments})
+    _record_tool_debug_trace(task_id, "tool_call", {"name": name, "arguments": arguments})
     started = time.monotonic()
     try:
         if name in {"terminal", "terminal_start", "terminal_poll", "terminal_input",
@@ -1307,12 +1320,12 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 for value in path_values
             )
             result = dispatch_tool(name, arguments, **({"task_id": task_id} if uses_legacy_work_path else {}))
-        db.record_debug_trace(task_id, "tool_result", {
+        _record_tool_debug_trace(task_id, "tool_result", {
             "name": name, "duration_seconds": round(time.monotonic() - started, 3), "result": result,
         })
         return result
     except Exception as exc:
-        db.record_debug_trace(task_id, "tool_error", {
+        _record_tool_debug_trace(task_id, "tool_error", {
             "name": name, "duration_seconds": round(time.monotonic() - started, 3),
             "error_type": type(exc).__name__, "error": str(exc)[:2000],
         })
