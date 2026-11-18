@@ -1398,6 +1398,8 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
             "name": loaded.get("name"),
             "size_bytes": loaded.get("size_bytes"),
             "duration_seconds": loaded.get("duration_seconds"),
+            "frame_count": loaded.get("frame_count"),
+            "metadata": loaded.get("metadata"),
         }
         attachment = loaded.get("_model_attachment")
         if isinstance(attachment, dict):
