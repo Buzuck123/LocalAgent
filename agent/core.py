@@ -1720,7 +1720,7 @@ def _diagnose_tool_failure(tool_name, arguments, error_text, state, *, file_snap
         guidance += " The warning threshold has been reached: stop this approach and choose a different tool, path, or plan."
     recovery = classify_failure(tool_name, arguments if isinstance(arguments, dict) else {}, text)
     history[-1]["recovery"] = recovery
-    history[-1]["file_error"] = bool(
+    file_error = bool(
         tool_name == "ask_model" and isinstance(arguments, dict)
         and arguments.get("file") and recovery.get("category") != "transient_service"
         and any(token in normalized_error.lower() for token in (
@@ -1729,6 +1729,18 @@ def _diagnose_tool_failure(tool_name, arguments, error_text, state, *, file_snap
             "image", "audio", "video", "exceeds", "budget", "no such", "empty",
         ))
     )
+    history[-1]["file_error"] = file_error
+    if file_error:
+        guidance += (
+            " This ask_model failure is tied to the attached file, not just the wording of the prompt. "
+            "Prepare or convert the file, inspect the resulting file, and retry only after its actual "
+            "content has changed; renaming an unchanged copy is not sufficient."
+        )
+    elif tool_name == "ask_model" and recovery.get("category") == "transient_service":
+        guidance += (
+            " This appears to be a temporary auxiliary-model service failure, not a file-preparation problem. "
+            "A single retry is permitted; if it fails again, stop retrying and report the service outage."
+        )
     return {
         "category": category,
         "repeat_count": repeated,
