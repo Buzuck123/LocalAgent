@@ -263,6 +263,16 @@ def load_file_for_model(path: str, start: int = 0, length: int = 80000, *,
     if size <= 0 or size > max_bytes:
         raise ValueError(f"File must be non-empty and no larger than {max_bytes // (1024 * 1024)} MB")
 
+    from .attachments import build_attachment_metadata
+
+    def make_metadata(kind, *, duration=None, frames=None, status="not_required", output_format=None):
+        return build_attachment_metadata(
+            name, mime, kind, size,
+            duration_seconds=duration,
+            frame_count=frames,
+            conversion={"status": status, "output_format": output_format},
+        )
+
     if is_audio:
         import shutil
         ffmpeg = shutil.which("ffmpeg")
@@ -294,6 +304,7 @@ def load_file_for_model(path: str, start: int = 0, length: int = 80000, *,
         return {
             "ok": True, "name": name, "path": display_path, "namespace": namespace,
             "kind": "audio", "size_bytes": size, "duration_seconds": round(duration, 2),
+            "metadata": make_metadata("audio", duration=duration, status="completed", output_format="mono 16 kHz float WAV"),
             "delivery": "ollama_audio_input_via_wav_images_compatibility",
             "_model_attachment": {
                 "kind": "audio", "name": name, "path": str(wav_path),
@@ -311,6 +322,7 @@ def load_file_for_model(path: str, start: int = 0, length: int = 80000, *,
             "delivery": "sampled_video_frames_as_ollama_images",
             "frame_count": sampled["frame_count"],
             "duration_seconds": sampled["duration_seconds"],
+            "metadata": make_metadata("video", duration=sampled["duration_seconds"], frames=sampled["frame_count"], status="completed", output_format="timestamped JPEG frames (320px, <=1 fps)"),
             "audio_track_handling": "first_30_seconds_attached_only_when_selected_model_supports_gemma4_audio",
             "_model_attachment": {
                 "kind": "video", "name": name, "path": str(file_path),
@@ -331,7 +343,8 @@ def load_file_for_model(path: str, start: int = 0, length: int = 80000, *,
             raise ValueError("File content does not match its image extension/MIME type")
         return {
             "ok": True, "name": name, "path": display_path, "namespace": namespace,
-            "kind": "image", "size_bytes": size, "delivery": "ollama_native_images",
+            "kind": "image", "size_bytes": size,
+            "metadata": make_metadata("image"), "delivery": "ollama_native_images",
             "_model_attachment": {
                 "kind": "image", "name": name, "path": str(file_path),
                 "source": attachment_source,
@@ -391,6 +404,7 @@ def load_file_for_model(path: str, start: int = 0, length: int = 80000, *,
     return {
         "ok": True, "name": name, "path": display_path, "namespace": namespace,
         "kind": "text", "size_bytes": size,
+        "metadata": make_metadata("document" if ext in {".pdf", ".docx", ".xlsx"} else "text", status="completed", output_format="extracted text + selected visuals" if visual_attachments else "extracted text"),
         "delivery": "extracted_text_in_model_context",
         "extracted_text": extracted[chunk_start:chunk_end],
         "_model_attachments": visual_attachments,
@@ -512,14 +526,11 @@ TOOL_DEFINITIONS = [
             "required": ["prompt"], "additionalProperties": False}}},
     {"type": "function", "function": {
         "name": "load_file_for_model",
-        "description": ("Load a file from any readable absolute path in this conversation's Linux container, including /workspace, /work and /host-workspace. "
-                        "The default text budget is about 32k tokens (roughly 80k characters); oversized default loads fail clearly instead of silently truncating. Explicit start/length reads remain available for sequential chunks. "
-                        "Images use native image input. Audio is normalized to mono 16 kHz 32-bit float WAV and limited to 30 seconds; if the active model does not support audio, use ask_model (Gemma 4). "
-                        "Video is limited to 60 seconds and 100 MB, sampled at up to 1 frame/second as compact 320px JPEGs; its first 30 seconds of soundtrack are attached only for Gemma 4. "
-                        "PDF/DOCX/XLSX provide extracted text plus selected rendered PDF pages or embedded Office images when available; use terminal for full programmatic processing. "
-                        "Limits: image/audio files up to 12 MB, audio up to 30 seconds, video up to 100 MB and 60 seconds, documents up to 50 MB; text budget about 32k tokens (roughly 80k characters). "
-                        "For longer or detailed analyses, consider meaningful segments with a modest overlap; keep timestamps/offsets and deduplicate findings at segment boundaries when combining results. "
-                        "Video sampling and audio normalization require ffmpeg. The path is resolved inside the container, never on the host."),
+        "description": ("Load any supported file from a readable absolute path in this conversation's Linux container. File type is detected dynamically from its extension/MIME and validated from its contents where applicable; do not assume a fixed allow-list in advance. "
+                        "Every successful result includes a common metadata object: schema_version, name, extension, mime_type, media_type, size_bytes, duration_seconds, frame_count, and conversion {status, output_format}. Initial metadata describes the source; duration/frame_count/conversion are populated or updated after probing/conversion. "
+                        "Images use native image input. Audio is normalized to mono 16 kHz 32-bit float WAV and limited to 30 seconds. Video is limited to 60 seconds and 100 MB, sampled at up to 1 frame/second as compact 320px JPEGs, with at most 60 frames; the result metadata reports actual duration and actual extracted frame_count. Its first 30 seconds of soundtrack are attached only for Gemma 4. "
+                        "PDF/DOCX/XLSX provide extracted text plus selected rendered PDF pages or embedded Office images when available; use terminal for full programmatic processing. Limits: image/audio files up to 12 MB, audio up to 30 seconds, video up to 100 MB and 60 seconds, documents up to 50 MB; text budget about 32k tokens (roughly 80k characters). "
+                        "For longer or detailed analyses, consider meaningful segments with a modest overlap; keep timestamps/offsets and deduplicate findings at segment boundaries when combining results. Video sampling and audio normalization require ffmpeg. The path is resolved inside the container, never on the host."),
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
             "start": {"type": "integer", "minimum": 0, "default": 0},
