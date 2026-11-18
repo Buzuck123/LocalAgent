@@ -156,8 +156,11 @@ def classify_failure(tool_name: str, arguments: dict, error_text: str) -> dict:
         category, action = "transient_service", "bounded_retry_if_safe"
     effect = ("read_only" if tool_name in READ_ONLY_TOOLS or tool_name == "ask_model"
               else ("mutating" if tool_name in MUTATING_TOOLS else "unknown"))
-    # ask_model is non-mutating; only transient service failures get a bounded retry.
-    retry_safe = effect == "read_only" and category == "transient_service"
+    # Preserve the ordinary read-only policy for file inspection. ask_model is
+    # different: only transient service failures qualify for a bounded retry.
+    retry_safe = effect == "read_only"
+    if tool_name == "ask_model":
+        retry_safe = category == "transient_service"
     if action == "inspect_state_before_retry":
         retry_safe = False
     return {
