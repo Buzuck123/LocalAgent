@@ -185,18 +185,43 @@ def test_multiple_system_messages_are_merged_at_the_beginning():
 
 def test_router_model_list_and_selection_use_server_ids(monkeypatch):
     client = LlamaCppClient()
-    monkeypatch.setattr(client, "_json_request", lambda path: {
+    payload = {
         "data": [
-            {"id": "gemma4-12b", "context_length": 65536},
-            {"id": "qwen35-9b", "context_length": 65536},
+            {"id": "gemma4-12b", "context_length": 262144,
+             "status": {"value": "unloaded", "args": ["llama-server", "--ctx-size", "65536"]}},
+            {"id": "qwen35-9b", "context_length": 262144,
+             "status": {"value": "unloaded", "args": ["llama-server", "--ctx-size=202752"]}},
         ]
-    })
+    }
+    monkeypatch.setattr(client, "_json_request", lambda path: payload)
+    monkeypatch.setattr(
+        client, "_server_json_request",
+        lambda path: (_ for _ in ()).throw(AssertionError("/props must not override Router argv")),
+    )
     models = client.models()
     assert [item["name"] for item in models["models"]] == ["gemma4-12b", "qwen35-9b"]
+    assert [item["runtime_context_limit"] for item in models["models"]] == [65536, 202752]
+    assert "context_length" not in models["models"][0]
     assert models["selected_model"] in {"gemma4-12b", "qwen35-9b"}
-    profile = client.model_profile("gemma4-12b")
-    assert profile["num_ctx"] == 65536
+
+    profile = client.model_profile("qwen35-9b")
+    assert profile["num_ctx"] == 202752
+    assert profile["runtime_context_limit"] == 202752
+    assert profile["source"] == "llama_cpp_router_args"
+    assert "model_context_length" not in profile
     assert client.select_model("qwen35-9b")["selected_model"] == "qwen35-9b"
+
+
+def test_context_size_from_router_args_handles_separate_and_equals_forms():
+    assert LlamaCppClient._context_size_from_args(
+        ["llama-server", "--ctx-size", "202752"]
+    ) == 202752
+    assert LlamaCppClient._context_size_from_args(
+        ["llama-server", "--ctx-size=65536"]
+    ) == 65536
+    assert LlamaCppClient._context_size_from_args(
+        ["llama-server", "--ctx-size", "0"]
+    ) is None
 
 
 def test_audio_attachment_uses_openai_input_audio_shape(tmp_path):
