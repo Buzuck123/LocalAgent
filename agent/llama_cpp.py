@@ -71,6 +71,7 @@ class LlamaCppClient:
         """Return llama.cpp's allocated slot context, not the model's training limit."""
         name = model or db.get_app_setting("selected_llama_cpp_model", self.model)
         model_context_length = None
+        item = None
         try:
             item = next((x for x in self._available_models() if x["name"] == name), None)
             if item:
@@ -78,26 +79,24 @@ class LlamaCppClient:
         except Exception:
             pass
 
+        # Prefer the Router's per-model effective context when it is supplied.
         runtime_context = None
         source = "llama_cpp_config_fallback_unconfirmed"
+        router_context = item.get("runtime_context_limit") if item else None
         try:
-            props = self._server_json_request("/props")
-            generation = props.get("default_generation_settings", {}) if isinstance(props, dict) else {}
-            value = generation.get("n_ctx") if isinstance(generation, dict) else None
-            if value is not None and int(value) > 0:
-                runtime_context = int(value)
-                source = "llama_cpp_runtime_props"
-        except Exception:
+            if router_context is not None and int(router_context) > 0:
+                runtime_context = int(router_context)
+                source = "llama_cpp_models_runtime"
+        except (TypeError, ValueError):
             pass
         if runtime_context is None:
-            # Some Router builds expose their effective per-model context on
-            # /v1/models even when the native /props endpoint is not proxied.
             try:
-                item = next((x for x in self._available_models() if x["name"] == name), None)
-                value = item.get("runtime_context_limit") if item else None
+                props = self._server_json_request("/props")
+                generation = props.get("default_generation_settings", {}) if isinstance(props, dict) else {}
+                value = generation.get("n_ctx") if isinstance(generation, dict) else None
                 if value is not None and int(value) > 0:
                     runtime_context = int(value)
-                    source = "llama_cpp_models_runtime"
+                    source = "llama_cpp_runtime_props"
             except Exception:
                 pass
 
