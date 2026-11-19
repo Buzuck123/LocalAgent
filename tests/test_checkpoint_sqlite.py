@@ -110,7 +110,7 @@ def test_sqlite_resume_uses_saved_tool_result_without_reexecution(
     monkeypatch.setattr(
         core,
         "settings",
-        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False),
+        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False, ollama_context_fallback=32768),
     )
 
     core.db.init_db()
