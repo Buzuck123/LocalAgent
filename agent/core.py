@@ -1102,7 +1102,8 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                 action = "continue_waiting"
                 break
             messages.append(message)
-            recovered = False
+            action_attempted = False
+            recovery_confirmed = False
             for call in calls[:4]:
                 function = call.get("function") if isinstance(call, dict) else {}
                 function = function if isinstance(function, dict) else {}
@@ -1132,7 +1133,7 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                         "restart_sandbox_container": "restart_container",
                     }[tool_name]
                     reason = why
-                    recovered = True
+                    action_attempted = True
                     try:
                         if action == "interrupt_operation":
                             recovery = sandbox_manager.interrupt_operation(conversation_id, operation_id)
@@ -1151,14 +1152,36 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                         }
                         tool_result = recovery
                     actions.append({"action": action, "reason": reason, "result": recovery})
+                    # An attempted recovery is not a successful intervention. Only
+                    # accept an explicit terminal/reset/restart confirmation.
+                    if action == "interrupt_operation":
+                        recovery_confirmed = (
+                            isinstance(recovery, dict)
+                            and (recovery.get("state") == "interrupted"
+                                 or recovery.get("interrupted") is True)
+                        )
+                    elif action == "reset_bash_session":
+                        recovery_confirmed = (
+                            isinstance(recovery, dict)
+                            and recovery.get("state") == "reset"
+                            and recovery.get("verified") is True
+                        )
+                    else:
+                        recovery_confirmed = (
+                            isinstance(recovery, dict)
+                            and recovery.get("state") == "restarted"
+                            and recovery.get("verified") is True
+                        )
                 else:
                     tool_result = {"ok": False, "error": "Недоступный диагностический инструмент."}
                 messages.append({"role": "tool", "tool_name": tool_name,
                                  "content": json.dumps(tool_result, ensure_ascii=False, default=str)[:12000]})
                 db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
-                if recovered:
+                if action_attempted:
                     break
-            if recovered:
+            if action_attempted:
+                # Stop processing this model response after any destructive action,
+                # even when it failed; the controller will re-poll before retrying.
                 break
     except Exception as exc:
         action, reason = "continue_waiting", (
@@ -1250,7 +1273,24 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 diagnostic_messages = None
                 diagnostic_actions = None
                 diagnostic_intervened = False
+                diagnostic_deferred = False
+                diagnostic_cycles = 0
+                max_diagnostic_cycles = 3
                 while result.get("_diagnostic_due"):
+                    if diagnostic_cycles >= max_diagnostic_cycles:
+                        diagnostic_deferred = True
+                        result = dict(result)
+                        result["_diagnostic_due"] = False
+                        notice = (
+                            "\\n[Диагностика приостановлена после "
+                            f"{max_diagnostic_cycles} циклов без подтверждённого восстановления. "
+                            "Терминальная операция может продолжаться; проверь её повторным вызовом terminal "
+                            "с пустой командой. Новая команда не запускалась.]"
+                        )
+                        result["_terminal_text"] = str(result.get("_terminal_text") or "") + notice
+                        result["_terminal_output"] = str(result.get("_terminal_output") or "") + notice
+                        break
+                    diagnostic_cycles += 1
                     action, reason, diagnostic_id, diagnostic_messages, diagnostic_actions, recovery = _run_terminal_diagnostic(
                         task_id, task["conversation_id"], result,
                         diagnostic_id=diagnostic_id,
@@ -1278,22 +1318,24 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                                                conversation_id=task["conversation_id"])
                         continue
                     if action in {"interrupt_operation", "reset_bash_session", "restart_container"}:
-                        diagnostic_intervened = True
-                        result = dict(result)
-                        result["state"] = (
-                            "interrupted" if action == "interrupt_operation" and
-                            isinstance(recovery, dict) and recovery.get("state") == "interrupted"
-                            else "reset" if action == "reset_bash_session" and
-                            isinstance(recovery, dict) and recovery.get("state") == "reset" and recovery.get("verified") is True
-                            else "restarted" if action == "restart_container" and
-                            isinstance(recovery, dict) and recovery.get("state") == "restarted" and recovery.get("verified") is True
-                            else "runtime_unresponsive"
-                        )
-                        result["diagnostic_report"] = _terminal_recovery_report(action, reason, result)
-                        break
+                        if not recovery_confirmed:
+                            # Failed/unconfirmed recovery must not be reported as an
+                            # intervention. Poll the same operation and diagnose again.
+                            action = "continue_waiting"
+                        else:
+                            diagnostic_intervened = True
+                            result = dict(result)
+                            result["state"] = (
+                                "interrupted" if action == "interrupt_operation"
+                                else "reset" if action == "reset_bash_session"
+                                else "restarted"
+                            )
+                            result["diagnostic_report"] = _terminal_recovery_report(action, reason, {"recovery": recovery})
+                            break
                 if diagnostic_id:
                     db.update_terminal_diagnostic(
-                        diagnostic_id, status="intervened" if diagnostic_intervened else "completed",
+                        diagnostic_id, status=("intervened" if diagnostic_intervened else
+                                                "deferred" if diagnostic_deferred else "completed"),
                         messages=diagnostic_messages, actions=diagnostic_actions,
                     )
                 # The primary executor is blocked in this dispatch until diagnosis ends.
