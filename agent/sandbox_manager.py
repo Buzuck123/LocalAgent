@@ -719,7 +719,23 @@ print(json.dumps(result))
         record = db.get_sandbox(conversation_id) or {}
         container_id = str(record.get("container_id") or "")
         elapsed_now = age_from(started_at, elapsed_seconds)
-        idle_now = age_from(last_output_at, idle_seconds)
+        sample_key = (str(conversation_id), str(operation_id))
+        samples = getattr(self, "_diagnostic_operation_samples", None)
+        if samples is None:
+            samples = {}
+            self._diagnostic_operation_samples = samples
+        sample_state = samples.setdefault(sample_key, {
+            "cursor": max(0, int(cursor or 0)),
+            "started_at": started_at,
+            "last_output_at": last_output_at,
+        })
+        sample_state["cursor"] = max(int(sample_state.get("cursor") or 0), max(0, int(cursor or 0)))
+        if started_at is not None:
+            sample_state["started_at"] = started_at
+        if last_output_at is not None and sample_state.get("last_output_at") is None:
+            sample_state["last_output_at"] = last_output_at
+        elapsed_now = age_from(sample_state.get("started_at"), elapsed_seconds)
+        idle_now = age_from(sample_state.get("last_output_at"), idle_seconds)
         snapshot: dict[str, Any] = {
             "sampled_at": db.now(), "operation_id": str(operation_id),
             "command": str(command or "")[:100000],
@@ -749,15 +765,24 @@ print(json.dumps(result))
             if callable(getter):
                 try:
                     operation = getter(
-                        operation_id, session="main", cursor=max(0, int(cursor or 0)),
+                        operation_id, session="main", cursor=int(sample_state.get("cursor") or 0),
                         max_output_chars=2048, wait_timeout=0,
                     )
                     snapshot["operation_state"] = str(operation.get("state") or "unknown")
                     snapshot["operation_exit_code"] = operation.get("exit_code")
+                    next_cursor = operation.get("next_cursor")
+                    if isinstance(next_cursor, int):
+                        sample_state["cursor"] = max(int(sample_state.get("cursor") or 0), next_cursor)
                     delta = str(operation.get("output") or "")
                     if delta:
                         snapshot["new_output_since_cursor"] = delta[-1500:]
+                        sample_state["last_output_at"] = time.time()
                         snapshot["idle_seconds"] = 0.0
+                    else:
+                        snapshot["idle_seconds"] = round(
+                            age_from(sample_state.get("last_output_at"), idle_seconds), 1
+                        )
+                    snapshot["diagnostic_cursor"] = sample_state.get("cursor")
                 except Exception as exc:
                     snapshot["operation_poll_error"] = type(exc).__name__
         if container_id:
