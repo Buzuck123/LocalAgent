@@ -802,7 +802,7 @@ print(json.dumps(result))
         executable = os.path.basename(argv[0]) if argv else ""
         if not argv or executable not in allowed:
             raise ValueError("Разрешены только команды чтения: ps, ls, stat, file, head, tail, cat, df, free, uptime, ss, lsof, du, wc, readlink, realpath, id, whoami, uname, date, mount, namei.")
-        forbidden = {"-exec", "-execdir", "-delete", "-fprint", "-fls", "--pre", "--post", "--output", "-o"}
+        forbidden = {"-exec", "-execdir", "-delete", "-fprint", "-fls", "--pre", "--post", "--output"}
         if any(arg in forbidden or arg.startswith("--pre=") or arg.startswith("--post=") for arg in argv[1:]):
             raise ValueError("Команда содержит аргумент, несовместимый с режимом только чтения.")
         runtime = self.get_runtime(conversation_id, check_proxy=False)
