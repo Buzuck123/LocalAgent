@@ -1226,6 +1226,8 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "scope": "container",
                         "operation_id": operation_id,
+                        "command": str(args.get("command") or "")[:300],
+                        "success": tool_result.get("ok") is True,
                         "observation": (
                             f"Команда {str(args.get('command') or '')[:300]!r}; "
                             f"exit_code={tool_result.get('exit_code')}; "
