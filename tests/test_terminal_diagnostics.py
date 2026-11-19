@@ -387,6 +387,9 @@ def test_interrupt_race_polls_original_operation_instead_of_starting_new_command
                 "cursor": 12,
             }
 
+        def verify_terminal_session(self, conversation_id):
+            return {"verified": True}
+
     monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
     monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
     monkeypatch.setattr(
