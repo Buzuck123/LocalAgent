@@ -48,9 +48,10 @@ def build_diagnostic_context(snapshot: dict[str, Any],
 
     command = str(snapshot.get("command") or "")
     command_id = add("command", "terminal_operation", "operation",
-                     command[:100000] or "Исходная команда не сохранена.",
+                     "Исходная команда сохранена полностью в поле operation.command.",
                      "Это команда, выполняющаяся в основной Bash-сессии.",
                      "Сама команда не говорит, зависла ли операция.")
+    evidence[-1]["command"] = command[:100000]
 
     elapsed = float(snapshot.get("elapsed_seconds") or 0)
     idle = float(snapshot.get("idle_seconds") or 0)
@@ -67,6 +68,22 @@ def build_diagnostic_context(snapshot: dict[str, Any],
         "Это состояние самой SWE-ReX operation, а не контейнера.",
         "Состояние running не гарантирует, что команда делает полезную работу.",
     ) if state != "unknown" else None
+    if snapshot.get("operation_poll_error"):
+        add("operation_state_unavailable", "swerex_get_operation", "operation",
+            "Не удалось обновить состояние самой операции: " + str(snapshot.get("operation_poll_error")),
+            "Контроллер не смог получить свежий статус SWE-ReX operation.",
+            "При неизвестном статусе прерывание не разрешается.")
+    if snapshot.get("runtime_error"):
+        add("runtime_error", "terminal_monitor", "operation",
+            "Последняя ошибка runtime: " + str(snapshot.get("runtime_error"))[:300],
+            "Может указывать на проблему взаимодействия с runtime.",
+            "Ошибка опроса не доказывает, что удалённый процесс остановился.")
+    poll_errors = snapshot.get("runtime_poll_errors") or []
+    if poll_errors:
+        add("runtime_poll_errors", "terminal_monitor", "runtime",
+            "В предыдущем цикле были ошибки опроса runtime (" + str(len(poll_errors)) + ").",
+            "Показывает нестабильность канала опроса.",
+            "Не устанавливает состояние самой команды.")
 
     idle_id = add(
         "no_terminal_output", "terminal_monitor", "operation",
