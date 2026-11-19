@@ -4835,11 +4835,17 @@ class Agent:
                 tool_name = str(current_tool.get("name") or "terminal")
                 tool_arguments = current_tool.get("arguments") if isinstance(current_tool.get("arguments"), dict) else {}
                 db.complete_tool_operation(receipt_id, recovered_terminal_result)
+                recovered_payload = _restore_tool_operation_payload(
+                    recovered_terminal_result, tool_name, tool_arguments, state
+                )
                 messages.extend(_build_tool_messages_for_operation(
                     tool_name,
-                    json.dumps(recovered_terminal_result, ensure_ascii=False, default=str),
+                    json.dumps(recovered_payload, ensure_ascii=False, default=str),
                     receipt_id,
                 ))
+                state["activity"] = _tool_activity_summary(
+                    tool_name, tool_arguments, recovered_payload
+                )
                 state.update({
                     "phase": "tools_pending",
                     "messages": messages,
