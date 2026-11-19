@@ -5047,6 +5047,9 @@ class Agent:
 
                 state["phase"] = "completed"
                 state["final_answer"] = answer
+                state.pop("current_tool", None)
+                state.pop("terminal_diagnostic_pending", None)
+                state.pop("pause_reason", None)
                 save_checkpoint(state)
                 db.update_task(
                     task_id,
