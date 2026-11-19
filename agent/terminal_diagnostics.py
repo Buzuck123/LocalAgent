@@ -246,6 +246,12 @@ def authorize_recovery(action: str, proposal: dict[str, Any], evidence: list[dic
             and elapsed >= float(hard_timeout)
             and "operation_state" in kinds
         )
+        process_inspection = any(
+            item.get("kind") == "diagnostic_terminal"
+            and item.get("success") is True
+            and str(item.get("command") or "").split(" ", 1)[0] in {"ps", "lsof"}
+            for item in selected
+        )
         repeated_silence = (
             state in {"running", "waiting_input"}
             and elapsed >= 900
@@ -253,7 +259,7 @@ def authorize_recovery(action: str, proposal: dict[str, Any], evidence: list[dic
             and "operation_state" in kinds
             and "no_terminal_output" in kinds
             and "repeated_no_progress" in kinds
-            and "diagnostic_terminal" in kinds
+            and process_inspection
         )
         if timeout_elapsed or repeated_silence:
             return True, "Подтверждены hard timeout или длительное отсутствие наблюдаемого прогресса в повторных снимках."
