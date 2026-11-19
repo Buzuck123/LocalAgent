@@ -501,7 +501,7 @@ def test_diagnostic_terminal_only_allows_read_commands_and_uses_separate_session
             return {"stdout": "PID COMMAND", "stderr": "", "exit_code": 0, "timed_out": False}
 
     runtime = Runtime()
-    manager.get_runtime = lambda *args, **kwargs: runtime
+    manager._runtimes = {"conversation-1": runtime}
     result = manager.run_diagnostic_terminal("conversation-1", "ps -eo pid,ppid,stat,args")
 
     assert result["ok"] is True
