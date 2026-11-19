@@ -3480,7 +3480,7 @@ class OllamaClient:
             configured_context = 0
         source = "modelfile" if configured_context > 0 else "fallback"
         if configured_context <= 0:
-            match = re.search(r"(?:-|:)(\\d{1,3})k(?:$|[-_.])", str(name), re.I)
+            match = re.search(r"(?:-|:)(\d{1,3})k(?:$|[-_.])", str(name), re.I)
             if match:
                 configured_context = int(match.group(1)) * 1024
                 source = "tag_suffix"
