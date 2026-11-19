@@ -6,6 +6,7 @@ small, timestamped observations and applies deterministic gates before recovery.
 from __future__ import annotations
 
 import json
+import shlex
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -263,12 +264,16 @@ def authorize_recovery(action: str, proposal: dict[str, Any], evidence: list[dic
             and elapsed >= float(hard_timeout)
             and "operation_state" in kinds
         )
-        process_inspection = any(
-            item.get("kind") == "diagnostic_terminal"
-            and item.get("success") is True
-            and str(item.get("command") or "").split(" ", 1)[0] in {"ps", "lsof"}
-            for item in selected
-        )
+        def is_process_inspection(item):
+            if item.get("kind") != "diagnostic_terminal" or item.get("success") is not True:
+                return False
+            try:
+                executable = shlex.split(str(item.get("command") or ""))[0]
+            except (ValueError, IndexError):
+                return False
+            return executable.rsplit("/", 1)[-1] in {"ps", "lsof"}
+
+        process_inspection = any(is_process_inspection(item) for item in selected)
         repeated_silence = (
             state in {"running", "waiting_input"}
             and elapsed >= 900
