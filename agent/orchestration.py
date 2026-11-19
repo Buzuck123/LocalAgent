@@ -502,6 +502,11 @@ def update_task_state(checkpoint: dict, *, tool_name: str | None = None,
                     if not isinstance(item, dict):
                         remaining.append(item)
                         continue
+                    # An invalid model-proposed tool call is corrected by any
+                    # subsequent successful call against the active tool catalogue.
+                    # Other failures retain the stricter same-tool/path repair rules.
+                    if item.get("category") == "invalid_tool_call":
+                        continue
                     # Preserve the existing same-tool recovery behavior, but also
                     # clear a missing-resource error when a later successful write
                     # creates the exact path that the failed read/run needed.
