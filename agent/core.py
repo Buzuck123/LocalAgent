@@ -1077,11 +1077,11 @@ class TerminalRecoveryPending(RuntimeError):
 def _redact_diagnostic_output(value):
     text = str(value or "")
     text = re.sub(
-        r"(?i)(\\b(?:password|passwd|token|secret|api[_-]?key)\\b\\s*[:=]\\s*)[^\\s,;]+",
-        r"\\1[REDACTED]", text,
+        r"(?i)(\b(?:password|passwd|token|secret|api[_-]?key)\b\s*[:=]\s*)[^\s,;]+",
+        r"\1[REDACTED]", text,
     )
-    text = re.sub(r"(?i)\\bBearer\\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
-    text = re.sub(r"\\bsk-[A-Za-z0-9_-]{20,}", "[REDACTED_KEY]", text)
+    text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{20,}", "[REDACTED_KEY]", text)
     return text
 
 
