@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 from agent import core
 from agent.llama_cpp import LlamaCppClient
 
