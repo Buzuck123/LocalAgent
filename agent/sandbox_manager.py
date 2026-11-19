@@ -66,6 +66,7 @@ class SandboxManager:
         self._locks: dict[str, threading.RLock] = {}
         self._guard = threading.RLock()
         self._active_operations: dict[str, dict[str, Any]] = {}
+        self._diagnostic_operation_samples: dict[tuple[str, str], dict[str, Any]] = {}
         self._new_sessions: set[str] = set()
 
     def _lock_for(self, conversation_id: str):
