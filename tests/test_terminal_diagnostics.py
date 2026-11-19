@@ -235,6 +235,7 @@ def test_terminal_diagnostic_cycles_are_bounded_and_deferred(monkeypatch):
         lambda task_id: {"id": task_id, "conversation_id": "conversation-1"},
     )
     monkeypatch.setattr(core, "_record_tool_debug_trace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
     calls = []
 
     def fake_dispatch(name, arguments, **kwargs):
