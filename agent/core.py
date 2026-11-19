@@ -1675,7 +1675,33 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                             })
                             if result["_diagnostic_due"]:
                                 continue
+                            if final_state in {"completed", "interrupted", "timed_out", "failed"}:
+                                session_recovery = _verify_or_recover_terminal_session(
+                                    task["conversation_id"], result.get("_terminal_command")
+                                )
+                                if not session_recovery.get("verified"):
+                                    raise TerminalRecoveryPending(
+                                        "Исходная операция завершилась, но Bash-сессия не восстановлена: "
+                                        + str(session_recovery.get("error") or "неизвестная ошибка"),
+                                        pending={
+                                            "terminal_result": result,
+                                            "diagnostic_id": diagnostic_id,
+                                            "messages": diagnostic_messages or [],
+                                            "actions": diagnostic_actions or [],
+                                        },
+                                    )
+                                if session_recovery.get("action"):
+                                    result["diagnostic_report"] = _terminal_recovery_report(
+                                        session_recovery["action"], session_recovery["reason"],
+                                        {"recovery": session_recovery["recovery"]},
+                                    )
+                                    diagnostic_intervened = True
+                                result["shell_state"] = "available"
+                            elif final_state == "waiting_input":
+                                result["shell_state"] = "waiting_input"
                             break
+                        except TerminalRecoveryPending:
+                            raise
                         except Exception as exc:
                             result = dict(result)
                             result["state"] = "runtime_unresponsive"
@@ -5082,7 +5108,7 @@ class Agent:
                                             or settings.num_ctx
                                         ),
                                     )
-                        except TerminalDiagnosticLLMUnavailable:
+                        except (TerminalDiagnosticLLMUnavailable, TerminalRecoveryPending):
                             raise
                         except ToolReceiptError:
                             raise
