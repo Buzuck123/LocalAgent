@@ -685,3 +685,19 @@ def test_receipt_failure_does_not_advance_checkpoint_or_repeat_tool(monkeypatch)
         and message.get("tool_name") == "terminal"
         for message in last_checkpoint["messages"]
     )
+
+
+
+def test_sanitizer_preserves_machine_readable_retired_tool_receipt():
+    result = {"ok": True, "result": {"path": "result.txt", "bytes_written": 4}}
+    messages = [{
+        "role": "tool",
+        "tool_name": "write_file",
+        "content": json.dumps(result, ensure_ascii=False),
+    }]
+
+    sanitized = core._sanitize_messages_for_ollama(messages)
+
+    assert sanitized[0]["role"] == "tool"
+    assert sanitized[0]["tool_name"] == "legacy_result"
+    assert json.loads(sanitized[0]["content"]) == result
