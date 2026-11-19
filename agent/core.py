@@ -1317,6 +1317,43 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                         result = dispatch_tool("terminal", {"command": ""},
                                                conversation_id=task["conversation_id"])
                         continue
+                    if action == "interrupt_operation" and isinstance(recovery, dict) and recovery.get("state") in {"completed", "timed_out", "failed"}:
+                        # The command may have finished while the interrupt request
+                        # was in flight. Do not issue an empty terminal command here:
+                        # the manager has already cleared its active-operation entry.
+                        from .sandbox_manager import sandbox_manager
+                        try:
+                            final_poll = sandbox_manager.get_operation(
+                                task["conversation_id"], operation_id,
+                                cursor=int(result.get("cursor") or 0), wait_timeout=0,
+                            )
+                            final_state = str(final_poll.get("state") or "runtime_unresponsive")
+                            final_chunk = str(final_poll.get("stdout") or "")
+                            result = dict(result)
+                            result["_terminal_output"] = str(result.get("_terminal_output") or "") + final_chunk
+                            result["_terminal_text"] = str(result.get("_terminal_text") or "") + final_chunk
+                            result.update({
+                                "state": final_state,
+                                "exit_code": final_poll.get("exit_code"),
+                                "timed_out": final_poll.get("timed_out", final_state == "timed_out"),
+                                "interrupted": final_poll.get("interrupted", final_state == "interrupted"),
+                                "cursor": final_poll.get("cursor", result.get("cursor", 0)),
+                                "_diagnostic_due": final_state not in {"completed", "interrupted", "timed_out", "failed"},
+                            })
+                            if result["_diagnostic_due"]:
+                                continue
+                            break
+                        except Exception as exc:
+                            result = dict(result)
+                            result["state"] = "runtime_unresponsive"
+                            result["_diagnostic_due"] = False
+                            notice = (
+                                "\\n[Прерывание совпало с завершением операции, но получить её итоговый результат "
+                                f"не удалось: {type(exc).__name__}. Новая команда не запускалась.]"
+                            )
+                            result["_terminal_text"] = str(result.get("_terminal_text") or "") + notice
+                            result["_terminal_output"] = str(result.get("_terminal_output") or "") + notice
+                            break
                     if action in {"interrupt_operation", "reset_bash_session", "restart_container"}:
                         if action == "interrupt_operation":
                             recovery_confirmed = (
