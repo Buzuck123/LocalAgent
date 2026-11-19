@@ -4688,6 +4688,11 @@ class Agent:
                 state.pop("pause_reason", None)
                 state["activity"] = "Терминальная операция и Bash-сессия проверены; продолжение задачи"
                 save_checkpoint(state)
+                # The loop uses these local cursors; advance them together with the durable checkpoint.
+                phase = state["phase"]
+                pending_calls = state["pending_calls"]
+                next_tool_index = state["next_tool_index"]
+                messages = state["messages"]
 
             def finalize(answer):
                 set_activity("Завершаю задачу и проверяю результат")
