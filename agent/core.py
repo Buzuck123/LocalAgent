@@ -247,11 +247,12 @@ def _sanitize_messages_for_ollama(messages: list[dict], tool_definitions=None) -
                 elif name in {"terminal_start", "terminal_poll", "terminal_input", "terminal_interrupt", "terminal_resize"}:
                     message["content"] = "Legacy terminal control result omitted; continue with the current terminal interface."
             if name not in active_names:
-                message["role"] = "assistant"
-                message.pop("tool_name", None)
-                message.pop("tool_call_id", None)
+                # A completed historical operation is still a tool receipt even
+                # when its tool was retired. Keep the tool role/name so recovery
+                # does not silently erase the evidence paired with the assistant
+                # tool call; only annotate it as a legacy result.
                 message["content"] = (
-                    "Earlier checkpoint result from a retired internal tool interface:\n"
+                    "Earlier checkpoint result from a retired tool interface:\n"
                     + str(message.get("content") or "")
                 )
         sanitized.append(message)
@@ -4653,11 +4654,19 @@ class Agent:
                             recovered_payload = _restore_tool_operation_payload(
                                 stored_result, tool_name, tool_arguments, checkpoint
                             )
-                            saved_messages.extend(_build_tool_messages_for_operation(
+                            recovered_messages = _build_tool_messages_for_operation(
                                 tool_name,
                                 json.dumps(recovered_payload, ensure_ascii=False, default=str),
                                 current_tool.get("operation_id"),
-                            ))
+                            )
+                            existing_event_ids = {
+                                item.get("_event_id") for item in saved_messages
+                                if isinstance(item, dict) and item.get("_event_id")
+                            }
+                            saved_messages.extend(
+                                item for item in recovered_messages
+                                if item.get("_event_id") not in existing_event_ids
+                            )
                             checkpoint["activity"] = _tool_activity_summary(
                                 tool_name, tool_arguments, recovered_payload
                             )
@@ -4925,6 +4934,10 @@ class Agent:
                     "actions_succeeded": 0, "actions_failed": 0, "successful_tools": [],
                     "failed_categories": {}, "unresolved_errors": [],
                 },
+                "unresolved_tool_contract_errors": (
+                    checkpoint.get("unresolved_tool_contract_errors", [])
+                    if isinstance(checkpoint.get("unresolved_tool_contract_errors", []), list) else []
+                ),
                 "terminal_diagnostic_pending": (
                     checkpoint.get("terminal_diagnostic_pending")
                     if isinstance(checkpoint.get("terminal_diagnostic_pending"), dict) else None
@@ -4991,7 +5004,14 @@ class Agent:
                 # completion; errors from the superseded approach remain in the
                 # execution history but must not veto a verified alternative.
                 completion_blocker = None
-                if _is_bounded_python_script_workflow(task.get("user_message", "")):
+                contract_errors = state.get("unresolved_tool_contract_errors", [])
+                if isinstance(contract_errors, list) and contract_errors:
+                    completion_blocker = (
+                        "Задача не может быть завершена: модель предложила недопустимый вызов инструмента, "
+                        "который не был исправлен. Последняя ошибка: "
+                        + str(contract_errors[-1])[:500]
+                    )
+                if completion_blocker is None and _is_bounded_python_script_workflow(task.get("user_message", "")):
                     task_summary = state.get("task_state", {})
                     successful = set(task_summary.get("successful_tools", [])) if isinstance(task_summary, dict) else set()
                     missing = {"terminal"} - successful
@@ -5272,10 +5292,12 @@ class Agent:
                         except Exception as exc:
                             # Record the concrete failure and give the model a
                             # diagnostic cue instead of letting it repeat blindly.
-                            if step_id_at_tool_start is not None:
-                                step_tool_failures[step_id_at_tool_start] = (
-                                    int(step_tool_failures.get(step_id_at_tool_start, 0)) + 1
-                                )
+                            if isinstance(exc, ToolContractError):
+                                contract_errors = state.setdefault("unresolved_tool_contract_errors", [])
+                                contract_message = f"{type(exc).__name__}: {str(exc)[:1000]}"
+                                if contract_message not in contract_errors:
+                                    contract_errors.append(contract_message)
+                                state["unresolved_tool_contract_errors"] = contract_errors[-10:]
                             error_text = f"{type(exc).__name__}: {str(exc)[:2500]}"
                             if operation_id is not None:
                                 try:
@@ -5400,13 +5422,6 @@ class Agent:
                             if failure_step_id is not None:
                                 if controller_blocked:
                                     pass
-                                elif not tool_ok:
-                                    step_tool_failures[failure_step_id] = (
-                                        int(step_tool_failures.get(failure_step_id, 0)) + 1
-                                    )
-                                else:
-                                    step_tool_failures[failure_step_id] = 0
-
                             tool_payload = {"ok": tool_ok, "result": result}
                             if acceptance_proof:
                                 tool_payload["acceptance_proof"] = acceptance_proof
@@ -5424,7 +5439,20 @@ class Agent:
                                 legacy_failure_info = classify_failure(name, args, str(failure_blob))
                         except (TypeError, json.JSONDecodeError):
                             legacy_failure_info = classify_failure(name, args, content)
+
+                        # Count every unsuccessful dispatch exactly once, regardless
+                        # of whether it returned an error payload or raised an exception.
+                        if step_id_at_tool_start is not None and not controller_blocked:
+                            if legacy_tool_ok:
+                                step_tool_failures[step_id_at_tool_start] = 0
+                            else:
+                                step_tool_failures[step_id_at_tool_start] = (
+                                    int(step_tool_failures.get(step_id_at_tool_start, 0)) + 1
+                                )
+
                         if legacy_tool_ok:
+                            state["unresolved_tool_contract_errors"] = []
+
                             history = state.setdefault("tool_failure_history", [])
                             history.append({
                                 "status": "success",
