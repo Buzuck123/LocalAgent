@@ -1074,6 +1074,17 @@ class TerminalRecoveryPending(RuntimeError):
         self.pending = dict(pending or {})
 
 
+def _redact_diagnostic_output(value):
+    text = str(value or "")
+    text = re.sub(
+        r"(?i)(\\b(?:password|passwd|token|secret|api[_-]?key)\\b\\s*[:=]\\s*)[^\\s,;]+",
+        r"\\1[REDACTED]", text,
+    )
+    text = re.sub(r"(?i)\\bBearer\\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
+    text = re.sub(r"\\bsk-[A-Za-z0-9_-]{20,}", "[REDACTED_KEY]", text)
+    return text
+
+
 def _terminal_command_impact_note(command):
     text = str(command or "").strip()
     lower = text.lower()
@@ -1149,7 +1160,7 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
     ]
     messages = [messages[0], {
         "role": "user",
-        "content": "Краткая история предыдущих диагностических циклов:\\n"
+        "content": "Краткая история предыдущих диагностических циклов:\n"
                    + json.dumps(history_summary, ensure_ascii=False, default=str)[:5000],
     }]
     model_report = dict(report)
@@ -1229,6 +1240,9 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                         )
                     except Exception as exc:
                         tool_result = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+                    for output_key in ("stdout", "stderr"):
+                        if output_key in tool_result:
+                            tool_result[output_key] = _redact_diagnostic_output(tool_result[output_key])
                     evidence_item = {
                         "id": "ev_" + uuid.uuid4().hex[:12],
                         "kind": "diagnostic_terminal",
