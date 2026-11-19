@@ -1134,6 +1134,7 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
         for item in (entry.get("evidence") or []) if isinstance(item, dict)
     ]
     report, new_evidence = build_diagnostic_context(snapshot, evidence_history)
+    evidence_history.extend(new_evidence)
     actions.append({"type": "evidence", "evidence": new_evidence, "report": report})
     if not messages:
         messages = [{"role": "system", "content": TERMINAL_DIAGNOSTIC_SYSTEM_PROMPT}]
