@@ -241,6 +241,10 @@ class SandboxManager:
 
             record = db.get_sandbox(conversation_id)
             found_id = self._find_container(conversation_id)
+            # A running, previously persisted container may already own a live
+            # Bash session. Only create a session when the container is new or
+            # was stopped and has just been started.
+            session_may_be_missing = not bool(record)
             if record:
                 container_id = record["container_id"]
                 if found_id and found_id != container_id:
@@ -250,6 +254,7 @@ class SandboxManager:
                 inspect_data = self._inspect(found_id)
                 if not (inspect_data.get("State") or {}).get("Running"):
                     self._podman("start", found_id)
+                    session_may_be_missing = True
                     inspect_data = self._inspect(found_id)
                     if not (inspect_data.get("State") or {}).get("Running"):
                         raise SandboxError("Существующий контейнер не удалось запустить; данные не удалялись.")
@@ -277,7 +282,7 @@ class SandboxManager:
                     time.sleep(1)
             if not alive:
                 raise SandboxError("Контейнер работает, но SWE-ReX Remote Server не отвечает или отклонил авторизацию.")
-            session_created = runtime.ensure_session("main")
+            session_created = runtime.ensure_session("main") if session_may_be_missing else False
             if session_created:
                 with self._guard:
                     self._new_sessions.add(conversation_id)
@@ -527,12 +532,14 @@ print(json.dumps(result))
         latest: dict[str, Any] = {}
         runtime_errors = 0
         runtime_error_text = None
+        diagnostic_reason = None
         poll_interval = max(0.25, float(getattr(settings, "terminal_poll_interval_seconds", 2)))
         while True:
             now = time.monotonic()
             elapsed = now - command_started_at
             remaining = max_wait - (now - call_started_at)
             if remaining <= 0:
+                diagnostic_reason = "max_wait"
                 break
             try:
                 latest = self.get_operation(
@@ -555,6 +562,7 @@ print(json.dumps(result))
                 # A single failed poll is not proof of runtime failure.
                 if runtime_errors >= 3:
                     state = "runtime_unresponsive"
+                    diagnostic_reason = "runtime_unresponsive"
                     latest = {"state": state, "runtime_error": runtime_error_text}
                     break
                 time.sleep(min(1.0, max(0.1, remaining)))
@@ -574,6 +582,9 @@ print(json.dumps(result))
                 break
             if state == "waiting_input":
                 break
+            if time.monotonic() - last_output_at >= idle_limit:
+                diagnostic_reason = "idle_timeout"
+                break
 
         elapsed = max(0.0, time.monotonic() - command_started_at)
         output = str(active.get("output") or "")
@@ -591,19 +602,27 @@ print(json.dumps(result))
         shell_state = "busy" if still_running else "unknown"
         if not still_running:
             try:
-                # A completed operation must leave the persistent Bash session
-                # usable for the next command. create_session is also the
-                # supported existence probe: SessionExistsError means it is alive.
-                created_now = bool(self.get_runtime(conversation_id).ensure_session("main"))
+                # The operation has finished, so the PTY is no longer busy.
+                # Verify it with a harmless command; never call create_session()
+                # as a health check (SWE-ReX logs SessionExistsError server-side).
+                marker = "__LOCALAGENT_TERMINAL_READY__"
+                probe = self.get_runtime(conversation_id).run(
+                    f"printf '{marker}'", session="main", timeout=10,
+                )
                 with self._guard:
                     created_during_recovery = conversation_id in self._new_sessions
                     self._new_sessions.discard(conversation_id)
-                recreated = created_now or (recovered_operation and created_during_recovery)
-                shell_state = "recreated" if recreated else "available"
-                if recreated:
+                if probe.get("exit_code") == 0 and not probe.get("timed_out") and marker in str(probe.get("stdout") or ""):
+                    shell_state = "recreated" if recovered_operation and created_during_recovery else "available"
+                    if shell_state == "recreated":
+                        output = (output.rstrip() + "\n" +
+                                  "[После восстановления контейнера Bash-сессия была создана заново; "
+                                  "переменные и функции предыдущей сессии не сохранены.]").lstrip("\n")
+                else:
+                    shell_state = "unavailable"
+                    detail = str(probe.get("stderr") or probe.get("failure_reason") or "Bash probe returned no confirmation")
                     output = (output.rstrip() + "\n" +
-                              "[Bash-сессия завершилась вместе с процессом и была создана заново; "
-                              "переменные и функции предыдущей сессии не сохранены.]").lstrip("\n")
+                              "[Не удалось подтвердить работоспособность Bash-сессии: " + detail[:300] + "]").lstrip("\n")
             except Exception as session_exc:
                 shell_state = "unavailable"
                 output = (output.rstrip() + "\n" +
@@ -638,8 +657,12 @@ print(json.dumps(result))
             "duration_seconds": latest.get("duration_seconds", elapsed),
             "output_truncated": bool(active.get("output_truncated")),
             "shell_state": shell_state,
-            "_diagnostic_due": bool(still_running and not waiting),
-            "_monitor_state": "running_silent" if still_running and idle_seconds >= idle_limit else ("running" if still_running else state),
+            "_diagnostic_due": bool(still_running and not waiting and diagnostic_reason),
+            "_diagnostic_reason": diagnostic_reason,
+            "_monitor_state": (
+                "running_silent" if still_running and idle_seconds >= idle_limit
+                else ("running" if still_running else state)
+            ),
             "_elapsed_seconds": round(elapsed, 3),
             "_idle_seconds": round(idle_seconds, 3),
             "_runtime_error": runtime_error_text,
@@ -732,8 +755,14 @@ print(json.dumps(result))
     def verify_terminal_session(self, conversation_id: str) -> dict[str, Any]:
         """Prove the persistent Bash session can execute a harmless command."""
         try:
+            # Never send a health probe into a PTY owned by a live operation.
+            active = self.get_active_operation(conversation_id)
+            if active:
+                return {
+                    "verified": False,
+                    "error": f"Bash-сессия занята операцией {active['operation_id']} (state={active['state']}).",
+                }
             runtime = self.get_runtime(conversation_id, check_proxy=False)
-            runtime.ensure_session("main")
             marker = "__LOCALAGENT_RESUME_BASH_READY__"
             probe = runtime.run(
                 f"unset SWEREX_AUTH_TOKEN; printf '{marker}'",
