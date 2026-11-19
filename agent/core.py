@@ -4226,7 +4226,10 @@ class Agent:
             "reasoning": bool(reasoning),
             "provider": task_provider,
             "model": selected_model,
-            "model_num_ctx": int(selected_profile["num_ctx"]),
+            "model_num_ctx": int(selected_profile.get("runtime_context_limit") or selected_profile["num_ctx"]),
+            "model_context_length": selected_profile.get("model_context_length"),
+            "model_context_source": selected_profile.get("source"),
+            "model_context_confirmed": bool(selected_profile.get("runtime_context_confirmed", False)),
             "model_num_predict": selected_profile.get("num_predict"),
             "activity": "Подготовка задачи",
         }
@@ -4388,18 +4391,25 @@ class Agent:
                 cp["model"] = pinned
 
             _CURRENT_MODEL_OVERRIDE.set(pinned)
-            pinned_context = cp.get("model_num_ctx")
-            if not pinned_context:
-                try:
-                    profile = task_client.model_profile(pinned)
-                    pinned_context = profile["num_ctx"]
-                    cp["model_num_ctx"] = pinned_context
-                    cp["model_num_predict"] = profile.get("num_predict")
-                except Exception:
-                    pinned_context = int(
-                        settings.llama_cpp_context if task_provider == "llama_cpp"
-                        else getattr(settings, "num_ctx", 65536)
-                    )
+            # Refresh the pinned task's runtime context on every start/resume.
+            # This also repairs legacy checkpoints that stored an architecture
+            # limit instead of the server-allocated context.
+            try:
+                profile = task_client.model_profile(pinned)
+            except Exception:
+                profile = None
+            if isinstance(profile, dict) and int(profile.get("runtime_context_limit") or profile.get("num_ctx") or 0) > 0:
+                pinned_context = int(profile.get("runtime_context_limit") or profile["num_ctx"])
+                cp["model_num_ctx"] = pinned_context
+                cp["model_context_length"] = profile.get("model_context_length")
+                cp["model_context_source"] = profile.get("source")
+                cp["model_context_confirmed"] = bool(profile.get("runtime_context_confirmed", False))
+                cp["model_num_predict"] = profile.get("num_predict")
+            else:
+                pinned_context = int(cp.get("model_num_ctx") or (
+                    settings.llama_cpp_context if task_provider == "llama_cpp"
+                    else getattr(settings, "num_ctx", 65536)
+                ))
             db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
             _CURRENT_MODEL_CONTEXT.set(int(pinned_context))
             return self._run_unified_task_impl(task_id, control)
@@ -5554,7 +5564,11 @@ class Agent:
                 # Legacy checkpoints {"round", "messages"} remain supported.
                 # Compact only at a safe boundary (no unresolved tool call).
                 # The full removed transcript remains in the durable checkpoint archive.
-                num_ctx = int(_CURRENT_MODEL_CONTEXT.get() or settings.num_ctx)
+                num_ctx = int(
+                    _CURRENT_MODEL_CONTEXT.get()
+                    or checkpoint.get("model_num_ctx")
+                    or (settings.llama_cpp_context if checkpoint.get("provider") == "llama_cpp" else settings.num_ctx)
+                )
                 selected_model = str(checkpoint.get("model") or "")
                 tool_budget_message = {
                     "role": "system",
