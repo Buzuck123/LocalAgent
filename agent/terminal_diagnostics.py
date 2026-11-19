@@ -250,6 +250,7 @@ def authorize_recovery(action: str, proposal: dict[str, Any], evidence: list[dic
             state in {"running", "waiting_input"}
             and elapsed >= 900
             and float(snapshot.get("idle_seconds") or 0) >= 900
+            and "operation_state" in kinds
             and "no_terminal_output" in kinds
             and "repeated_no_progress" in kinds
             and "diagnostic_terminal" in kinds
