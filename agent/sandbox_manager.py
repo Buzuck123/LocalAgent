@@ -720,7 +720,7 @@ print(json.dumps(result))
         idle_now = age_from(last_output_at, idle_seconds)
         snapshot: dict[str, Any] = {
             "sampled_at": db.now(), "operation_id": str(operation_id),
-            "command": str(command or "")[:8000],
+            "command": str(command or "")[:100000],
             "terminal_output_tail": str(output or "")[-3000:],
             "elapsed_seconds": round(elapsed_now, 1),
             "idle_seconds": round(idle_now, 1),
@@ -789,7 +789,7 @@ print(json.dumps(result))
 
     def run_diagnostic_terminal(self, conversation_id: str, command: str, *, timeout: int = 10) -> dict[str, Any]:
         """Run one allow-listed read-only command in an isolated, unprivileged SWE-ReX session."""
-        if not isinstance(command, str) or not command.strip() or len(command) > 2000 or "\\x00" in command:
+        if not isinstance(command, str) or not command.strip() or len(command) > 2000 or "\x00" in command:
             raise ValueError("Диагностическая команда должна быть непустой и не длиннее 2000 символов.")
         if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 20:
             raise ValueError("Тайм-аут диагностической команды должен быть от 1 до 20 секунд.")
