@@ -437,7 +437,7 @@ def test_diagnostic_report_is_compact_and_explains_metric_limits():
     report, evidence = build_diagnostic_context(snapshot)
 
     assert report["operation"]["command"] == snapshot["command"]
-    assert "не доказывают зависание" in " ".join(report["important_limits"])
+    assert "не доказывает зависание" in " ".join(report["important_limits"])
     assert any("всего контейнера" in item["meaning"] for item in evidence)
     assert len(str(report)) < 12000
 
