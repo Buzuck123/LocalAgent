@@ -729,6 +729,35 @@ print(json.dumps(result))
         except Exception:
             return False
 
+    def verify_terminal_session(self, conversation_id: str) -> dict[str, Any]:
+        """Prove the persistent Bash session can execute a harmless command."""
+        try:
+            runtime = self.get_runtime(conversation_id, check_proxy=False)
+            runtime.ensure_session("main")
+            marker = "__LOCALAGENT_RESUME_BASH_READY__"
+            probe = runtime.run(
+                f"unset SWEREX_AUTH_TOKEN; printf '{marker}'",
+                session="main", timeout=10,
+            )
+            verified = (
+                probe.get("exit_code") == 0
+                and not probe.get("timed_out")
+                and marker in str(probe.get("stdout") or "")
+            )
+            return {
+                "verified": bool(verified),
+                "exit_code": probe.get("exit_code"),
+                "timed_out": bool(probe.get("timed_out")),
+                "error": None if verified else str(
+                    probe.get("stderr") or probe.get("failure_reason") or "Bash probe returned no confirmation"
+                )[:500],
+            }
+        except Exception as exc:
+            return {
+                "verified": False,
+                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            }
+
     def restart_container(self, conversation_id: str, *, reason: str) -> dict[str, Any]:
         """Restart the existing container without removing it or its writable layer."""
         if not isinstance(reason, str) or not reason.strip():
