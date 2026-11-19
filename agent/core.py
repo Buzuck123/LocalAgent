@@ -3876,6 +3876,37 @@ class OllamaClient:
                 "model": selected_model, "error_type": type(exc).__name__, "error": str(exc)[:2000],
             })
             raise
+        # The first request may have caused Ollama to load the model. Re-read
+        # /api/ps once so the task and its future compaction use the allocated
+        # runtime context rather than the pre-load estimate.
+        if not profile.get("runtime_context_confirmed"):
+            try:
+                runtime_profile = self.model_profile(selected_model)
+                if runtime_profile.get("runtime_context_confirmed"):
+                    profile = runtime_profile
+                    runtime_context = int(profile["runtime_context_limit"])
+                    _CURRENT_MODEL_CONTEXT.set(runtime_context)
+                    if trace_task_id:
+                        task_record = db.get_task(trace_task_id)
+                        if task_record:
+                            try:
+                                saved_profile = json.loads(task_record.get("checkpoint_json") or "{}")
+                            except Exception:
+                                saved_profile = {}
+                            if isinstance(saved_profile, dict) and saved_profile.get("model") == selected_model:
+                                saved_profile.update({
+                                    "model_num_ctx": runtime_context,
+                                    "model_context_length": profile.get("model_context_length"),
+                                    "model_context_source": profile.get("source"),
+                                    "model_context_confirmed": True,
+                                    "model_num_predict": profile.get("num_predict"),
+                                })
+                                db.update_task(
+                                    trace_task_id,
+                                    checkpoint_json=json.dumps(saved_profile, ensure_ascii=False),
+                                )
+            except Exception:
+                logger.debug("Could not refresh Ollama runtime context after model load", exc_info=True)
         response_message = response.get("message", {}) if isinstance(response, dict) else {}
         db.record_debug_trace(trace_task_id, "llm_response", {
             "model": selected_model, "message": response_message,
@@ -4420,10 +4451,16 @@ class Agent:
                     # provider is currently unloaded and can only offer a guess.
                     pinned_context = int(cp["model_num_ctx"])
             else:
-                pinned_context = int(cp.get("model_num_ctx") or (
-                    settings.llama_cpp_context if task_provider == "llama_cpp"
-                    else getattr(settings, "ollama_context_fallback", 4096)
-                ))
+                if cp.get("model_context_confirmed") and cp.get("model_num_ctx"):
+                    pinned_context = int(cp["model_num_ctx"])
+                else:
+                    pinned_context = int(
+                        settings.llama_cpp_context if task_provider == "llama_cpp"
+                        else getattr(settings, "ollama_context_fallback", 4096)
+                    )
+                    cp["model_num_ctx"] = pinned_context
+                    cp["model_context_source"] = "provider_fallback_unconfirmed"
+                    cp["model_context_confirmed"] = False
             db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
             _CURRENT_MODEL_CONTEXT.set(int(pinned_context))
             return self._run_unified_task_impl(task_id, control)
@@ -4479,6 +4516,20 @@ class Agent:
             saved_state["version"] = max(4, int(saved_state.get("version", 0) or 0))
             saved_state.setdefault("reasoning", checkpoint.get("reasoning", True))
             saved_state.setdefault("activity", checkpoint.get("activity", "Выполнение задачи"))
+            # A runtime profile may have been confirmed while the LLM request
+            # was running. Do not let an older in-memory state overwrite it.
+            try:
+                latest_task = db.get_task(task_id)
+                latest_checkpoint = json.loads(latest_task.get("checkpoint_json") or "{}") if latest_task else {}
+                if isinstance(latest_checkpoint, dict) and latest_checkpoint.get("model_context_confirmed"):
+                    for key in (
+                        "model_num_ctx", "model_context_length", "model_context_source",
+                        "model_context_confirmed", "model_num_predict",
+                    ):
+                        if key in latest_checkpoint:
+                            saved_state[key] = latest_checkpoint[key]
+            except Exception:
+                logger.debug("Could not merge confirmed model context into checkpoint", exc_info=True)
             db.update_task(
                 task_id,
                 checkpoint_json=json.dumps(saved_state, ensure_ascii=False),
