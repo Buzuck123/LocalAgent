@@ -3833,7 +3833,15 @@ class OllamaClient:
         profile = self.model_profile(selected_model)
         task_context = _CURRENT_MODEL_CONTEXT.get()
         if isinstance(task_context, int) and task_context > 0 and _CURRENT_MODEL_OVERRIDE.get() == selected_model:
-            profile = {"model": selected_model, "num_ctx": task_context, "num_predict": profile.get("num_predict"), "source": "task_checkpoint"}
+            if profile.get("runtime_context_confirmed") and int(profile.get("runtime_context_limit") or 0) > 0:
+                # Once Ollama has loaded the model, /api/ps supersedes the
+                # pre-load estimate for this task's subsequent budgeting.
+                task_context = int(profile["runtime_context_limit"])
+                _CURRENT_MODEL_CONTEXT.set(task_context)
+            else:
+                profile["num_ctx"] = task_context
+                profile["runtime_context_limit"] = task_context
+                profile["source"] = "task_checkpoint"
         # Do not send Ollama's per-request `options`: they override PARAMETER
         # values stored in the selected model tag's Modelfile (num_ctx,
         # num_gpu, num_predict, temperature, etc.). The tag is the single
