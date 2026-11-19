@@ -287,7 +287,7 @@ def test_legacy_checkpoint_without_tool_calls_resumes(monkeypatch):
     monkeypatch.setattr(core, "client", FakeClient())
     monkeypatch.setattr(
         core, "settings",
-        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False),
+        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False, ollama_context_fallback=32768),
     )
 
     agent = make_agent()
@@ -350,7 +350,7 @@ def test_checkpoint_resume_does_not_duplicate_user_message(monkeypatch):
     monkeypatch.setattr(core, "client", FakeClient())
     monkeypatch.setattr(
         core, "settings",
-        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False),
+        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False, ollama_context_fallback=32768),
     )
 
     agent = make_agent()
@@ -573,7 +573,7 @@ def test_completed_journal_operation_resumes_without_dispatch(monkeypatch):
     monkeypatch.setattr(
         core,
         "settings",
-        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False),
+        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False, ollama_context_fallback=32768),
     )
 
     make_agent()._run_task(task["id"], core.TaskControl())
