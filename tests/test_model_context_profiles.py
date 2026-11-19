@@ -59,7 +59,6 @@ def test_llama_cpp_profile_uses_server_props_not_training_context():
     client.model = "bonsai"
     client._available_models = lambda: [{
         "name": "bonsai",
-        "context_length": 262144,
         "model_context_length": 262144,
     }]
     client._server_json_request = lambda path: {
@@ -98,7 +97,6 @@ def test_llama_cpp_profile_fallback_does_not_use_training_context():
     client.model = "bonsai"
     client._available_models = lambda: [{
         "name": "bonsai",
-        "context_length": 262144,
         "model_context_length": 262144,
     }]
     def unavailable(_path):
