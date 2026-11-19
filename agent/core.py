@@ -1398,6 +1398,27 @@ def _resume_pending_terminal_diagnostic(task_id, conversation_id, pending):
             break
         # A fresh diagnostic pass follows each bounded wait, including runtime errors.
 
+    # An interrupt can race with the final output chunk. Fetch the tail from the
+    # original operation ID after a confirmed interrupt; never start a new command.
+    if result.get("state") == "interrupted":
+        try:
+            final_poll = sandbox_manager.get_operation(
+                conversation_id, operation_id,
+                cursor=int(result.get("cursor") or 0), max_output_chars=1_048_576,
+                wait_timeout=0,
+            )
+            final_chunk = str(final_poll.get("stdout") or "")
+            final_stderr = str(final_poll.get("stderr") or "")
+            if final_stderr and final_stderr not in final_chunk:
+                final_chunk = (final_chunk.rstrip() + "\n" + final_stderr).lstrip("\n")
+            if final_chunk:
+                result["_terminal_output"] = str(result.get("_terminal_output") or "") + final_chunk
+                result["_terminal_text"] = str(result.get("_terminal_text") or "") + final_chunk
+            result["cursor"] = final_poll.get("cursor", result.get("cursor", 0))
+            result["exit_code"] = final_poll.get("exit_code", result.get("exit_code"))
+        except Exception:
+            logger.debug("Could not fetch final output after diagnostic interrupt", exc_info=True)
+
     # A completed/interrupted operation is not enough: prove that the persistent
     # Bash session can execute a harmless command before releasing the main agent.
     if result.get("state") != "waiting_input":
