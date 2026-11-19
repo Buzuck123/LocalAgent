@@ -3448,20 +3448,20 @@ class OllamaClient:
                 explicit = parameters.get("num_ctx")
                 explicit_num_predict = parameters.get("num_predict")
             elif isinstance(parameters, str):
-                match = re.search(r"(?im)^\\s*num_ctx\\s+(\\d+)\\s*$", parameters)
+                match = re.search(r"(?im)^\s*num_ctx\s+(\d+)\s*$", parameters)
                 if match:
                     explicit = match.group(1)
-                match = re.search(r"(?im)^\\s*num_predict\\s+(-?\\d+)\\s*$", parameters)
+                match = re.search(r"(?im)^\s*num_predict\s+(-?\d+)\s*$", parameters)
                 if match:
                     explicit_num_predict = match.group(1)
             modelfile = raw.get("modelfile", "") if isinstance(raw, dict) else ""
             if isinstance(modelfile, str):
                 if explicit is None:
-                    match = re.search(r"(?im)^\\s*PARAMETER\\s+num_ctx\\s+(\\d+)\\s*$", modelfile)
+                    match = re.search(r"(?im)^\s*PARAMETER\s+num_ctx\s+(\d+)\s*$", modelfile)
                     if match:
                         explicit = match.group(1)
                 if explicit_num_predict is None:
-                    match = re.search(r"(?im)^\\s*PARAMETER\\s+num_predict\\s+(-?\\d+)\\s*$", modelfile)
+                    match = re.search(r"(?im)^\s*PARAMETER\s+num_predict\s+(-?\d+)\s*$", modelfile)
                     if match:
                         explicit_num_predict = match.group(1)
             model_info = raw.get("model_info", {}) if isinstance(raw, dict) else {}
