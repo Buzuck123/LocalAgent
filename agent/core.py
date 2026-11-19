@@ -745,7 +745,7 @@ def _guard_loaded_file_context(result: dict[str, Any], messages: list[dict[str, 
     if not isinstance(result, dict) or result.get("ok") is not True:
         return result
     try:
-        limit = int(_CURRENT_MODEL_CONTEXT.get() or checkpoint.get("model_num_ctx") or settings.num_ctx)
+        limit = int(_CURRENT_MODEL_CONTEXT.get() or checkpoint.get("model_num_ctx") or settings.ollama_context_fallback)
         num_predict = checkpoint.get("model_num_predict")
         reserve = max(1024, min(int(num_predict or 2048), max(1024, int(limit * 0.20))))
         safety_margin = max(512, int(limit * 0.05))
@@ -1552,7 +1552,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 conversation_id=task["conversation_id"],
                 context_messages=context_messages or [],
                 main_model=main_model or settings.model,
-                context_limit=context_limit or settings.num_ctx,
+                context_limit=context_limit or settings.ollama_context_fallback,
             )
             _record_tool_debug_trace(task_id, "tool_result", {
                 "name": name, "duration_seconds": round(time.monotonic() - started, 3),
@@ -1999,7 +1999,7 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
     # Reserve room for the main model's next response and tool schemas. Token
     # estimates are approximate, so leave an additional safety margin.
     try:
-        limit = max(1, int(context_limit or settings.num_ctx))
+        limit = max(1, int(context_limit or settings.ollama_context_fallback))
         used = estimate_tokens(
             [*context_messages, {"role": "system", "content": json.dumps(TOOL_DEFINITIONS, ensure_ascii=False)}],
             model=main_model,
@@ -3485,7 +3485,7 @@ class OllamaClient:
                 configured_context = int(match.group(1)) * 1024
                 source = "tag_suffix"
         if configured_context <= 0:
-            configured_context = int(settings.num_ctx)
+            configured_context = int(settings.ollama_context_fallback)
             source = "localagent_fallback_unconfirmed"
 
         runtime_context = None
@@ -4225,7 +4225,7 @@ class Agent:
         except Exception:
             selected_profile = {
                 "num_ctx": getattr(settings, "llama_cpp_context", 32768) if task_provider == "llama_cpp"
-                else getattr(settings, "num_ctx", 65536),
+                else getattr(settings, "ollama_context_fallback", 4096),
                 "num_predict": None,
             }
         initial_checkpoint = {
@@ -4422,7 +4422,7 @@ class Agent:
             else:
                 pinned_context = int(cp.get("model_num_ctx") or (
                     settings.llama_cpp_context if task_provider == "llama_cpp"
-                    else getattr(settings, "num_ctx", 65536)
+                    else getattr(settings, "ollama_context_fallback", 4096)
                 ))
             db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
             _CURRENT_MODEL_CONTEXT.set(int(pinned_context))
@@ -5208,7 +5208,7 @@ class Agent:
                                         context_limit=(
                                             _CURRENT_MODEL_CONTEXT.get()
                                             or checkpoint.get("model_num_ctx")
-                                            or settings.num_ctx
+                                            or settings.ollama_context_fallback
                                         ),
                                     )
                         except (TerminalDiagnosticLLMUnavailable, TerminalRecoveryPending):
@@ -5581,7 +5581,7 @@ class Agent:
                 num_ctx = int(
                     _CURRENT_MODEL_CONTEXT.get()
                     or checkpoint.get("model_num_ctx")
-                    or (settings.llama_cpp_context if checkpoint.get("provider") == "llama_cpp" else settings.num_ctx)
+                    or (settings.llama_cpp_context if checkpoint.get("provider") == "llama_cpp" else settings.ollama_context_fallback)
                 )
                 selected_model = str(checkpoint.get("model") or "")
                 tool_budget_message = {
