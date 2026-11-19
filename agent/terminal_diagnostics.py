@@ -48,7 +48,7 @@ def build_diagnostic_context(snapshot: dict[str, Any],
 
     command = str(snapshot.get("command") or "")
     command_id = add("command", "terminal_operation", "operation",
-                     command[:8000] or "Исходная команда не сохранена.",
+                     command[:100000] or "Исходная команда не сохранена.",
                      "Это команда, выполняющаяся в основной Bash-сессии.",
                      "Сама команда не говорит, зависла ли операция.")
 
@@ -181,7 +181,7 @@ def build_diagnostic_context(snapshot: dict[str, Any],
 
     report = {
         "operation": {
-            "command": command[:8000],
+            "command": command[:100000],
             "elapsed_seconds": round(elapsed, 1),
             "silent_seconds": round(idle, 1),
             "runtime_state": state,
@@ -221,14 +221,30 @@ def authorize_recovery(action: str, proposal: dict[str, Any], evidence: list[dic
     operation_id = str(snapshot.get("operation_id") or "")
     if any(item.get("operation_id") != operation_id for item in selected):
         return False, "Доказательства относятся к другой операции."
+    from datetime import datetime, timezone
+    try:
+        sampled = datetime.fromisoformat(str(snapshot.get("sampled_at") or "").replace("Z", "+00:00"))
+        if sampled.tzinfo is None:
+            sampled = sampled.replace(tzinfo=timezone.utc)
+        for item in selected:
+            observed = datetime.fromisoformat(str(item.get("timestamp") or "").replace("Z", "+00:00"))
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=timezone.utc)
+            if abs((sampled - observed).total_seconds()) > 180:
+                return False, "Одно из доказательств устарело; требуется новый диагностический снимок."
+    except (TypeError, ValueError):
+        return False, "Не удалось проверить время получения доказательств."
     if action == "interrupt_terminal_operation":
         kinds = {item.get("kind") for item in selected}
         state = str(snapshot.get("operation_state") or "unknown")
         elapsed = float(snapshot.get("elapsed_seconds") or 0)
         hard_timeout = snapshot.get("command_hard_timeout_seconds")
+        operation_is_running = state in {"running", "waiting_input"}
         timeout_elapsed = (
-            isinstance(hard_timeout, (int, float)) and hard_timeout > 0
+            operation_is_running
+            and isinstance(hard_timeout, (int, float)) and hard_timeout > 0
             and elapsed >= float(hard_timeout)
+            and "operation_state" in kinds
         )
         repeated_silence = (
             state in {"running", "waiting_input"}
