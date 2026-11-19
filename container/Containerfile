@@ -135,6 +135,7 @@ COPY swerex_server.py /usr/local/bin/localagent-swerex-server.py
 RUN chmod 755 /usr/local/bin/container-entrypoint /usr/local/bin/localagent-swerex-server.py \
     && (getent group privoxy >/dev/null || groupadd --system privoxy) \
     && (getent passwd privoxy >/dev/null || useradd --system --gid privoxy --no-create-home --home-dir /var/empty --shell /usr/sbin/nologin privoxy) \
+    && (getent passwd localagent-diagnostic >/dev/null || useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin localagent-diagnostic) \
     && mkdir -p /var/log/privoxy \
     && chown -R privoxy:privoxy /var/log/privoxy
 
