@@ -264,3 +264,58 @@ def test_terminal_diagnostic_cycles_are_bounded_and_deferred(monkeypatch):
     assert "Диагностика приостановлена после 3 циклов" in result["_terminal_output"]
     assert result["state"] == "running"
 
+def test_interrupt_race_polls_original_operation_instead_of_starting_new_command(monkeypatch):
+    from agent import db
+    from agent import sandbox_manager as sandbox_module
+
+    monkeypatch.setattr(
+        db, "get_task",
+        lambda task_id: {"id": task_id, "conversation_id": "conversation-1"},
+    )
+    monkeypatch.setattr(core, "_record_tool_debug_trace", lambda *args, **kwargs: None)
+    dispatch_calls = []
+
+    def fake_dispatch(name, arguments, **kwargs):
+        dispatch_calls.append((name, arguments))
+        return {
+            "_terminal_text": "partial output",
+            "_terminal_output": "partial output",
+            "state": "running",
+            "operation_id": "terminal-op",
+            "cursor": 7,
+            "_diagnostic_due": True,
+        }
+
+    class Manager:
+        def get_operation(self, conversation_id, operation_id, *, cursor, wait_timeout):
+            assert conversation_id == "conversation-1"
+            assert operation_id == "terminal-op"
+            assert cursor == 7
+            return {
+                "state": "completed",
+                "stdout": "final output",
+                "exit_code": 0,
+                "timed_out": False,
+                "interrupted": False,
+                "cursor": 12,
+            }
+
+    monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
+    monkeypatch.setattr(
+        core, "_run_terminal_diagnostic",
+        lambda *args, **kwargs: (
+            "interrupt_operation", "The command finished during interrupt.",
+            "diag-1", [], [], {"state": "completed"},
+        ),
+    )
+    monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
+
+    result = core._dispatch_tool_for_task(
+        "terminal", {"command": "long command"}, "task-1"
+    )
+
+    assert len(dispatch_calls) == 1
+    assert result["state"] == "completed"
+    assert "final output" in result["_terminal_output"]
+
