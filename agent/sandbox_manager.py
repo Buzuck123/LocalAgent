@@ -834,7 +834,13 @@ print(json.dumps(result))
         forbidden = {"-exec", "-execdir", "-delete", "-fprint", "-fls", "--pre", "--post", "--output"}
         if any(arg in forbidden or arg.startswith("--pre=") or arg.startswith("--post=") for arg in argv[1:]):
             raise ValueError("Команда содержит аргумент, несовместимый с режимом только чтения.")
-        runtime = self.get_runtime(conversation_id, check_proxy=False)
+        runtime = self._runtimes.get(conversation_id)
+        if runtime is None:
+            record = db.get_sandbox(conversation_id)
+            if not record:
+                raise SandboxError("Sandbox не найден; диагностическая Bash-сессия не запускается.")
+            runtime = self._runtime_factory(port=record["host_port"], token=record["auth_token"])
+            self._runtimes[conversation_id] = runtime
         if not runtime.is_alive():
             raise SandboxError("SWE-ReX не отвечает; диагностическая Bash-сессия не запускается.")
         runtime.ensure_session("diagnostic")
