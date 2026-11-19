@@ -75,6 +75,13 @@ def build_diagnostic_context(snapshot: dict[str, Any],
         "Тихая команда может штатно ожидать сеть, ввод или завершение фоновой работы.",
     )
     evidence[-1]["value_seconds"] = idle
+    if snapshot.get("new_output_since_cursor"):
+        add(
+            "new_terminal_output", "swerex_get_operation", "operation",
+            "SWE-ReX вернул новый фрагмент вывода после предыдущего курсора.",
+            "Есть новое наблюдаемое действие команды.",
+            "Сам по себе вывод не гарантирует корректное завершение операции.",
+        )
 
     inspect = _parse_inspect(snapshot)
     container_state = (inspect.get("State") or {}) if isinstance(inspect, dict) else {}
