@@ -707,7 +707,9 @@ def _restore_tool_operation_payload(record, tool_name, arguments, diagnosis_stat
         failure.setdefault("error", "Инструмент завершился ошибкой до сохранения результата.")
         failure["exception_type"] = failure.get("exception_type", "ToolError")
         if failure["exception_type"] == "ToolContractError" and isinstance(diagnosis_state, dict):
-            contract_errors = diagnosis_state.setdefault("unresolved_tool_contract_errors", [])
+            contract_errors = diagnosis_state.get("unresolved_tool_contract_errors")
+            if not isinstance(contract_errors, list):
+                contract_errors = []
             contract_message = f"ToolContractError: {str(failure.get('error') or '')[:1000]}"
             if contract_message not in contract_errors:
                 contract_errors.append(contract_message)
