@@ -533,6 +533,7 @@ print(json.dumps(result))
         runtime_errors = 0
         runtime_error_text = None
         diagnostic_reason = None
+        poll_count = 0
         poll_interval = max(0.25, float(getattr(settings, "terminal_poll_interval_seconds", 2)))
         while True:
             now = time.monotonic()
@@ -548,6 +549,7 @@ print(json.dumps(result))
                     max_output_chars=1_048_576,
                     wait_timeout=min(poll_interval, max(0.1, remaining)),
                 )
+                poll_count += 1
                 runtime_errors = 0
                 runtime_error_text = None
             except Exception as exc:
@@ -582,7 +584,10 @@ print(json.dumps(result))
                 break
             if state == "waiting_input":
                 break
-            if time.monotonic() - last_output_at >= idle_limit:
+            # One quiet poll is not enough to distinguish a silent command from
+            # a transient gap. Require a second observation before handing off
+            # to diagnostics; waiting_input and terminal states were handled above.
+            if poll_count >= 2 and time.monotonic() - last_output_at >= idle_limit:
                 diagnostic_reason = "idle_timeout"
                 break
 
@@ -606,18 +611,33 @@ print(json.dumps(result))
                 # Verify it with a harmless command; never call create_session()
                 # as a health check (SWE-ReX logs SessionExistsError server-side).
                 marker = "__LOCALAGENT_TERMINAL_READY__"
-                probe = self.get_runtime(conversation_id).run(
-                    f"printf '{marker}'", session="main", timeout=10,
-                )
+                runtime = self.get_runtime(conversation_id)
+                runner = getattr(runtime, "run", None)
+                if callable(runner):
+                    probe = runner(f"printf '{marker}'", session="main", timeout=10)
+                    verified = (
+                        probe.get("exit_code") == 0
+                        and not probe.get("timed_out")
+                        and marker in str(probe.get("stdout") or "")
+                    )
+                    session_was_recreated = bool(probe.get("shell_recovered"))
+                else:
+                    # Compatibility for lightweight runtime adapters that expose
+                    # only session creation; production SandboxRuntime implements run().
+                    session_was_recreated = bool(runtime.ensure_session("main"))
+                    verified = session_was_recreated
+                    probe = {"stderr": "Runtime has no run() health-check method"}
                 with self._guard:
                     created_during_recovery = conversation_id in self._new_sessions
                     self._new_sessions.discard(conversation_id)
-                if probe.get("exit_code") == 0 and not probe.get("timed_out") and marker in str(probe.get("stdout") or ""):
-                    shell_state = "recreated" if recovered_operation and created_during_recovery else "available"
+                if verified:
+                    shell_state = (
+                        "recreated" if session_was_recreated or
+                        (recovered_operation and created_during_recovery) else "available"
+                    )
                     if shell_state == "recreated":
                         output = (output.rstrip() + "\n" +
-                                  "[После восстановления контейнера Bash-сессия была создана заново; "
-                                  "переменные и функции предыдущей сессии не сохранены.]").lstrip("\n")
+                                  "[Bash-сессия была создана заново; переменные и функции предыдущей сессии не сохранены.]").lstrip("\n")
                 else:
                     shell_state = "unavailable"
                     detail = str(probe.get("stderr") or probe.get("failure_reason") or "Bash probe returned no confirmation")
