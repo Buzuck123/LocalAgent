@@ -407,7 +407,7 @@ def task_usage(tid: str):
     except Exception:
         checkpoint = {}
     provider = str(checkpoint.get("provider") or "ollama") if isinstance(checkpoint, dict) else "ollama"
-    fallback_context = settings.llama_cpp_context if provider == "llama_cpp" else settings.num_ctx
+    fallback_context = settings.llama_cpp_context if provider == "llama_cpp" else settings.ollama_context_fallback
     context_limit = int(checkpoint.get("model_num_ctx") or fallback_context) if isinstance(checkpoint, dict) else fallback_context
     usage["context_limit"] = context_limit
     usage["model_context_length"] = checkpoint.get("model_context_length") if isinstance(checkpoint, dict) else None
