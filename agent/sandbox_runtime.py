@@ -184,11 +184,12 @@ class SwerexRemoteRuntime:
                 action = BashAction(command=command, session=session)
             return self._call(self._runtime.run_in_session(action), timeout=timeout + 60)
 
+        session_recreated = False
         try:
             result = invoke()
         except Exception as exc:
             if self._has_exception_named(exc, "SessionDoesNotExistError"):
-                self.ensure_session(session)
+                session_recreated = bool(self.ensure_session(session))
                 result = invoke()
             elif self._is_timeout_exception(exc):
                 recovered = self._recover_session(session)
@@ -206,6 +207,10 @@ class SwerexRemoteRuntime:
                 raise
 
         payload = self._result_payload(result)
+        if session_recreated:
+            # Expose that the health-check command itself had to create a new
+            # PTY, so the terminal facade can report loss of shell-local state.
+            payload["shell_recovered"] = True
         if payload["timed_out"]:
             recovered = self._recover_session(session)
             payload["shell_recovered"] = recovered
