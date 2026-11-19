@@ -289,7 +289,12 @@ def load_file_for_model(path: str, start: int = 0, length: int = 80000, *,
         except (TypeError, ValueError) as exc:
             raise ValueError("Unable to determine audio duration") from exc
         if probe.returncode != 0 or not (0.1 <= duration <= 30.0):
-            raise ValueError("Gemma audio input must be between 0.1 and 30 seconds")
+            measured = f"{duration:.2f} seconds" if probe.returncode == 0 else "unknown (ffprobe failed)"
+            raise ValueError(
+                f"Audio duration is {measured}; ask_model supports 0.1–30 seconds per call. "
+                "Split longer audio into segments of at most 30 seconds, keep each segment's "
+                "offset in the original timeline, and use a small overlap between segments."
+            )
         cache_dir = ATTACHMENT_ROOT / "audio_normalized"
         cache_dir.mkdir(parents=True, exist_ok=True)
         wav_path = cache_dir / (uuid.uuid4().hex + ".wav")
@@ -515,6 +520,11 @@ TOOL_DEFINITIONS = [
     {"type": "function", "function": {
         "name": "ask_model",
         "description": ("Ask an independent Gemma 4 model a question in a clean, isolated context. The required prompt is the only text context; optionally attach one file from the conversation's Linux container. "
+                        "FILE USAGE RULES: The file parameter is optional. If the question does not require inspection of a particular file, call ask_model without file. If the task asks to analyze, recognize, describe, extract information from, or verify the contents of a particular file, pass that file's absolute container path in file; mentioning its filename in prompt does not send its contents. Each file needed by the analysis must be explicitly supplied. This tool currently accepts one file per call: for multiple required files, make separate calls and provide the relevant file in each call, then combine the findings; do not imply that an unprovided file was analyzed. Before calling, inspect the file's size and, for audio/video, duration using available file metadata or container utilities. "
+                        "Do not automatically send every user attachment to this expert. Large tables, datasets, spreadsheets, and files intended for bulk/programmatic processing should normally be processed with terminal and suitable libraries; ask_model is for model-level interpretation of selected content, not a replacement for programmatic processing. "
+                        "Audio: maximum 12 MB and 30 seconds per call. If either limit is exceeded, split the source into suitable segments before calling; preserve each segment's offset in the original timeline, process segments sequentially, use a small overlap between adjacent segments to avoid losing events at boundaries, and deduplicate boundary findings when combining results. "
+                        "Video: maximum 100 MB and 60 seconds per call; frames are sampled at up to 1 frame per second, with no more than 60 frames. Split longer videos into suitable segments and retain each segment's original timeline offset. "
+                        "If a file cannot be prepared within the supported format, size, or duration limits, explain the limitation and do not present guesses as analysis results. "
                         "FIXED ask_model allow-list (extension-based): text/code .txt .md .rst .csv .tsv .json .jsonl .py .html .htm .xml .yaml .yml .log .ini .toml .cfg .conf .js .ts .jsx .tsx .css .sql .sh .bat .ps1 .java .c .h .cpp .hpp .rs .go .php .rb .kt .swift .env .properties; documents .pdf .docx .xlsx; images .png .jpg .jpeg .webp .gif; audio .wav .mp3 .m4a .aac .ogg .opus .flac .wma; video .mp4 .m4v .mov .mkv .avi .webm .flv .wmv. This list is fixed for ask_model and is not the dynamic file-type detection policy of load_file_for_model. "
                         "Limits: about 32k input tokens; images/audio up to 12 MB; audio up to 30 seconds; video up to 100 MB and 60 seconds, converted to at most 60 timestamped JPEG frames at up to 1 frame/second; documents up to 50 MB. "
                         "The file metadata object reports the original MIME type and size, and after probing/conversion the actual duration, extracted frame_count and conversion status/output format. "

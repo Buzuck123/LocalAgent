@@ -1102,8 +1102,16 @@ print(json.dumps(result))
                 expected_size = int(str(probe.get("stdout", "")).strip().splitlines()[-1])
             except (ValueError, IndexError) as exc:
                 raise SandboxError("Could not determine container file size") from exc
-            if expected_size < 0 or (max_bytes is not None and expected_size > max_bytes):
-                raise ValueError(f"Container file exceeds the allowed size limit ({max_bytes} bytes)")
+            if expected_size < 0:
+                raise ValueError("Container file has an invalid negative size")
+            if max_bytes is not None and expected_size > max_bytes:
+                actual_mib = expected_size / (1024 * 1024)
+                limit_mib = max_bytes / (1024 * 1024)
+                raise ValueError(
+                    f"Container file exceeds the allowed size limit: {expected_size:,} bytes "
+                    f"({actual_mib:.2f} MiB); limit is {max_bytes:,} bytes "
+                    f"({limit_mib:.2f} MiB). Split or reduce the file before loading it."
+                )
             if target.exists() or target.is_symlink():
                 raise FileExistsError("Download target already exists")
             written = 0

@@ -281,7 +281,12 @@ def extract_video_frames(path: str | Path, *, max_frames: int = MAX_VIDEO_FRAMES
     except (TypeError, ValueError):
         raise ValueError("Не удалось определить длительность видео")
     if not (0.5 <= duration <= MAX_VIDEO_DURATION_SECONDS):
-        raise ValueError(f"Длительность видео должна быть от 0.5 до {MAX_VIDEO_DURATION_SECONDS} секунд")
+        raise ValueError(
+            f"Длительность видео — {duration:.2f} с; ограничение — от 0.5 до "
+            f"{MAX_VIDEO_DURATION_SECONDS} с на один вызов (до 1 кадра/с, "
+            f"не более {MAX_VIDEO_FRAMES} кадров). Раздели более длинное видео "
+            "на фрагменты и сохрани смещение каждого фрагмента относительно исходного видео."
+        )
     if not isinstance(max_frames, int) or not 1 <= max_frames <= MAX_VIDEO_FRAMES:
         raise ValueError(f"max_frames must be between 1 and {MAX_VIDEO_FRAMES}")
 

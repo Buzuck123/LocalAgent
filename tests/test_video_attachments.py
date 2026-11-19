@@ -205,3 +205,23 @@ def test_uploaded_video_metadata_has_source_facts_and_pending_conversion(tmp_pat
     assert metadata["duration_seconds"] == 12.0
     assert metadata["frame_count"] is None
     assert metadata["conversion"]["status"] == "pending"
+
+
+
+def test_video_duration_error_reports_actual_duration_and_segment_limit(tmp_path, monkeypatch):
+    video = tmp_path / "long.mp4"
+    video.write_bytes(b"fake-video")
+    monkeypatch.setattr(attachments, "ATTACHMENT_ROOT", tmp_path / "attachments")
+    monkeypatch.setattr(attachments.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        attachments.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="75.5", stderr=""),
+    )
+
+    with pytest.raises(ValueError) as exc:
+        attachments.extract_video_frames(video)
+    message = str(exc.value)
+    assert "75.50" in message
+    assert "60 с" in message
+    assert "не более 60 кадров" in message
+    assert "Раздели более длинное видео" in message
