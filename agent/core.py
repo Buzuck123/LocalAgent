@@ -1348,7 +1348,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                             result["state"] = "runtime_unresponsive"
                             result["_diagnostic_due"] = False
                             notice = (
-                                "\\n[Прерывание совпало с завершением операции, но получить её итоговый результат "
+                                "\n[Прерывание совпало с завершением операции, но получить её итоговый результат "
                                 f"не удалось: {type(exc).__name__}. Новая команда не запускалась.]"
                             )
                             result["_terminal_text"] = str(result.get("_terminal_text") or "") + notice
