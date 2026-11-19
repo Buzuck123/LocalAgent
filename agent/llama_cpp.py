@@ -100,9 +100,10 @@ class LlamaCppClient:
         source = "llama_cpp_config_fallback_unconfirmed"
         if runtime_context is not None:
             source = "llama_cpp_router_args"
-        else:
-            # /props is a secondary source when Router argv is unavailable
-            # (typically for a non-Router llama-server endpoint).
+        elif item is None:
+            # /props is safe only when this is a direct llama-server endpoint
+            # and no Router model entry exists. On a Router, /props may describe
+            # a different currently loaded model than the one being profiled.
             try:
                 props = self._server_json_request("/props")
                 generation = props.get("default_generation_settings", {}) if isinstance(props, dict) else {}
@@ -111,8 +112,6 @@ class LlamaCppClient:
                 if parsed > 0:
                     runtime_context = parsed
                     source = "llama_cpp_runtime_props"
-            except (TypeError, ValueError, RuntimeError, OSError):
-                pass
             except Exception:
                 pass
 
