@@ -111,7 +111,7 @@ def test_ollama_chat_sends_video_frames_as_ordered_images(tmp_path, monkeypatch)
 
     client = core.OllamaClient()
     captured = {}
-    client._post = lambda endpoint, payload, timeout=None: (
+    client._post_stream = lambda endpoint, payload, timeout=None: (
         captured.update({"endpoint": endpoint, "payload": payload}) or
         {"message": {"role": "assistant", "content": "video understood"}}
     )
