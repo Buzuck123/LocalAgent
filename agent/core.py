@@ -1235,6 +1235,7 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                         "limitation": "Команда выполняется от пользователя localagent-diagnostic; доступ ограничен правами файловой системы.",
                     }
                     evidence_history.append(evidence_item)
+                    tool_result["evidence_id"] = evidence_item["id"]
                     actions.append({"type": "evidence", "evidence": [evidence_item]})
                 elif tool_name == "propose_terminal_recovery":
                     proposed = str(args.get("action") or "")
