@@ -212,6 +212,21 @@ def test_router_model_list_and_selection_use_server_ids(monkeypatch):
     assert client.select_model("qwen35-9b")["selected_model"] == "qwen35-9b"
 
 
+def test_router_model_without_context_arg_does_not_use_another_models_props(monkeypatch):
+    client = LlamaCppClient()
+    monkeypatch.setattr(client, "_json_request", lambda path: {
+        "data": [{"id": "unloaded-model", "status": {"value": "unloaded", "args": ["llama-server"]}}]
+    })
+    monkeypatch.setattr(
+        client, "_server_json_request",
+        lambda path: {"default_generation_settings": {"n_ctx": 262144}},
+    )
+    profile = client.model_profile("unloaded-model")
+    assert profile["num_ctx"] == settings.llama_cpp_context
+    assert profile["source"] == "llama_cpp_config_fallback_unconfirmed"
+    assert profile["runtime_context_confirmed"] is False
+
+
 def test_context_size_from_router_args_handles_separate_and_equals_forms():
     assert LlamaCppClient._context_size_from_args(
         ["llama-server", "--ctx-size", "202752"]
