@@ -66,13 +66,10 @@ def test_ollama_profile_marks_localagent_fallback_as_unconfirmed():
     assert profile["source"] == "localagent_fallback_unconfirmed"
 
 
-def test_llama_cpp_profile_uses_server_props_not_training_context():
+def test_llama_cpp_profile_uses_server_props_for_direct_server_without_router_models():
     client = LlamaCppClient.__new__(LlamaCppClient)
     client.model = "bonsai"
-    client._available_models = lambda: [{
-        "name": "bonsai",
-        "model_context_length": 262144,
-    }]
+    client._available_models = lambda: []
     client._server_json_request = lambda path: {
         "default_generation_settings": {"n_ctx": 65536}
     }
@@ -81,44 +78,45 @@ def test_llama_cpp_profile_uses_server_props_not_training_context():
 
     assert profile["num_ctx"] == 65536
     assert profile["runtime_context_limit"] == 65536
-    assert profile["model_context_length"] == 262144
+    assert "model_context_length" not in profile
     assert profile["runtime_context_confirmed"] is True
     assert profile["source"] == "llama_cpp_runtime_props"
 
 
-
-def test_llama_cpp_profile_uses_router_runtime_context_when_props_is_not_proxied():
+def test_llama_cpp_profile_uses_router_runtime_context_without_architecture_metadata():
     client = LlamaCppClient.__new__(LlamaCppClient)
     client.model = "bonsai"
     client._available_models = lambda: [{
         "name": "bonsai",
         "runtime_context_limit": 65536,
-        "model_context_length": 262144,
     }]
     client._server_json_request = lambda path: {}
 
     profile = client.model_profile("bonsai")
 
     assert profile["num_ctx"] == 65536
-    assert profile["model_context_length"] == 262144
+    assert profile["runtime_context_limit"] == 65536
+    assert "model_context_length" not in profile
     assert profile["runtime_context_confirmed"] is True
-    assert profile["source"] == "llama_cpp_models_runtime"
+    assert profile["source"] == "llama_cpp_router_args"
 
-def test_llama_cpp_profile_fallback_does_not_use_training_context():
+
+def test_llama_cpp_router_missing_context_uses_unconfirmed_fallback_without_props():
     client = LlamaCppClient.__new__(LlamaCppClient)
     client.model = "bonsai"
     client._available_models = lambda: [{
         "name": "bonsai",
-        "model_context_length": 262144,
+        "runtime_context_limit": None,
     }]
-    def unavailable(_path):
-        raise RuntimeError("props unavailable")
-    client._server_json_request = unavailable
 
+    def unexpected_props(_path):
+        raise AssertionError("Router /props must not be used for a model-specific fallback")
+
+    client._server_json_request = unexpected_props
     profile = client.model_profile("bonsai")
 
     assert profile["num_ctx"] == core.settings.llama_cpp_context
-    assert profile["model_context_length"] == 262144
+    assert "model_context_length" not in profile
     assert profile["runtime_context_confirmed"] is False
     assert profile["source"] == "llama_cpp_config_fallback_unconfirmed"
 
