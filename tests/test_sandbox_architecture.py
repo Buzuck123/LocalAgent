@@ -144,8 +144,10 @@ def test_new_sandbox_is_created_once_with_rootless_limits_and_dynamic_loopback_p
     assert state["record"]["host_port"] == 32777
     assert state["record"]["session_name"] == "main"
     run_call = next(args for args, _env, _check in podman.calls if args[1:2] == ["run"])
-    assert "--cpus" in run_call and "2.0" in run_call
-    assert "--memory" in run_call and "4g" in run_call
+    assert "--cpus" in run_call
+    assert run_call[run_call.index("--cpus") + 1] == str(test_settings.sandbox_cpus)
+    assert "--memory" in run_call
+    assert run_call[run_call.index("--memory") + 1] == str(test_settings.sandbox_memory)
     assert "--network" in run_call and "localagent-sandbox-internal-test" in run_call
     assert "127.0.0.1::8000" in run_call
     assert "-v" in run_call
@@ -461,7 +463,10 @@ def test_restore_all_reconnects_existing_containers_without_creating_new_ones(mo
     runtime = FakeRuntime()
     manager = SandboxManager(runtime_factory=lambda **kw: runtime, command_runner=podman)
     assert manager.restore_all() == {"conversation-restore": "restored"}
-    assert runtime.sessions == ["main"]
+    # Reconnecting to a running persisted container must not issue a
+    # duplicate create_session request; get_runtime verifies the existing PTY
+    # through its normal auth-cleanup command instead.
+    assert runtime.sessions == []
     assert not any(args[1:2] == ["run"] for args, _, _ in podman.calls)
 
 
@@ -563,3 +568,40 @@ def test_container_file_download_uses_bounded_chunks_and_checksum(tmp_path, monk
 
     with pytest.raises(ValueError, match="allowed size limit"):
         manager.download_file("conversation-1", "/tmp/source.bin", tmp_path / "too-large.bin", max_bytes=10)
+
+
+def test_swerex_session_exists_wrapped_in_exception_group_is_treated_as_existing(monkeypatch):
+    class CreateBashSessionRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class SessionExistsError(Exception):
+        pass
+
+    class FakeRemote:
+        def __init__(self, **kwargs):
+            pass
+
+        async def create_session(self, request):
+            raise ExceptionGroup("session creation failed", [SessionExistsError("already exists")])
+
+    swerex = types.ModuleType("swerex")
+    runtime_mod = types.ModuleType("swerex.runtime")
+    local_mod = types.ModuleType("swerex.runtime.local")
+    remote_mod = types.ModuleType("swerex.runtime.remote")
+    local_mod.CreateBashSessionRequest = CreateBashSessionRequest
+    remote_mod.RemoteRuntime = FakeRemote
+    monkeypatch.setitem(sys.modules, "swerex", swerex)
+    monkeypatch.setitem(sys.modules, "swerex.runtime", runtime_mod)
+    monkeypatch.setitem(sys.modules, "swerex.runtime.local", local_mod)
+    monkeypatch.setitem(sys.modules, "swerex.runtime.remote", remote_mod)
+
+    adapter = SwerexRemoteRuntime(
+        host="http://127.0.0.1",
+        port=1234,
+        auth_token="secret",
+        loop_runner=lambda awaitable, timeout=10: asyncio.run(awaitable),
+    )
+
+    assert adapter.ensure_session("main") is False
+

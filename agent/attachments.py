@@ -46,6 +46,48 @@ def _safe_name(name: str) -> str:
     return name or "attachment"
 
 
+def build_attachment_metadata(
+    name: str,
+    mime_type: str,
+    kind: str,
+    size_bytes: int,
+    *,
+    duration_seconds: float | None = None,
+    frame_count: int | None = None,
+    conversion: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the common, model-visible metadata contract for an attachment."""
+    return {
+        "schema_version": 1,
+        "name": Path(str(name or "attachment")).name,
+        "extension": Path(str(name or "")).suffix.lower(),
+        "mime_type": str(mime_type or "application/octet-stream").lower(),
+        "media_type": str(kind or "unknown"),
+        "size_bytes": int(size_bytes or 0),
+        "duration_seconds": round(float(duration_seconds), 2) if duration_seconds is not None else None,
+        "frame_count": int(frame_count) if frame_count is not None else None,
+        "conversion": dict(conversion or {"status": "not_required", "output_format": None}),
+    }
+
+
+def attachment_metadata_summary(metadata: dict[str, Any] | None) -> str:
+    """Render the shared metadata contract as concise instructions for the LLM."""
+    if not isinstance(metadata, dict):
+        return ""
+    fields = [
+        f"type={metadata.get('mime_type') or metadata.get('media_type')}",
+        f"size={int(metadata.get('size_bytes') or 0)} bytes",
+    ]
+    if metadata.get("duration_seconds") is not None:
+        fields.append(f"duration={metadata['duration_seconds']} s")
+    if metadata.get("frame_count") is not None:
+        fields.append(f"frames={metadata['frame_count']}")
+    conversion = metadata.get("conversion")
+    if isinstance(conversion, dict) and conversion.get("status") not in {None, "not_required"}:
+        fields.append(f"conversion={conversion.get('status')} ({conversion.get('output_format') or 'format unspecified'})")
+    return "; ".join(fields)
+
+
 def _validate_ooxml_bytes(raw: bytes) -> None:
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
@@ -239,7 +281,12 @@ def extract_video_frames(path: str | Path, *, max_frames: int = MAX_VIDEO_FRAMES
     except (TypeError, ValueError):
         raise ValueError("Не удалось определить длительность видео")
     if not (0.5 <= duration <= MAX_VIDEO_DURATION_SECONDS):
-        raise ValueError(f"Длительность видео должна быть от 0.5 до {MAX_VIDEO_DURATION_SECONDS} секунд")
+        raise ValueError(
+            f"Длительность видео — {duration:.2f} с; ограничение — от 0.5 до "
+            f"{MAX_VIDEO_DURATION_SECONDS} с на один вызов (до 1 кадра/с, "
+            f"не более {MAX_VIDEO_FRAMES} кадров). Раздели более длинное видео "
+            "на фрагменты и сохрани смещение каждого фрагмента относительно исходного видео."
+        )
     if not isinstance(max_frames, int) or not 1 <= max_frames <= MAX_VIDEO_FRAMES:
         raise ValueError(f"max_frames must be between 1 and {MAX_VIDEO_FRAMES}")
 
@@ -457,7 +504,9 @@ def save_attachments(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]
                 raise ValueError("Видео должно длиться от 0.5 до 60 секунд")
             host_workspace_path = _persist_original_in_host_work(name, raw)
             result.append({"name": name, "mime_type": mime, "kind": "video",
-                           "path": str(path), "size_bytes": len(raw), "host_workspace_path": host_workspace_path})
+                           "path": str(path), "size_bytes": len(raw),
+                           "duration_seconds": round(duration, 2),
+                           "host_workspace_path": host_workspace_path})
         elif ext in AUDIO_EXTENSIONS or mime in AUDIO_MIME_TYPES:
             if ext not in AUDIO_EXTENSIONS:
                 raise ValueError(f"Unsupported audio format: {name}")
@@ -507,6 +556,19 @@ def save_attachments(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]
             result.append({"name": name, "mime_type": mime, "kind": "document", "extracted_text": text,
                            "path": str(stored_path), "workspace_path": ".attachments/" + stored_path.name,
                            "size_bytes": len(raw), "host_workspace_path": host_workspace_path})
+    for attachment in result:
+        attachment["metadata"] = build_attachment_metadata(
+            attachment.get("name"), attachment.get("mime_type"), attachment.get("kind"),
+            attachment.get("size_bytes", 0),
+            duration_seconds=attachment.get("duration_seconds"),
+            conversion=(
+                {"status": "completed", "output_format": "mono 16 kHz float WAV"}
+                if attachment.get("kind") == "audio" else
+                {"status": "pending", "output_format": "timestamped JPEG frames"}
+                if attachment.get("kind") == "video" else
+                {"status": "not_required", "output_format": None}
+            ),
+        )
     return result
 
 
@@ -515,14 +577,16 @@ def model_message_content(content: str, attachments: list[dict[str, Any]] | None
     for attachment in attachments or []:
         host_path = attachment.get("host_workspace_path")
         path_line = f"\nОригинал файла сохранён в контейнере: {host_path}" if host_path else ""
+        metadata_line = attachment_metadata_summary(attachment.get("metadata"))
+        metadata_line = f"\nMetadata: {metadata_line}" if metadata_line else ""
         if attachment.get("kind") == "document":
-            parts.append(f"\n\n--- Вложенный документ: {attachment.get('name','document')}{path_line} ---\n{attachment.get('extracted_text','')}")
+            parts.append(f"\n\n--- Вложенный документ: {attachment.get('name','document')}{path_line}{metadata_line} ---\n{attachment.get('extracted_text','')}")
         elif attachment.get("kind") == "video":
-            parts.append(f"\n[Video attached: {attachment.get('name','video')}. Original: {host_path}. The model receives normalized sampled frames; audio is handled separately when available.]")
+            parts.append(f"\n[Video attached: {attachment.get('name','video')}. Original: {host_path}.{metadata_line} The model receives normalized sampled frames; audio is handled separately when available.]")
         elif attachment.get("kind") == "audio":
-            parts.append(f"\n[Audio attached: {attachment.get('name','audio')}. Original: {host_path}. Audio input is normalized to mono 16 kHz float WAV.]")
+            parts.append(f"\n[Audio attached: {attachment.get('name','audio')}. Original: {host_path}.{metadata_line} Audio input is normalized to mono 16 kHz float WAV.]")
         else:
-            parts.append(f"\n[Прикреплено изображение: {attachment.get('name','image')}; оригинал: {host_path}]")
+            parts.append(f"\n[Прикреплено изображение: {attachment.get('name','image')}; оригинал: {host_path}; {metadata_line}]")
     return "\n".join(part for part in parts if part).strip()
 
 

@@ -201,3 +201,50 @@ def test_load_file_for_model_rejects_oversized_default_text_without_truncating(t
     assert result["ok"] is False
     assert result["total_chars"] == 80001
     assert "не было обрезано" in result["error"]
+
+
+
+def test_ask_model_description_keeps_file_optional_and_explains_attachment_rules():
+    definition = next(
+        item["function"] for item in tools.TOOL_DEFINITIONS
+        if item["function"]["name"] == "ask_model"
+    )
+    parameters = definition["parameters"]
+    assert parameters["required"] == ["prompt"]
+    assert "file" in parameters["properties"]
+    description = definition["description"]
+    assert "file parameter is optional" in description
+    assert "mentioning its filename in prompt does not send its contents" in description
+    assert "one file per call" in description
+    assert "Large tables, datasets, spreadsheets" in description
+    assert "small overlap" in description
+    assert "12 MB and 30 seconds" in description
+    assert "100 MB and 60 seconds" in description
+
+
+def test_load_file_for_model_reports_actual_audio_duration_and_segmenting_guidance(tmp_path, monkeypatch):
+    from agent import attachments, sandbox_manager as sandbox_manager_module
+
+    monkeypatch.setattr(attachments, "ATTACHMENT_ROOT", tmp_path / "attachments")
+
+    def fake_download(conversation_id, source_path, target_path, *, max_bytes=None):
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(b"fake wav")
+        return target_path
+
+    monkeypatch.setattr(
+        sandbox_manager_module, "sandbox_manager",
+        SimpleNamespace(download_file=fake_download),
+    )
+    monkeypatch.setattr(tools.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        tools.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="45.25", stderr=""),
+    )
+
+    with pytest.raises(ValueError) as exc:
+        tools.load_file_for_model("/workspace/long.wav", conversation_id="audio-limit-test")
+    message = str(exc.value)
+    assert "45.25 seconds" in message
+    assert "0.1–30 seconds" in message
+    assert "small overlap" in message

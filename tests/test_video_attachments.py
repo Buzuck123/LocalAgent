@@ -111,7 +111,7 @@ def test_ollama_chat_sends_video_frames_as_ordered_images(tmp_path, monkeypatch)
 
     client = core.OllamaClient()
     captured = {}
-    client._post = lambda endpoint, payload, timeout=None: (
+    client._post_stream = lambda endpoint, payload, timeout=None: (
         captured.update({"endpoint": endpoint, "payload": payload}) or
         {"message": {"role": "assistant", "content": "video understood"}}
     )
@@ -147,3 +147,81 @@ def test_web_upload_saves_original_in_host_workspace_without_preprocessing(tmp_p
     assert saved[0]["container_path"].startswith("/host-workspace/")
     target = workspace / "work" / Path(saved[0]["container_path"]).name
     assert target.read_bytes() == raw
+
+
+
+def test_attachment_metadata_contract_includes_media_and_conversion_facts():
+    metadata = attachments.build_attachment_metadata(
+        "clip.mp4", "video/mp4", "video", 18_400_000,
+        duration_seconds=42.6, frame_count=43,
+        conversion={"status": "completed", "output_format": "timestamped JPEG frames"},
+    )
+    assert metadata == {
+        "schema_version": 1,
+        "name": "clip.mp4",
+        "extension": ".mp4",
+        "mime_type": "video/mp4",
+        "media_type": "video",
+        "size_bytes": 18_400_000,
+        "duration_seconds": 42.6,
+        "frame_count": 43,
+        "conversion": {"status": "completed", "output_format": "timestamped JPEG frames"},
+    }
+    summary = attachments.attachment_metadata_summary(metadata)
+    assert "video/mp4" in summary
+    assert "18400000 bytes" in summary
+    assert "42.6 s" in summary
+    assert "43" in summary
+    assert "completed" in summary
+
+
+def test_uploaded_video_metadata_has_source_facts_and_pending_conversion(tmp_path, monkeypatch):
+    import base64
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(
+        attachments, "settings",
+        SimpleNamespace(database_path=data_dir / "agent.sqlite3", workspace_path=workspace),
+    )
+    monkeypatch.setattr(attachments, "ATTACHMENT_ROOT", data_dir / "attachments")
+    monkeypatch.setattr(attachments.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        attachments.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="12.0", stderr=""),
+    )
+    raw = b"video bytes"
+    saved = attachments.save_attachments([{
+        "name": "clip.mp4",
+        "mime_type": "video/mp4",
+        "data_base64": base64.b64encode(raw).decode("ascii"),
+    }])
+    metadata = saved[0]["metadata"]
+    assert metadata["schema_version"] == 1
+    assert metadata["media_type"] == "video"
+    assert metadata["mime_type"] == "video/mp4"
+    assert metadata["size_bytes"] == len(raw)
+    assert metadata["duration_seconds"] == 12.0
+    assert metadata["frame_count"] is None
+    assert metadata["conversion"]["status"] == "pending"
+
+
+
+def test_video_duration_error_reports_actual_duration_and_segment_limit(tmp_path, monkeypatch):
+    video = tmp_path / "long.mp4"
+    video.write_bytes(b"fake-video")
+    monkeypatch.setattr(attachments, "ATTACHMENT_ROOT", tmp_path / "attachments")
+    monkeypatch.setattr(attachments.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        attachments.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="75.5", stderr=""),
+    )
+
+    with pytest.raises(ValueError) as exc:
+        attachments.extract_video_frames(video)
+    message = str(exc.value)
+    assert "75.50" in message
+    assert "60 с" in message
+    assert "не более 60 кадров" in message
+    assert "Раздели более длинное видео" in message

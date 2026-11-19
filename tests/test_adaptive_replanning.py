@@ -104,7 +104,7 @@ def test_agent_replans_after_four_unsuccessful_step_reviews(tmp_path, monkeypatc
     monkeypatch.setattr(
         core,
         "settings",
-        SimpleNamespace(max_tool_rounds=30, auto_resume_tasks=False, workspace_path=workspace),
+        SimpleNamespace(max_tool_rounds=30, auto_resume_tasks=False, workspace_path=workspace, ollama_context_fallback=32768),
     )
     core.db.init_db()
     conversation = core.db.create_conversation("Adaptive replanning test")
@@ -344,6 +344,7 @@ def test_agent_replans_after_three_tool_errors(tmp_path, monkeypatch):
             max_tool_rounds=30,
             auto_resume_tasks=False,
             workspace_path=workspace,
+            ollama_context_fallback=32768,
         ),
     )
 

@@ -186,3 +186,232 @@ def test_terminal_recovery_report_is_separate_from_normal_output():
     )
     assert "Bash-сессия пересоздана" in report
     assert "команда не считается выполненной" in report
+
+def test_failed_diagnostic_interrupt_is_not_treated_as_recovery(monkeypatch):
+    from agent import db
+    from agent import sandbox_manager as sandbox_module
+
+    class Manager:
+        def collect_terminal_diagnostics(self, conversation_id, operation_id, **kwargs):
+            return {"runtime_responsive": False}
+
+        def interrupt_operation(self, conversation_id, operation_id):
+            return {
+                "state": "unknown",
+                "interrupted": False,
+                "error": "operation status could not be confirmed",
+            }
+
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
+    monkeypatch.setattr(db, "create_terminal_diagnostic", lambda *args, **kwargs: {})
+    monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
+
+    def fake_chat(messages, tools=None, reasoning=True, model=None):
+        return {"message": {"tool_calls": [{
+            "id": "call-interrupt",
+            "function": {
+                "name": "interrupt_terminal_operation",
+                "arguments": {"reason": "The operation appears stuck."},
+            },
+        }]}}
+
+    monkeypatch.setattr(core, "_client_chat", fake_chat)
+    action, reason, diagnostic_id, messages, actions, recovery = core._run_terminal_diagnostic(
+        "task-1", "conversation-1",
+        {"operation_id": "terminal-op", "_terminal_command": "sleep 999",
+         "_terminal_output": "", "_elapsed_seconds": 600, "_idle_seconds": 600},
+    )
+
+    assert action == "interrupt_operation"
+    assert recovery["state"] == "unknown"
+    assert actions[-1]["result"]["interrupted"] is False
+
+
+def test_terminal_diagnostic_keeps_primary_agent_blocked_until_recovery(monkeypatch):
+    from agent import db
+    from agent import sandbox_manager as sandbox_module
+
+    class Manager:
+        def verify_terminal_session(self, conversation_id):
+            return {"verified": True}
+
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
+    monkeypatch.setattr(
+        db, "get_task",
+        lambda task_id: {"id": task_id, "conversation_id": "conversation-1"},
+    )
+    monkeypatch.setattr(core, "_record_tool_debug_trace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
+    calls = []
+
+    def fake_dispatch(name, arguments, **kwargs):
+        calls.append((name, arguments))
+        return {
+            "_terminal_text": "still running",
+            "_terminal_output": "still running",
+            "state": "running",
+            "operation_id": "terminal-op",
+            "_diagnostic_due": True,
+        }
+
+    monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
+    reviews = []
+
+    def fake_diagnostic(*args, **kwargs):
+        reviews.append(True)
+        if len(reviews) < 5:
+            return "continue_waiting", "Still active.", "diag-1", [], [], None
+        return "interrupt_operation", "Operation is stuck.", "diag-1", [], [], {
+            "state": "interrupted", "interrupted": True,
+        }
+
+    monkeypatch.setattr(core, "_run_terminal_diagnostic", fake_diagnostic)
+    result = core._dispatch_tool_for_task(
+        "terminal", {"command": "sleep 999"}, "task-1"
+    )
+
+    assert len(reviews) == 5
+    assert len(calls) == 5  # initial command plus four polls of the same active operation
+    assert result["state"] == "interrupted"
+    assert "Диагностика приостановлена после 3 циклов" not in result["_terminal_output"]
+
+
+def test_terminal_diagnostic_llm_failure_is_preserved_for_task_pause(monkeypatch):
+    from agent import db
+    from agent import sandbox_manager as sandbox_module
+
+    updates = []
+
+    class Manager:
+        def collect_terminal_diagnostics(self, conversation_id, operation_id, **kwargs):
+            return {"runtime_responsive": True}
+
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
+    monkeypatch.setattr(db, "create_terminal_diagnostic", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        db, "update_terminal_diagnostic",
+        lambda diagnostic_id, **kwargs: updates.append((diagnostic_id, kwargs)) or {},
+    )
+
+    def unavailable(*args, **kwargs):
+        raise ConnectionError("LLM server is offline")
+
+    monkeypatch.setattr(core, "_client_chat", unavailable)
+    terminal_result = {
+        "operation_id": "terminal-op",
+        "_terminal_command": "pip install package",
+        "_terminal_output": "Downloading package...",
+        "_elapsed_seconds": 300,
+        "_idle_seconds": 300,
+    }
+
+    try:
+        core._run_terminal_diagnostic("task-1", "conversation-1", terminal_result)
+        assert False, "expected diagnostic LLM failure"
+    except core.TerminalDiagnosticLLMUnavailable as exc:
+        assert exc.terminal_result["operation_id"] == "terminal-op"
+        assert exc.messages[0]["role"] == "system"
+        assert exc.diagnostic_id
+    assert updates[-1][1]["status"] == "paused"
+
+
+def test_resume_pending_terminal_diagnostic_polls_original_operation_and_verifies_bash(monkeypatch):
+    from agent import sandbox_manager as sandbox_module
+
+    class Manager:
+        def get_operation(self, conversation_id, operation_id, *, cursor, max_output_chars, wait_timeout):
+            assert operation_id == "terminal-op"
+            return {
+                "state": "completed", "stdout": "install finished",
+                "stderr": "", "exit_code": 0, "cursor": 12,
+                "timed_out": False, "interrupted": False, "duration_seconds": 360,
+            }
+
+        def verify_terminal_session(self, conversation_id):
+            return {"verified": True}
+
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
+    monkeypatch.setattr(
+        core, "_run_terminal_diagnostic",
+        lambda *args, **kwargs: (
+            "continue_waiting", "Runtime and operation state captured.",
+            "diag-1", [{"role": "system", "content": "diagnostic"}], [], None,
+        ),
+    )
+    result = core._resume_pending_terminal_diagnostic(
+        "task-1", "conversation-1",
+        {
+            "terminal_result": {
+                "operation_id": "terminal-op", "_terminal_command": "pip install package",
+                "_terminal_output": "", "_terminal_text": "", "cursor": 4,
+                "state": "running", "_elapsed_seconds": 300,
+            },
+            "diagnostic_id": "diag-1",
+            "messages": [{"role": "system", "content": "diagnostic"}],
+            "actions": [],
+        },
+    )
+
+    assert result["state"] == "completed"
+    assert result["shell_state"] == "available"
+    assert "Bash-сессия прошла проверочную команду" in result["_terminal_output"]
+    assert "Проверь установленные/обновлённые пакеты" in result["_terminal_output"]
+
+def test_interrupt_race_polls_original_operation_instead_of_starting_new_command(monkeypatch):
+    from agent import db
+    from agent import sandbox_manager as sandbox_module
+
+    monkeypatch.setattr(
+        db, "get_task",
+        lambda task_id: {"id": task_id, "conversation_id": "conversation-1"},
+    )
+    monkeypatch.setattr(core, "_record_tool_debug_trace", lambda *args, **kwargs: None)
+    dispatch_calls = []
+
+    def fake_dispatch(name, arguments, **kwargs):
+        dispatch_calls.append((name, arguments))
+        return {
+            "_terminal_text": "partial output",
+            "_terminal_output": "partial output",
+            "state": "running",
+            "operation_id": "terminal-op",
+            "cursor": 7,
+            "_diagnostic_due": True,
+        }
+
+    class Manager:
+        def get_operation(self, conversation_id, operation_id, *, cursor, wait_timeout):
+            assert conversation_id == "conversation-1"
+            assert operation_id == "terminal-op"
+            assert cursor == 7
+            return {
+                "state": "completed",
+                "stdout": "final output",
+                "exit_code": 0,
+                "timed_out": False,
+                "interrupted": False,
+                "cursor": 12,
+            }
+
+        def verify_terminal_session(self, conversation_id):
+            return {"verified": True}
+
+    monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
+    monkeypatch.setattr(
+        core, "_run_terminal_diagnostic",
+        lambda *args, **kwargs: (
+            "interrupt_operation", "The command finished during interrupt.",
+            "diag-1", [], [], {"state": "completed"},
+        ),
+    )
+    monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
+
+    result = core._dispatch_tool_for_task(
+        "terminal", {"command": "long command"}, "task-1"
+    )
+
+    assert len(dispatch_calls) == 1
+    assert result["state"] == "completed"
+    assert "final output" in result["_terminal_output"]
+

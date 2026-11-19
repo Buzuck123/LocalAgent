@@ -36,6 +36,12 @@ class LlamaCppClient:
     def _url(self, path: str) -> str:
         return self.base + (path if path.startswith("/") else "/" + path)
 
+    def _server_url(self, path: str) -> str:
+        # llama.cpp server-native endpoints (/props, /slots) live beside /v1,
+        # while OpenAI-compatible endpoints use the configured /v1 base.
+        base = self.base[:-3] if self.base.endswith("/v1") else self.base
+        return base + (path if path.startswith("/") else "/" + path)
+
     def _json_request(self, path: str, *, method: str = "GET", payload=None, timeout=None):
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         req = Request(self._url(path), data=data, method=method,
@@ -61,29 +67,91 @@ class LlamaCppClient:
         except Exception:
             return False
 
+    @staticmethod
+    def _context_size_from_args(args) -> int | None:
+        """Read the effective --ctx-size value from a Router model's argv."""
+        if not isinstance(args, list):
+            return None
+        found = None
+        for index, raw in enumerate(args):
+            value = None
+            if raw == "--ctx-size" and index + 1 < len(args):
+                value = args[index + 1]
+            elif isinstance(raw, str) and raw.startswith("--ctx-size="):
+                value = raw.partition("=")[2]
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                found = parsed
+        return found
+
     def model_profile(self, model: str | None = None) -> dict:
+        """Return the selected Router preset's configured runtime context."""
         name = model or db.get_app_setting("selected_llama_cpp_model", self.model)
-        context = int(settings.llama_cpp_context)
+        item = None
         try:
             item = next((x for x in self._available_models() if x["name"] == name), None)
-            if item and item.get("context_length"):
-                context = int(item["context_length"])
         except Exception:
             pass
+
+        runtime_context = item.get("runtime_context_limit") if item else None
+        source = "llama_cpp_config_fallback_unconfirmed"
+        if runtime_context is not None:
+            source = "llama_cpp_router_args"
+        elif item is None:
+            # /props is safe only when this is a direct llama-server endpoint
+            # and no Router model entry exists. On a Router, /props may describe
+            # a different currently loaded model than the one being profiled.
+            try:
+                props = self._server_json_request("/props")
+                generation = props.get("default_generation_settings", {}) if isinstance(props, dict) else {}
+                value = generation.get("n_ctx") if isinstance(generation, dict) else None
+                parsed = int(value)
+                if parsed > 0:
+                    runtime_context = parsed
+                    source = "llama_cpp_runtime_props"
+            except Exception:
+                pass
+
+        context = int(runtime_context or settings.llama_cpp_context)
         return {
-            "model": name, "num_ctx": context,
-            "num_predict": None, "source": "llama_cpp_server_config",
+            "model": name,
+            "num_ctx": context,
+            "runtime_context_limit": context,
+            "num_predict": None,
+            "source": source,
+            "runtime_context_confirmed": runtime_context is not None,
         }
+
+    def _server_json_request(self, path: str, *, timeout=None):
+        req = Request(
+            self._server_url(path),
+            method="GET",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            with self.opener.open(req, timeout=timeout or settings.llama_cpp_timeout) as response:
+                raw = response.read()
+            return json.loads(raw.decode("utf-8")) if raw else {}
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:2000]
+            raise RuntimeError(f"llama.cpp HTTP {exc.code}: {detail}") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"Cannot connect to llama.cpp at {self._server_url(path)}: {exc}") from exc
 
     def _available_models(self) -> list[dict]:
         payload = self._json_request("/models")
         models = []
         for item in payload.get("data", []) if isinstance(payload, dict) else []:
             if isinstance(item, dict) and isinstance(item.get("id"), str):
-                meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                status = item.get("status") if isinstance(item.get("status"), dict) else {}
                 models.append({
                     "name": item["id"], "size": None, "modified_at": None,
-                    "context_length": item.get("context_length") or meta.get("n_ctx_train"),
+                    # Router argv contains the preset's effective --ctx-size,
+                    # including for models that have not been loaded yet.
+                    "runtime_context_limit": self._context_size_from_args(status.get("args")),
                 })
         return models
 

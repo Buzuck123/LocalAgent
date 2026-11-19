@@ -242,6 +242,14 @@ def _pause_report(task, checkpoint):
         "loop_detected": "Сработала защита от повторяющихся действий.",
         "consecutive_tool_failures": "Слишком много последовательных ошибок инструментов.",
         "needs_user_input": "Ожидается уточнение пользователя.",
+        "terminal_diagnostic_llm_unavailable": (
+            "Диагностика терминала приостановлена из-за недоступности LLM. "
+            "При возобновлении сначала будет проверена исходная операция и Bash-сессия."
+        ),
+        "terminal_recovery_unverified": (
+            "Работоспособность терминала не подтверждена. Основной агент не продолжает работу "
+            "до успешного восстановления Bash-сессии."
+        ),
         "completion_review_failed": "Не удалось подтвердить завершение задачи.",
     }
     reason = reason_map.get(checkpoint.get("pause_reason"), "Задача приостановлена.")
@@ -398,8 +406,15 @@ def task_usage(tid: str):
         checkpoint = json.loads(task.get("checkpoint_json") or "{}")
     except Exception:
         checkpoint = {}
-    context_limit = int(checkpoint.get("model_num_ctx") or settings.num_ctx) if isinstance(checkpoint, dict) else settings.num_ctx
+    provider = str(checkpoint.get("provider") or "ollama") if isinstance(checkpoint, dict) else "ollama"
+    fallback_context = settings.llama_cpp_context if provider == "llama_cpp" else settings.ollama_context_fallback
+    has_context_profile = bool(checkpoint.get("model_context_source")) if isinstance(checkpoint, dict) else False
+    saved_context = checkpoint.get("model_num_ctx") if isinstance(checkpoint, dict) else None
+    context_limit = int(saved_context if saved_context and has_context_profile else fallback_context)
     usage["context_limit"] = context_limit
+    usage["model_context_length"] = checkpoint.get("model_context_length") if isinstance(checkpoint, dict) else None
+    usage["context_source"] = checkpoint.get("model_context_source") if isinstance(checkpoint, dict) else None
+    usage["context_confirmed"] = bool(checkpoint.get("model_context_confirmed", False)) if isinstance(checkpoint, dict) else False
     usage["model"] = checkpoint.get("model") if isinstance(checkpoint, dict) else None
     usage["current_context_percent"] = round(100 * usage["current_prompt_tokens"] / context_limit, 1) if context_limit else 0
     usage["max_context_percent"] = round(100 * usage["max_prompt_tokens"] / context_limit, 1) if context_limit else 0

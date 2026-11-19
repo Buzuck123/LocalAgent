@@ -706,6 +706,14 @@ def _restore_tool_operation_payload(record, tool_name, arguments, diagnosis_stat
         failure["ok"] = False
         failure.setdefault("error", "Инструмент завершился ошибкой до сохранения результата.")
         failure["exception_type"] = failure.get("exception_type", "ToolError")
+        if failure["exception_type"] == "ToolContractError" and isinstance(diagnosis_state, dict):
+            contract_errors = diagnosis_state.get("unresolved_tool_contract_errors")
+            if not isinstance(contract_errors, list):
+                contract_errors = []
+            contract_message = f"ToolContractError: {str(failure.get('error') or '')[:1000]}"
+            if contract_message not in contract_errors:
+                contract_errors.append(contract_message)
+            diagnosis_state["unresolved_tool_contract_errors"] = contract_errors[-10:]
         if diagnosis_state is not None:
             failure["agent_diagnosis"] = _diagnose_tool_failure(
                 tool_name, arguments, failure["error"], diagnosis_state
@@ -745,7 +753,7 @@ def _guard_loaded_file_context(result: dict[str, Any], messages: list[dict[str, 
     if not isinstance(result, dict) or result.get("ok") is not True:
         return result
     try:
-        limit = int(_CURRENT_MODEL_CONTEXT.get() or checkpoint.get("model_num_ctx") or settings.num_ctx)
+        limit = int(_CURRENT_MODEL_CONTEXT.get() or checkpoint.get("model_num_ctx") or settings.ollama_context_fallback)
         num_predict = checkpoint.get("model_num_predict")
         reserve = max(1024, min(int(num_predict or 2048), max(1024, int(limit * 0.20))))
         safety_margin = max(512, int(limit * 0.05))
@@ -1046,6 +1054,55 @@ TERMINAL_DIAGNOSTIC_TOOLS = [
 ]
 
 
+class TerminalDiagnosticLLMUnavailable(RuntimeError):
+    """The diagnostic model is unavailable; preserve the live terminal operation for resume."""
+
+    def __init__(self, message, *, terminal_result, diagnostic_id, messages, actions):
+        super().__init__(message)
+        self.terminal_result = dict(terminal_result or {})
+        self.diagnostic_id = diagnostic_id
+        self.messages = list(messages or [])
+        self.actions = list(actions or [])
+
+
+class TerminalRecoveryPending(RuntimeError):
+    """Terminal/Bash recovery is not verified; keep the task paused for another diagnostic pass."""
+
+    def __init__(self, message, *, pending):
+        super().__init__(message)
+        self.pending = dict(pending or {})
+
+
+def _terminal_command_impact_note(command):
+    text = str(command or "").strip()
+    lower = text.lower()
+    if re.search(r"\b(pip|pip3|uv|poetry|conda|npm|pnpm|yarn|apt|apt-get|dpkg|cargo|go install)\b", lower):
+        impact = "Проверь установленные/обновлённые пакеты и зависимости: установка могла завершиться частично."
+    elif re.search(r"(>|>>|\b(rm|mv|cp|install|touch|mkdir|rmdir|tee|sed -i|truncate)\b)", lower):
+        impact = "Проверь созданные, изменённые и удалённые файлы: файловые операции могли выполниться частично."
+    elif re.search(r"\b(git|commit|checkout|merge|rebase|reset)\b", lower):
+        impact = "Проверь состояние Git, рабочее дерево и незакоммиченные изменения."
+    elif re.search(r"\b(sqlite|migrate|migration|alembic|schema|create table|alter table|drop table)\b", lower):
+        impact = "Проверь состояние базы данных и миграций: транзакция или изменение схемы могли завершиться частично."
+    elif re.search(r"\b(docker|podman|systemctl|service|kill|pkill|chmod|chown)\b", lower):
+        impact = "Проверь состояние процессов, сервисов и прав доступа: системные изменения могли выполниться частично."
+    else:
+        impact = "Проверь побочные эффекты команды и состояние рабочего каталога/окружения: выполнение могло остановиться после частичных изменений."
+    return f"Последняя команда: {text[:700] or '(не сохранена)'}. {impact}"
+
+
+def _terminal_diagnostic_pause_report(terminal_result, error):
+    command = str((terminal_result or {}).get("_terminal_command") or "")
+    return (
+        "Задача приостановлена: диагностическая LLM недоступна "
+        f"({type(error).__name__}: {str(error)[:500]}). "
+        "Терминальная операция не отменялась и не запускалась повторно. "
+        "После возобновления сначала продолжится диагностика, будет проверена исходная операция "
+        "и работоспособность Bash-сессии; основной агент не получит управление до успешной проверки.\n"
+        + _terminal_command_impact_note(command)
+    )
+
+
 def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnostic_id=None,
                              diagnostic_messages=None, diagnostic_actions=None):
     from .sandbox_manager import sandbox_manager
@@ -1089,10 +1146,45 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
     action, reason, recovery = "continue_waiting", "Недостаточно оснований для вмешательства.", None
     try:
         for _ in range(5):
-            response = _client_chat(messages, tools=TERMINAL_DIAGNOSTIC_TOOLS, reasoning=False)
+            try:
+                response = _client_chat(messages, tools=TERMINAL_DIAGNOSTIC_TOOLS, reasoning=False)
+            except Exception as exc:
+                try:
+                    db.update_terminal_diagnostic(
+                        diagnostic_id, status="paused", messages=messages, actions=actions
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not persist paused diagnostic %s after LLM failure",
+                        diagnostic_id, exc_info=True,
+                    )
+                raise TerminalDiagnosticLLMUnavailable(
+                    f"{type(exc).__name__}: {str(exc)[:1000]}",
+                    terminal_result=terminal_result,
+                    diagnostic_id=diagnostic_id,
+                    messages=messages,
+                    actions=actions,
+                ) from exc
             message = response.get("message", {}) if isinstance(response, dict) else {}
-            if not isinstance(message, dict):
-                break
+            if not isinstance(message, dict) or (
+                not message.get("content") and not message.get("tool_calls")
+            ):
+                try:
+                    db.update_terminal_diagnostic(
+                        diagnostic_id, status="paused", messages=messages, actions=actions
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not persist empty diagnostic response %s",
+                        diagnostic_id, exc_info=True,
+                    )
+                raise TerminalDiagnosticLLMUnavailable(
+                    "Диагностическая LLM вернула пустой или некорректный ответ.",
+                    terminal_result=terminal_result,
+                    diagnostic_id=diagnostic_id,
+                    messages=messages,
+                    actions=actions,
+                )
             calls = message.get("tool_calls")
             if not isinstance(calls, list) or not calls:
                 assistant_text = str(message.get("content") or "")
@@ -1102,7 +1194,8 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                 action = "continue_waiting"
                 break
             messages.append(message)
-            recovered = False
+            action_attempted = False
+            recovery_confirmed = False
             for call in calls[:4]:
                 function = call.get("function") if isinstance(call, dict) else {}
                 function = function if isinstance(function, dict) else {}
@@ -1132,7 +1225,7 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                         "restart_sandbox_container": "restart_container",
                     }[tool_name]
                     reason = why
-                    recovered = True
+                    action_attempted = True
                     try:
                         if action == "interrupt_operation":
                             recovery = sandbox_manager.interrupt_operation(conversation_id, operation_id)
@@ -1151,22 +1244,47 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                         }
                         tool_result = recovery
                     actions.append({"action": action, "reason": reason, "result": recovery})
+                    # An attempted recovery is not a successful intervention. Only
+                    # accept an explicit terminal/reset/restart confirmation.
+                    if action == "interrupt_operation":
+                        recovery_confirmed = (
+                            isinstance(recovery, dict)
+                            and (recovery.get("state") == "interrupted"
+                                 or recovery.get("interrupted") is True)
+                        )
+                    elif action == "reset_bash_session":
+                        recovery_confirmed = (
+                            isinstance(recovery, dict)
+                            and recovery.get("state") == "reset"
+                            and recovery.get("verified") is True
+                        )
+                    else:
+                        recovery_confirmed = (
+                            isinstance(recovery, dict)
+                            and recovery.get("state") == "restarted"
+                            and recovery.get("verified") is True
+                        )
                 else:
                     tool_result = {"ok": False, "error": "Недоступный диагностический инструмент."}
                 messages.append({"role": "tool", "tool_name": tool_name,
                                  "content": json.dumps(tool_result, ensure_ascii=False, default=str)[:12000]})
                 db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
-                if recovered:
+                if action_attempted:
                     break
-            if recovered:
+            if action_attempted:
+                # Stop processing this model response after any destructive action,
+                # even when it failed; the controller will re-poll before retrying.
                 break
+    except TerminalDiagnosticLLMUnavailable:
+        raise
     except Exception as exc:
         action, reason = "continue_waiting", (
             f"Диагностика завершилась ошибкой {type(exc).__name__}; продолжаем наблюдение без вмешательства."
         )
         messages.append({"role": "assistant", "content": json.dumps({"action": action, "reason": reason}, ensure_ascii=False)})
 
-    actions.append({"action": action, "reason": reason, "snapshot": snapshot})
+    if not actions or actions[-1].get("action") != action or "result" not in actions[-1]:
+        actions.append({"action": action, "reason": reason, "snapshot": snapshot})
     db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
     return action, reason, diagnostic_id, messages, actions, recovery
 
@@ -1193,10 +1311,245 @@ def _terminal_recovery_report(action, reason, result):
     return f"Диагностика: {reason}\nВыполнено: {action}. {consequence}"
 
 
+def _record_tool_debug_trace(task_id, event_type, payload):
+    """Record optional tool diagnostics without affecting tool execution."""
+    try:
+        db.record_debug_trace(task_id, event_type, payload)
+    except Exception:
+        logger.debug(
+            "Could not record tool debug trace (%s) for task %s",
+            event_type,
+            task_id,
+            exc_info=True,
+        )
+
+
+def _verify_or_recover_terminal_session(conversation_id, command):
+    from .sandbox_manager import sandbox_manager
+
+    verification = sandbox_manager.verify_terminal_session(conversation_id)
+    if verification.get("verified"):
+        return {"verified": True, "action": None, "verification": verification}
+    reason = (
+        "Bash-сессия не прошла проверочную команду после выполнения "
+        + str(command or "терминальной операции")[:500]
+        + ": " + str(verification.get("error") or "причина не определена")
+    )
+    try:
+        recovery = sandbox_manager.reset_terminal_session(
+            conversation_id, confirm_reset=True, reason=reason[:1000]
+        )
+    except Exception as exc:
+        recovery = {"verified": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+    if isinstance(recovery, dict) and recovery.get("verified") is True:
+        return {"verified": True, "action": "reset_bash_session", "recovery": recovery, "reason": reason}
+    try:
+        recovery = sandbox_manager.restart_container(
+            conversation_id, reason=(reason + "; Bash reset did not restore the session")[:1000]
+        )
+    except Exception as exc:
+        recovery = {"verified": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+    if isinstance(recovery, dict) and recovery.get("verified") is True:
+        return {"verified": True, "action": "restart_container", "recovery": recovery,
+                "reason": reason + "; Bash reset did not restore the session"}
+    return {
+        "verified": False,
+        "action": "restart_container",
+        "reason": reason,
+        "recovery": recovery,
+        "error": str(recovery.get("error") or recovery.get("state") or "неизвестная ошибка"),
+    }
+
+
+def _resume_pending_terminal_diagnostic(task_id, conversation_id, pending):
+    """Resume the saved diagnostic before the main agent can see a pending terminal tool call."""
+    from .sandbox_manager import sandbox_manager
+
+    result = dict(pending.get("terminal_result") or {})
+    operation_id = str(result.get("operation_id") or "")
+    diagnostic_id = pending.get("diagnostic_id")
+    messages = pending.get("messages") if isinstance(pending.get("messages"), list) else None
+    actions = pending.get("actions") if isinstance(pending.get("actions"), list) else None
+    if not operation_id:
+        raise TerminalRecoveryPending(
+            "В контрольной точке отсутствует ID исходной терминальной операции.",
+            pending=pending,
+        )
+
+    final_recovery_action = None
+    final_recovery_reason = ""
+    terminal_states = {"completed", "interrupted", "timed_out", "failed"}
+    while True:
+        action, reason, diagnostic_id, messages, actions, recovery = _run_terminal_diagnostic(
+            task_id, conversation_id, result,
+            diagnostic_id=diagnostic_id,
+            diagnostic_messages=messages,
+            diagnostic_actions=actions,
+        )
+        if action in {"interrupt_operation", "reset_bash_session", "restart_container"}:
+            confirmed = (
+                isinstance(recovery, dict)
+                and (
+                    (action == "interrupt_operation" and (
+                        recovery.get("state") == "interrupted" or recovery.get("interrupted") is True
+                    ))
+                    or (action == "reset_bash_session" and recovery.get("state") == "reset"
+                        and recovery.get("verified") is True)
+                    or (action == "restart_container" and recovery.get("state") == "restarted"
+                        and recovery.get("verified") is True)
+                )
+            )
+            if confirmed:
+                if action == "interrupt_operation" and recovery.get("state") in {"completed", "timed_out", "failed"}:
+                    # The operation may have completed while interrupt was in flight.
+                    pass
+                else:
+                    result["state"] = (
+                        "interrupted" if action == "interrupt_operation"
+                        else "reset" if action == "reset_bash_session" else "restarted"
+                    )
+                    final_recovery_action = action
+                    final_recovery_reason = reason
+                    break
+
+        if result.get("state") in terminal_states or result.get("state") == "waiting_input":
+            break
+
+        # Continue polling the original operation. No shell command is replayed.
+        wait_seconds = max(1.0, float(getattr(settings, "terminal_max_wait_seconds", 300)))
+        poll_interval = max(0.25, float(getattr(settings, "terminal_poll_interval_seconds", 2)))
+        deadline = time.monotonic() + wait_seconds
+        poll_errors = 0
+        while time.monotonic() < deadline:
+            try:
+                poll = sandbox_manager.get_operation(
+                    conversation_id, operation_id,
+                    cursor=int(result.get("cursor") or 0),
+                    max_output_chars=1_048_576,
+                    wait_timeout=min(poll_interval, max(0.1, deadline - time.monotonic())),
+                )
+                poll_errors = 0
+            except Exception as exc:
+                poll_errors += 1
+                result["_runtime_error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+                errors = list(result.get("_terminal_runtime_errors") or [])
+                errors.append({"error": result["_runtime_error"], "during_resume": True})
+                result["_terminal_runtime_errors"] = errors[-10:]
+                if poll_errors >= 3:
+                    result["state"] = "runtime_unresponsive"
+                    break
+                time.sleep(min(1.0, poll_interval))
+                continue
+
+            chunk = str(poll.get("stdout") or "")
+            stderr = str(poll.get("stderr") or "")
+            if stderr and stderr not in chunk:
+                chunk = (chunk.rstrip() + "\n" + stderr).lstrip("\n")
+            if chunk:
+                result["_terminal_output"] = str(result.get("_terminal_output") or "") + chunk
+                result["_terminal_text"] = str(result.get("_terminal_text") or "") + chunk
+            state = str(poll.get("state") or "runtime_unresponsive")
+            result.update({
+                "state": state,
+                "cursor": poll.get("cursor", result.get("cursor", 0)),
+                "exit_code": poll.get("exit_code"),
+                "timed_out": poll.get("timed_out", state == "timed_out"),
+                "interrupted": poll.get("interrupted", state == "interrupted"),
+                "_elapsed_seconds": max(
+                    float(result.get("_elapsed_seconds") or 0),
+                    float(poll.get("duration_seconds") or 0),
+                ),
+            })
+            result["_runtime_error"] = None
+            if state in terminal_states or state == "waiting_input":
+                break
+        if result.get("state") in terminal_states or result.get("state") == "waiting_input":
+            break
+        # A fresh diagnostic pass follows each bounded wait, including runtime errors.
+
+    # An interrupt can race with the final output chunk. Fetch the tail from the
+    # original operation ID after a confirmed interrupt; never start a new command.
+    if result.get("state") == "interrupted":
+        try:
+            final_poll = sandbox_manager.get_operation(
+                conversation_id, operation_id,
+                cursor=int(result.get("cursor") or 0), max_output_chars=1_048_576,
+                wait_timeout=0,
+            )
+            final_chunk = str(final_poll.get("stdout") or "")
+            final_stderr = str(final_poll.get("stderr") or "")
+            if final_stderr and final_stderr not in final_chunk:
+                final_chunk = (final_chunk.rstrip() + "\n" + final_stderr).lstrip("\n")
+            if final_chunk:
+                result["_terminal_output"] = str(result.get("_terminal_output") or "") + final_chunk
+                result["_terminal_text"] = str(result.get("_terminal_text") or "") + final_chunk
+            result["cursor"] = final_poll.get("cursor", result.get("cursor", 0))
+            result["exit_code"] = final_poll.get("exit_code", result.get("exit_code"))
+        except Exception:
+            logger.debug("Could not fetch final output after diagnostic interrupt", exc_info=True)
+
+    # A completed/interrupted operation is not enough: prove that the persistent
+    # Bash session can execute a harmless command before releasing the main agent.
+    if result.get("state") != "waiting_input":
+        session_recovery = _verify_or_recover_terminal_session(
+            conversation_id, result.get("_terminal_command")
+        )
+        if not session_recovery.get("verified"):
+            updated_pending = {
+                **pending,
+                "terminal_result": result,
+                "diagnostic_id": diagnostic_id,
+                "messages": messages or [],
+                "actions": actions or [],
+            }
+            raise TerminalRecoveryPending(
+                "Не удалось подтвердить работоспособность Bash-сессии даже после попытки её восстановления: "
+                + str(session_recovery.get("error") or "неизвестная ошибка"),
+                pending=updated_pending,
+            )
+        if session_recovery.get("action"):
+            final_recovery_action = session_recovery["action"]
+            final_recovery_reason = session_recovery["reason"]
+            recovery = session_recovery["recovery"]
+            result["state"] = "reset" if final_recovery_action == "reset_bash_session" else "restarted"
+
+    if final_recovery_action:
+        result["diagnostic_report"] = _terminal_recovery_report(
+            final_recovery_action, final_recovery_reason, {"recovery": recovery}
+        )
+    warning = (
+        "Диагностика была приостановлена из-за недоступности LLM. После возобновления исходная операция "
+        "проверена; Bash-сессия прошла проверочную команду и доступна основному агенту. "
+        + _terminal_command_impact_note(result.get("_terminal_command"))
+    )
+    if result.get("state") == "waiting_input":
+        warning = (
+            "Диагностика была приостановлена из-за недоступности LLM. После возобновления SWE-ReX "
+            "подтвердил состояние waiting_input; терминал доступен для интерактивного ввода. "
+            + _terminal_command_impact_note(result.get("_terminal_command"))
+        )
+    if result.get("diagnostic_report"):
+        warning += "\n" + str(result["diagnostic_report"])
+    visible = str(result.get("_terminal_output") or result.get("_terminal_text") or "")
+    visible = (visible.rstrip() + "\n\n" + warning).strip()
+    result.update({
+        "_terminal_text": visible,
+        "_terminal_output": visible,
+        "shell_state": "available" if result.get("state") != "waiting_input" else "waiting_input",
+        "diagnostic_report": warning,
+    })
+    if diagnostic_id:
+        db.update_terminal_diagnostic(
+            diagnostic_id, status="intervened" if final_recovery_action else "completed",
+            messages=messages, actions=actions,
+        )
+    return result
+
+
 def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                             context_messages=None, main_model=None, context_limit=None):
     if name == "ask_model":
-        db.record_debug_trace(task_id, "tool_call", {"name": name, "arguments": arguments})
+        _record_tool_debug_trace(task_id, "tool_call", {"name": name, "arguments": arguments})
         started = time.monotonic()
         try:
             task = db.get_task(task_id) if task_id else None
@@ -1207,21 +1560,21 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 conversation_id=task["conversation_id"],
                 context_messages=context_messages or [],
                 main_model=main_model or settings.model,
-                context_limit=context_limit or settings.num_ctx,
+                context_limit=context_limit or settings.ollama_context_fallback,
             )
-            db.record_debug_trace(task_id, "tool_result", {
+            _record_tool_debug_trace(task_id, "tool_result", {
                 "name": name, "duration_seconds": round(time.monotonic() - started, 3),
                 "result": result,
             })
             return result
         except Exception as exc:
-            db.record_debug_trace(task_id, "tool_error", {
+            _record_tool_debug_trace(task_id, "tool_error", {
                 "name": name, "duration_seconds": round(time.monotonic() - started, 3),
                 "error_type": type(exc).__name__, "error": str(exc)[:2000],
             })
             raise
 
-    db.record_debug_trace(task_id, "tool_call", {"name": name, "arguments": arguments})
+    _record_tool_debug_trace(task_id, "tool_call", {"name": name, "arguments": arguments})
     started = time.monotonic()
     try:
         if name in {"terminal", "terminal_start", "terminal_poll", "terminal_input",
@@ -1261,26 +1614,201 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                                     30.0, float(getattr(settings, "terminal_max_wait_seconds", 300))
                                 )
                                 continue
+                        if result.get("_terminal_recover_original_operation"):
+                            from .sandbox_manager import sandbox_manager
+                            try:
+                                poll = sandbox_manager.get_operation(
+                                    task["conversation_id"], str(result.get("operation_id") or ""),
+                                    cursor=int(result.get("cursor") or 0),
+                                    max_output_chars=1_048_576, wait_timeout=2,
+                                )
+                                chunk = str(poll.get("stdout") or "")
+                                stderr = str(poll.get("stderr") or "")
+                                if stderr and stderr not in chunk:
+                                    chunk = (chunk.rstrip() + "\n" + stderr).lstrip("\n")
+                                if chunk:
+                                    result["_terminal_output"] = str(result.get("_terminal_output") or "") + chunk
+                                    result["_terminal_text"] = str(result.get("_terminal_text") or "") + chunk
+                                polled_state = str(poll.get("state") or "runtime_unresponsive")
+                                result.update({
+                                    "state": polled_state,
+                                    "cursor": poll.get("cursor", result.get("cursor", 0)),
+                                    "exit_code": poll.get("exit_code"),
+                                    "timed_out": poll.get("timed_out", polled_state == "timed_out"),
+                                    "interrupted": poll.get("interrupted", polled_state == "interrupted"),
+                                })
+                                if polled_state in {"completed", "interrupted", "timed_out", "failed"}:
+                                    session_recovery = _verify_or_recover_terminal_session(
+                                        task["conversation_id"], result.get("_terminal_command")
+                                    )
+                                    if not session_recovery.get("verified"):
+                                        raise TerminalRecoveryPending(
+                                            "Исходная операция завершилась, но Bash-сессия не восстановлена: "
+                                            + str(session_recovery.get("error") or "неизвестная ошибка"),
+                                            pending={
+                                                "terminal_result": result,
+                                                "diagnostic_id": diagnostic_id,
+                                                "messages": diagnostic_messages or [],
+                                                "actions": diagnostic_actions or [],
+                                            },
+                                        )
+                                    if session_recovery.get("action"):
+                                        result["diagnostic_report"] = _terminal_recovery_report(
+                                            session_recovery["action"], session_recovery["reason"],
+                                            {"recovery": session_recovery["recovery"]},
+                                        )
+                                        diagnostic_intervened = True
+                                    result["shell_state"] = "available"
+                                    result["_diagnostic_due"] = False
+                                    break
+                                if polled_state == "waiting_input":
+                                    result["shell_state"] = "waiting_input"
+                                    result["_diagnostic_due"] = False
+                                    break
+                                result["_diagnostic_due"] = True
+                                continue
+                            except TerminalRecoveryPending:
+                                raise
+                            except Exception as exc:
+                                result = dict(result)
+                                result["state"] = "runtime_unresponsive"
+                                result["_terminal_recover_original_operation"] = True
+                                result["_diagnostic_due"] = True
+                                result["_runtime_error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+                                result["_elapsed_seconds"] = float(result.get("_elapsed_seconds") or 0) + 2
+                                continue
                         result = dispatch_tool("terminal", {"command": ""},
                                                conversation_id=task["conversation_id"])
                         continue
+                    if action == "interrupt_operation" and isinstance(recovery, dict) and recovery.get("state") in {"completed", "timed_out", "failed"}:
+                        # The command may have finished while the interrupt request
+                        # was in flight. Do not issue an empty terminal command here:
+                        # the manager has already cleared its active-operation entry.
+                        from .sandbox_manager import sandbox_manager
+                        try:
+                            final_poll = sandbox_manager.get_operation(
+                                task["conversation_id"], str(result.get("operation_id") or ""),
+                                cursor=int(result.get("cursor") or 0), wait_timeout=0,
+                            )
+                            final_state = str(final_poll.get("state") or "runtime_unresponsive")
+                            final_chunk = str(final_poll.get("stdout") or "")
+                            final_stderr = str(final_poll.get("stderr") or "")
+                            if final_stderr and final_stderr not in final_chunk:
+                                final_chunk = (final_chunk.rstrip() + "\n" + final_stderr).lstrip("\n")
+                            result = dict(result)
+                            result["_terminal_output"] = str(result.get("_terminal_output") or "") + final_chunk
+                            result["_terminal_text"] = str(result.get("_terminal_text") or "") + final_chunk
+                            result.update({
+                                "state": final_state,
+                                "exit_code": final_poll.get("exit_code"),
+                                "timed_out": final_poll.get("timed_out", final_state == "timed_out"),
+                                "interrupted": final_poll.get("interrupted", final_state == "interrupted"),
+                                "cursor": final_poll.get("cursor", result.get("cursor", 0)),
+                                "_diagnostic_due": final_state not in {"completed", "interrupted", "timed_out", "failed"},
+                                "_terminal_recover_original_operation": final_state not in {
+                                    "completed", "interrupted", "timed_out", "failed", "waiting_input"
+                                },
+                            })
+                            if result["_diagnostic_due"]:
+                                continue
+                            if final_state in {"completed", "interrupted", "timed_out", "failed"}:
+                                session_recovery = _verify_or_recover_terminal_session(
+                                    task["conversation_id"], result.get("_terminal_command")
+                                )
+                                if not session_recovery.get("verified"):
+                                    raise TerminalRecoveryPending(
+                                        "Исходная операция завершилась, но Bash-сессия не восстановлена: "
+                                        + str(session_recovery.get("error") or "неизвестная ошибка"),
+                                        pending={
+                                            "terminal_result": result,
+                                            "diagnostic_id": diagnostic_id,
+                                            "messages": diagnostic_messages or [],
+                                            "actions": diagnostic_actions or [],
+                                        },
+                                    )
+                                if session_recovery.get("action"):
+                                    result["diagnostic_report"] = _terminal_recovery_report(
+                                        session_recovery["action"], session_recovery["reason"],
+                                        {"recovery": session_recovery["recovery"]},
+                                    )
+                                    diagnostic_intervened = True
+                                result["shell_state"] = "available"
+                            elif final_state == "waiting_input":
+                                result["shell_state"] = "waiting_input"
+                            break
+                        except TerminalRecoveryPending:
+                            raise
+                        except Exception as exc:
+                            result = dict(result)
+                            result["state"] = "runtime_unresponsive"
+                            result["_terminal_recover_original_operation"] = True
+                            result["_diagnostic_due"] = True
+                            result["_runtime_error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+                            notice = (
+                                "\n[Прерывание совпало с завершением операции, но итог пока недоступен. "
+                                "Диагност продолжит проверять исходную операцию; новая команда не запускается.]"
+                            )
+                            result["_terminal_text"] = str(result.get("_terminal_text") or "") + notice
+                            result["_terminal_output"] = str(result.get("_terminal_output") or "") + notice
+                            continue
                     if action in {"interrupt_operation", "reset_bash_session", "restart_container"}:
-                        diagnostic_intervened = True
-                        result = dict(result)
-                        result["state"] = (
-                            "interrupted" if action == "interrupt_operation" and
-                            isinstance(recovery, dict) and recovery.get("state") == "interrupted"
-                            else "reset" if action == "reset_bash_session" and
-                            isinstance(recovery, dict) and recovery.get("state") == "reset" and recovery.get("verified") is True
-                            else "restarted" if action == "restart_container" and
-                            isinstance(recovery, dict) and recovery.get("state") == "restarted" and recovery.get("verified") is True
-                            else "runtime_unresponsive"
-                        )
-                        result["diagnostic_report"] = _terminal_recovery_report(action, reason, result)
-                        break
+                        if action == "interrupt_operation":
+                            recovery_confirmed = (
+                                isinstance(recovery, dict)
+                                and (recovery.get("state") == "interrupted"
+                                     or recovery.get("interrupted") is True)
+                            )
+                        elif action == "reset_bash_session":
+                            recovery_confirmed = (
+                                isinstance(recovery, dict)
+                                and recovery.get("state") == "reset"
+                                and recovery.get("verified") is True
+                            )
+                        else:
+                            recovery_confirmed = (
+                                isinstance(recovery, dict)
+                                and recovery.get("state") == "restarted"
+                                and recovery.get("verified") is True
+                            )
+                        if not recovery_confirmed:
+                            # Failed/unconfirmed recovery must not be reported as an
+                            # intervention. Re-poll the same operation before another review.
+                            result = dispatch_tool("terminal", {"command": ""},
+                                                   conversation_id=task["conversation_id"])
+                            continue
+                        else:
+                            diagnostic_intervened = True
+                            result = dict(result)
+                            result["state"] = (
+                                "interrupted" if action == "interrupt_operation"
+                                else "reset" if action == "reset_bash_session"
+                                else "restarted"
+                            )
+                            result["diagnostic_report"] = _terminal_recovery_report(action, reason, {"recovery": recovery})
+                            session_recovery = _verify_or_recover_terminal_session(
+                                task["conversation_id"], result.get("_terminal_command")
+                            )
+                            if not session_recovery.get("verified"):
+                                raise TerminalRecoveryPending(
+                                    "Действие диагностики выполнено, но работоспособность Bash-сессии не подтверждена: "
+                                    + str(session_recovery.get("error") or "неизвестная ошибка"),
+                                    pending={
+                                        "terminal_result": result,
+                                        "diagnostic_id": diagnostic_id,
+                                        "messages": diagnostic_messages or [],
+                                        "actions": diagnostic_actions or [],
+                                    },
+                                )
+                            result["shell_state"] = "available"
+                            if session_recovery.get("action"):
+                                result["diagnostic_report"] += "\n" + _terminal_recovery_report(
+                                    session_recovery["action"], session_recovery["reason"],
+                                    {"recovery": session_recovery["recovery"]},
+                                )
+                            break
                 if diagnostic_id:
                     db.update_terminal_diagnostic(
-                        diagnostic_id, status="intervened" if diagnostic_intervened else "completed",
+                        diagnostic_id, status=("intervened" if diagnostic_intervened else "completed"),
                         messages=diagnostic_messages, actions=diagnostic_actions,
                     )
                 # The primary executor is blocked in this dispatch until diagnosis ends.
@@ -1307,12 +1835,12 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 for value in path_values
             )
             result = dispatch_tool(name, arguments, **({"task_id": task_id} if uses_legacy_work_path else {}))
-        db.record_debug_trace(task_id, "tool_result", {
+        _record_tool_debug_trace(task_id, "tool_result", {
             "name": name, "duration_seconds": round(time.monotonic() - started, 3), "result": result,
         })
         return result
     except Exception as exc:
-        db.record_debug_trace(task_id, "tool_error", {
+        _record_tool_debug_trace(task_id, "tool_error", {
             "name": name, "duration_seconds": round(time.monotonic() - started, 3),
             "error_type": type(exc).__name__, "error": str(exc)[:2000],
         })
@@ -1398,6 +1926,8 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
             "name": loaded.get("name"),
             "size_bytes": loaded.get("size_bytes"),
             "duration_seconds": loaded.get("duration_seconds"),
+            "frame_count": loaded.get("frame_count"),
+            "metadata": loaded.get("metadata"),
         }
         attachment = loaded.get("_model_attachment")
         if isinstance(attachment, dict):
@@ -1477,7 +2007,7 @@ def _ask_model_tool(arguments, *, conversation_id, context_messages, main_model,
     # Reserve room for the main model's next response and tool schemas. Token
     # estimates are approximate, so leave an additional safety margin.
     try:
-        limit = max(1, int(context_limit or settings.num_ctx))
+        limit = max(1, int(context_limit or settings.ollama_context_fallback))
         used = estimate_tokens(
             [*context_messages, {"role": "system", "content": json.dumps(TOOL_DEFINITIONS, ensure_ascii=False)}],
             model=main_model,
@@ -1620,7 +2150,30 @@ Rules:
 """
 
 
-def _diagnose_tool_failure(tool_name, arguments, error_text, state):
+def _snapshot_ask_model_file(conversation_id, tool_name, arguments):
+    """Return SHA-256 for an ask_model input file inside its Linux container."""
+    if tool_name != "ask_model" or not isinstance(arguments, dict):
+        return None
+    path = arguments.get("file")
+    if not isinstance(path, str) or not path.startswith("/") or "\x00" in path:
+        return None
+    try:
+        import shlex
+        from .sandbox_manager import sandbox_manager
+        result = sandbox_manager.execute(
+            conversation_id, "sha256sum -- " + shlex.quote(path),
+            timeout=10, output_limit=1000,
+        )
+        if result.get("exit_code") != 0:
+            return None
+        digest = str(result.get("stdout") or "").strip().split()[0]
+        return digest if re.fullmatch(r"[0-9a-fA-F]{64}", digest) else None
+    except Exception:
+        logger.debug("Could not snapshot ask_model input file", exc_info=True)
+        return None
+
+
+def _diagnose_tool_failure(tool_name, arguments, error_text, state, *, file_snapshot=None):
     """Classify tool failures and record identical unsuccessful attempts."""
     text = str(error_text or "")
     lowered = text.lower()
@@ -1671,6 +2224,7 @@ def _diagnose_tool_failure(tool_name, arguments, error_text, state):
         "arguments": args_text[:900],
         "category": category,
         "error": normalized_error,
+        "file_snapshot": file_snapshot,
         "attempt": prior_same + 1,
     })
     del history[:-40]
@@ -1680,6 +2234,28 @@ def _diagnose_tool_failure(tool_name, arguments, error_text, state):
     if repeated >= max(3, int(getattr(settings, "loop_warning_threshold", 3))):
         guidance += " The warning threshold has been reached: stop this approach and choose a different tool, path, or plan."
     recovery = classify_failure(tool_name, arguments if isinstance(arguments, dict) else {}, text)
+    history[-1]["recovery"] = recovery
+    file_error = bool(
+        tool_name == "ask_model" and isinstance(arguments, dict)
+        and arguments.get("file") and recovery.get("category") != "transient_service"
+        and any(token in normalized_error.lower() for token in (
+            "file", "format", "unsupported", "size", "duration", "decode", "read",
+            "not found", "permission", "ffmpeg", "convert", "attachment", "document",
+            "image", "audio", "video", "exceeds", "budget", "no such", "empty",
+        ))
+    )
+    history[-1]["file_error"] = file_error
+    if file_error:
+        guidance += (
+            " This ask_model failure is tied to the attached file, not just the wording of the prompt. "
+            "Prepare or convert the file, inspect the resulting file, and retry only after its actual "
+            "content has changed; renaming an unchanged copy is not sufficient."
+        )
+    elif tool_name == "ask_model" and recovery.get("category") == "transient_service":
+        guidance += (
+            " This appears to be a temporary auxiliary-model service failure, not a file-preparation problem. "
+            "A single retry is permitted; if it fails again, stop retrying and report the service outage."
+        )
     return {
         "category": category,
         "repeat_count": repeated,
@@ -2860,24 +3436,19 @@ class OllamaClient:
             raise RuntimeError(f"Cannot connect to Ollama at {self.base}: {exc}") from exc
 
     def model_profile(self, model: str | None = None) -> dict:
-        """Return the effective context window for one exact Ollama tag.
+        """Return the runtime context budget and separate model architecture limit.
 
-        Explicit Modelfile PARAMETER num_ctx wins. If absent, a conventional
-        -32k/-64k tag suffix is recognized; otherwise the legacy env value is
-        only a fallback. The result is cached per exact tag.
+        Ollama /api/ps is authoritative for a loaded model's allocated context.
+        Before the model is loaded, use the tag's explicit num_ctx, a recognized
+        tag suffix, or the LocalAgent fallback (marked as unconfirmed). The
+        architecture context from /api/show is informational only and is never
+        used as the runtime budget.
         """
         name = model or db.get_app_setting("selected_ollama_model", self.model)
-        cache_key = "ollama_model_profile_v2:" + str(name)
-        try:
-            cached = db.get_app_setting(cache_key)
-            if cached:
-                obj = json.loads(cached)
-                if isinstance(obj, dict) and obj.get("model") == name and int(obj.get("num_ctx", 0)) > 0:
-                    return obj
-        except Exception:
-            pass
+        raw = {}
         explicit = None
         explicit_num_predict = None
+        model_context_length = None
         try:
             raw = self._post("/api/show", {"model": name}, timeout=30)
             parameters = raw.get("parameters", "") if isinstance(raw, dict) else ""
@@ -2891,7 +3462,6 @@ class OllamaClient:
                 match = re.search(r"(?im)^\s*num_predict\s+(-?\d+)\s*$", parameters)
                 if match:
                     explicit_num_predict = match.group(1)
-            # Some Ollama builds expose parameters as a Modelfile string.
             modelfile = raw.get("modelfile", "") if isinstance(raw, dict) else ""
             if isinstance(modelfile, str):
                 if explicit is None:
@@ -2902,31 +3472,62 @@ class OllamaClient:
                     match = re.search(r"(?im)^\s*PARAMETER\s+num_predict\s+(-?\d+)\s*$", modelfile)
                     if match:
                         explicit_num_predict = match.group(1)
+            model_info = raw.get("model_info", {}) if isinstance(raw, dict) else {}
+            if isinstance(model_info, dict):
+                lengths = [
+                    int(value) for key, value in model_info.items()
+                    if str(key).endswith(".context_length") and str(value).isdigit() and int(value) > 0
+                ]
+                model_context_length = max(lengths, default=None)
         except Exception:
             raw = {}
+
         try:
-            context = int(explicit) if explicit is not None else 0
+            configured_context = int(explicit) if explicit is not None else 0
         except (TypeError, ValueError):
-            context = 0
-        source = "modelfile" if context else "fallback"
-        if not context:
-            match = re.search(r"(?:-|:)(32|64|128|256)k(?:$|[-_.])", str(name), re.I)
+            configured_context = 0
+        source = "modelfile" if configured_context > 0 else "fallback"
+        if configured_context <= 0:
+            match = re.search(r"(?:-|:)(\d{1,3})k(?:$|[-_.])", str(name), re.I)
             if match:
-                context = int(match.group(1)) * 1024
+                configured_context = int(match.group(1)) * 1024
                 source = "tag_suffix"
-        if not context:
-            context = int(settings.num_ctx)
+        if configured_context <= 0:
+            configured_context = int(getattr(settings, "ollama_context_fallback", 4096))
+            source = "localagent_fallback_unconfirmed"
+
+        runtime_context = None
+        try:
+            status = self.status()
+            loaded_models = status.get("models", []) if isinstance(status, dict) else []
+            loaded = next(
+                (item for item in loaded_models
+                 if isinstance(item, dict) and str(item.get("name") or item.get("model") or "") == str(name)),
+                None,
+            )
+            if loaded:
+                value = loaded.get("context_length")
+                if value is not None and int(value) > 0:
+                    runtime_context = int(value)
+        except Exception:
+            pass
+
         try:
             num_predict = int(explicit_num_predict) if explicit_num_predict is not None else None
         except (TypeError, ValueError):
             num_predict = None
-        profile = {"model": name, "num_ctx": context, "num_predict": num_predict, "source": source}
-        if source != "fallback":
-            try:
-                db.set_app_setting(cache_key, json.dumps(profile))
-            except Exception:
-                pass
-        return profile
+        context = runtime_context or configured_context
+        if runtime_context:
+            source = "ollama_runtime"
+        return {
+            "model": name,
+            "num_ctx": context,
+            "runtime_context_limit": context,
+            "model_context_length": model_context_length,
+            "num_predict": num_predict,
+            "source": source,
+            "runtime_context_confirmed": runtime_context is not None,
+        }
 
     def _post_stream(self, endpoint: str, payload: dict, timeout: int | None = None) -> dict:
         with self._request_lock:
@@ -3240,7 +3841,15 @@ class OllamaClient:
         profile = self.model_profile(selected_model)
         task_context = _CURRENT_MODEL_CONTEXT.get()
         if isinstance(task_context, int) and task_context > 0 and _CURRENT_MODEL_OVERRIDE.get() == selected_model:
-            profile = {"model": selected_model, "num_ctx": task_context, "num_predict": profile.get("num_predict"), "source": "task_checkpoint"}
+            if profile.get("runtime_context_confirmed") and int(profile.get("runtime_context_limit") or 0) > 0:
+                # Once Ollama has loaded the model, /api/ps supersedes the
+                # pre-load estimate for this task's subsequent budgeting.
+                task_context = int(profile["runtime_context_limit"])
+                _CURRENT_MODEL_CONTEXT.set(task_context)
+            else:
+                profile["num_ctx"] = task_context
+                profile["runtime_context_limit"] = task_context
+                profile["source"] = "task_checkpoint"
         # Do not send Ollama's per-request `options`: they override PARAMETER
         # values stored in the selected model tag's Modelfile (num_ctx,
         # num_gpu, num_predict, temperature, etc.). The tag is the single
@@ -3275,6 +3884,37 @@ class OllamaClient:
                 "model": selected_model, "error_type": type(exc).__name__, "error": str(exc)[:2000],
             })
             raise
+        # The first request may have caused Ollama to load the model. Re-read
+        # /api/ps once so the task and its future compaction use the allocated
+        # runtime context rather than the pre-load estimate.
+        if not profile.get("runtime_context_confirmed"):
+            try:
+                runtime_profile = self.model_profile(selected_model)
+                if runtime_profile.get("runtime_context_confirmed"):
+                    profile = runtime_profile
+                    runtime_context = int(profile["runtime_context_limit"])
+                    _CURRENT_MODEL_CONTEXT.set(runtime_context)
+                    if trace_task_id:
+                        task_record = db.get_task(trace_task_id)
+                        if task_record:
+                            try:
+                                saved_profile = json.loads(task_record.get("checkpoint_json") or "{}")
+                            except Exception:
+                                saved_profile = {}
+                            if isinstance(saved_profile, dict) and saved_profile.get("model") == selected_model:
+                                saved_profile.update({
+                                    "model_num_ctx": runtime_context,
+                                    "model_context_length": profile.get("model_context_length"),
+                                    "model_context_source": profile.get("source"),
+                                    "model_context_confirmed": True,
+                                    "model_num_predict": profile.get("num_predict"),
+                                })
+                                db.update_task(
+                                    trace_task_id,
+                                    checkpoint_json=json.dumps(saved_profile, ensure_ascii=False),
+                                )
+            except Exception:
+                logger.debug("Could not refresh Ollama runtime context after model load", exc_info=True)
         response_message = response.get("message", {}) if isinstance(response, dict) else {}
         db.record_debug_trace(trace_task_id, "llm_response", {
             "model": selected_model, "message": response_message,
@@ -3624,7 +4264,7 @@ class Agent:
         except Exception:
             selected_profile = {
                 "num_ctx": getattr(settings, "llama_cpp_context", 32768) if task_provider == "llama_cpp"
-                else getattr(settings, "num_ctx", 65536),
+                else getattr(settings, "ollama_context_fallback", 4096),
                 "num_predict": None,
             }
         initial_checkpoint = {
@@ -3633,7 +4273,10 @@ class Agent:
             "reasoning": bool(reasoning),
             "provider": task_provider,
             "model": selected_model,
-            "model_num_ctx": int(selected_profile["num_ctx"]),
+            "model_num_ctx": int(selected_profile.get("runtime_context_limit") or selected_profile["num_ctx"]),
+            "model_context_length": selected_profile.get("model_context_length"),
+            "model_context_source": selected_profile.get("source"),
+            "model_context_confirmed": bool(selected_profile.get("runtime_context_confirmed", False)),
             "model_num_predict": selected_profile.get("num_predict"),
             "activity": "Подготовка задачи",
         }
@@ -3795,18 +4438,37 @@ class Agent:
                 cp["model"] = pinned
 
             _CURRENT_MODEL_OVERRIDE.set(pinned)
-            pinned_context = cp.get("model_num_ctx")
-            if not pinned_context:
-                try:
-                    profile = task_client.model_profile(pinned)
-                    pinned_context = profile["num_ctx"]
+            # Refresh the pinned task's runtime context on every start/resume.
+            # This also repairs legacy checkpoints that stored an architecture
+            # limit instead of the server-allocated context.
+            try:
+                profile = task_client.model_profile(pinned)
+            except Exception:
+                profile = None
+            if isinstance(profile, dict) and int(profile.get("runtime_context_limit") or profile.get("num_ctx") or 0) > 0:
+                profile_confirmed = bool(profile.get("runtime_context_confirmed", False))
+                if profile_confirmed or not cp.get("model_context_confirmed"):
+                    pinned_context = int(profile.get("runtime_context_limit") or profile["num_ctx"])
                     cp["model_num_ctx"] = pinned_context
+                    cp["model_context_length"] = profile.get("model_context_length")
+                    cp["model_context_source"] = profile.get("source")
+                    cp["model_context_confirmed"] = profile_confirmed
                     cp["model_num_predict"] = profile.get("num_predict")
-                except Exception:
+                else:
+                    # Preserve a previously observed runtime allocation if the
+                    # provider is currently unloaded and can only offer a guess.
+                    pinned_context = int(cp["model_num_ctx"])
+            else:
+                if cp.get("model_context_confirmed") and cp.get("model_num_ctx"):
+                    pinned_context = int(cp["model_num_ctx"])
+                else:
                     pinned_context = int(
                         settings.llama_cpp_context if task_provider == "llama_cpp"
-                        else getattr(settings, "num_ctx", 65536)
+                        else getattr(settings, "ollama_context_fallback", 4096)
                     )
+                    cp["model_num_ctx"] = pinned_context
+                    cp["model_context_source"] = "provider_fallback_unconfirmed"
+                    cp["model_context_confirmed"] = False
             db.update_task(task_id, checkpoint_json=json.dumps(cp, ensure_ascii=False))
             _CURRENT_MODEL_CONTEXT.set(int(pinned_context))
             return self._run_unified_task_impl(task_id, control)
@@ -3845,14 +4507,37 @@ class Agent:
         def save_checkpoint(saved_state):
             if isinstance(saved_state.get("messages"), list):
                 ensure_event_ids(saved_state["messages"])
-            db.record_debug_trace(task_id, "controller_checkpoint", {
-                "phase": saved_state.get("phase"), "execution_mode": saved_state.get("execution_mode"),
-                "plan": saved_state.get("plan"), "activity": saved_state.get("activity"),
-            })
+            # Debug tracing is best-effort: a diagnostics database/settings
+            # failure must never prevent the durable task checkpoint from being saved.
+            try:
+                db.record_debug_trace(task_id, "controller_checkpoint", {
+                    "phase": saved_state.get("phase"), "execution_mode": saved_state.get("execution_mode"),
+                    "plan": saved_state.get("plan"), "activity": saved_state.get("activity"),
+                })
+            except Exception:
+                logger.debug(
+                    "Could not record controller checkpoint trace for task %s",
+                    task_id,
+                    exc_info=True,
+                )
             saved_state["mode"] = "unified"
             saved_state["version"] = max(4, int(saved_state.get("version", 0) or 0))
             saved_state.setdefault("reasoning", checkpoint.get("reasoning", True))
             saved_state.setdefault("activity", checkpoint.get("activity", "Выполнение задачи"))
+            # A runtime profile may have been confirmed while the LLM request
+            # was running. Do not let an older in-memory state overwrite it.
+            try:
+                latest_task = db.get_task(task_id)
+                latest_checkpoint = json.loads(latest_task.get("checkpoint_json") or "{}") if latest_task else {}
+                if isinstance(latest_checkpoint, dict) and latest_checkpoint.get("model_context_confirmed"):
+                    for key in (
+                        "model_num_ctx", "model_context_length", "model_context_source",
+                        "model_context_confirmed", "model_num_predict",
+                    ):
+                        if key in latest_checkpoint:
+                            saved_state[key] = latest_checkpoint[key]
+            except Exception:
+                logger.debug("Could not merge confirmed model context into checkpoint", exc_info=True)
             db.update_task(
                 task_id,
                 checkpoint_json=json.dumps(saved_state, ensure_ascii=False),
@@ -3898,7 +4583,7 @@ class Agent:
             # Migrate an in-flight operation from the former autonomous checkpoint
             # shape (no pending-call index) into the unified plan/action loop.
             # Never replay an operation whose durable result is ambiguous.
-            if checkpoint.get("phase") == "tool_running":
+            if checkpoint.get("phase") == "tool_running" and not checkpoint.get("terminal_diagnostic_pending"):
                 legacy_current = checkpoint.get("current_tool")
                 legacy_shape = (
                     isinstance(legacy_current, dict)
@@ -3916,11 +4601,19 @@ class Agent:
                             recovered_payload = _restore_tool_operation_payload(
                                 stored_result, tool_name, tool_arguments, checkpoint
                             )
-                            messages.extend(_build_tool_messages_for_operation(
+                            recovered_messages = _build_tool_messages_for_operation(
                                 tool_name,
                                 json.dumps(recovered_payload, ensure_ascii=False, default=str),
                                 operation_id,
-                            ))
+                            )
+                            existing_event_ids = {
+                                item.get("_event_id") for item in messages
+                                if isinstance(item, dict) and item.get("_event_id")
+                            }
+                            messages.extend(
+                                item for item in recovered_messages
+                                if item.get("_event_id") not in existing_event_ids
+                            )
                             checkpoint["messages"] = messages
                             checkpoint["phase"] = "loop"
                             checkpoint["activity"] = _tool_activity_summary(
@@ -3943,7 +4636,7 @@ class Agent:
                         return
 
             # Recover a tool only when SQLite confirms its saved result.
-            if checkpoint.get("phase") == "tool_running":
+            if checkpoint.get("phase") == "tool_running" and not checkpoint.get("terminal_diagnostic_pending"):
                 current_tool = checkpoint.get("current_tool")
                 recovered = False
 
@@ -3976,11 +4669,19 @@ class Agent:
                             recovered_payload = _restore_tool_operation_payload(
                                 stored_result, tool_name, tool_arguments, checkpoint
                             )
-                            saved_messages.extend(_build_tool_messages_for_operation(
+                            recovered_messages = _build_tool_messages_for_operation(
                                 tool_name,
                                 json.dumps(recovered_payload, ensure_ascii=False, default=str),
                                 current_tool.get("operation_id"),
-                            ))
+                            )
+                            existing_event_ids = {
+                                item.get("_event_id") for item in saved_messages
+                                if isinstance(item, dict) and item.get("_event_id")
+                            }
+                            saved_messages.extend(
+                                item for item in recovered_messages
+                                if item.get("_event_id") not in existing_event_ids
+                            )
                             checkpoint["activity"] = _tool_activity_summary(
                                 tool_name, tool_arguments, recovered_payload
                             )
@@ -4225,6 +4926,7 @@ class Agent:
                 "messages": messages,
                 "pending_calls": pending_calls,
                 "next_tool_index": next_tool_index,
+                "current_tool": checkpoint.get("current_tool") if isinstance(checkpoint.get("current_tool"), dict) else None,
                 "plan": plan,
                 "prepare_step_prompts": prepare_step_prompts,
                 "review_step_results": review_step_results,
@@ -4247,6 +4949,14 @@ class Agent:
                     "actions_succeeded": 0, "actions_failed": 0, "successful_tools": [],
                     "failed_categories": {}, "unresolved_errors": [],
                 },
+                "unresolved_tool_contract_errors": (
+                    checkpoint.get("unresolved_tool_contract_errors", [])
+                    if isinstance(checkpoint.get("unresolved_tool_contract_errors", []), list) else []
+                ),
+                "terminal_diagnostic_pending": (
+                    checkpoint.get("terminal_diagnostic_pending")
+                    if isinstance(checkpoint.get("terminal_diagnostic_pending"), dict) else None
+                ),
             }
             if not state.get("execution_events"):
                 append_execution_event(state, "task_started", detail="План и контрольная точка загружены", status="running")
@@ -4255,6 +4965,48 @@ class Agent:
 
             db.update_task(task_id, status="running", error=None)
             save_checkpoint(state)
+
+            pending_terminal_diagnostic = state.get("terminal_diagnostic_pending")
+            if isinstance(pending_terminal_diagnostic, dict):
+                recovered_terminal_result = _resume_pending_terminal_diagnostic(
+                    task_id, cid, pending_terminal_diagnostic
+                )
+                current_tool = state.get("current_tool")
+                if not isinstance(current_tool, dict):
+                    raise RuntimeError("Контрольная точка диагностики не содержит исходный terminal tool call.")
+                tool_index = current_tool.get("index")
+                receipt_id = current_tool.get("operation_id")
+                if not isinstance(tool_index, int) or not isinstance(receipt_id, str):
+                    raise RuntimeError("Контрольная точка диагностики не содержит идентификатор исходной операции.")
+                tool_name = str(current_tool.get("name") or "terminal")
+                tool_arguments = current_tool.get("arguments") if isinstance(current_tool.get("arguments"), dict) else {}
+                db.complete_tool_operation(receipt_id, recovered_terminal_result)
+                recovered_payload = _restore_tool_operation_payload(
+                    recovered_terminal_result, tool_name, tool_arguments, state
+                )
+                messages.extend(_build_tool_messages_for_operation(
+                    tool_name,
+                    json.dumps(recovered_payload, ensure_ascii=False, default=str),
+                    receipt_id,
+                ))
+                state["activity"] = _tool_activity_summary(
+                    tool_name, tool_arguments, recovered_payload
+                )
+                state.update({
+                    "phase": "tools_pending",
+                    "messages": messages,
+                    "next_tool_index": tool_index + 1,
+                })
+                state.pop("current_tool", None)
+                state.pop("terminal_diagnostic_pending", None)
+                state.pop("pause_reason", None)
+                state["activity"] = "Терминальная операция и Bash-сессия проверены; продолжение задачи"
+                save_checkpoint(state)
+                # The loop uses these local cursors; advance them together with the durable checkpoint.
+                phase = state["phase"]
+                pending_calls = state["pending_calls"]
+                next_tool_index = state["next_tool_index"]
+                messages = state["messages"]
 
             def finalize(answer):
                 set_activity("Завершаю задачу и проверяю результат")
@@ -4267,7 +5019,14 @@ class Agent:
                 # completion; errors from the superseded approach remain in the
                 # execution history but must not veto a verified alternative.
                 completion_blocker = None
-                if _is_bounded_python_script_workflow(task.get("user_message", "")):
+                contract_errors = state.get("unresolved_tool_contract_errors", [])
+                if isinstance(contract_errors, list) and contract_errors:
+                    completion_blocker = (
+                        "Задача не может быть отмечена выполненной: модель предложила недопустимый вызов инструмента, "
+                        "который не был исправлен. Последняя ошибка: "
+                        + str(contract_errors[-1])[:500]
+                    )
+                if completion_blocker is None and _is_bounded_python_script_workflow(task.get("user_message", "")):
                     task_summary = state.get("task_state", {})
                     successful = set(task_summary.get("successful_tools", [])) if isinstance(task_summary, dict) else set()
                     missing = {"terminal"} - successful
@@ -4323,6 +5082,9 @@ class Agent:
 
                 state["phase"] = "completed"
                 state["final_answer"] = answer
+                state.pop("current_tool", None)
+                state.pop("terminal_diagnostic_pending", None)
+                state.pop("pause_reason", None)
                 save_checkpoint(state)
                 db.update_task(
                     task_id,
@@ -4492,8 +5254,10 @@ class Agent:
                             terminal_recovery_call = _is_safe_terminal_recovery_call(
                                 name, args, cid
                             )
+                            ask_model_snapshot = _snapshot_ask_model_file(cid, name, args)
                             repeat_guard = None if terminal_recovery_call else should_block_repeated_call(
-                                name, args, state.get("tool_failure_history", [])
+                                name, args, state.get("tool_failure_history", []),
+                                current_file_snapshot=ask_model_snapshot,
                             )
                             if repeat_guard:
                                 raise ToolContractError(
@@ -4533,18 +5297,22 @@ class Agent:
                                         context_limit=(
                                             _CURRENT_MODEL_CONTEXT.get()
                                             or checkpoint.get("model_num_ctx")
-                                            or settings.num_ctx
+                                            or settings.ollama_context_fallback
                                         ),
                                     )
+                        except (TerminalDiagnosticLLMUnavailable, TerminalRecoveryPending):
+                            raise
                         except ToolReceiptError:
                             raise
                         except Exception as exc:
                             # Record the concrete failure and give the model a
                             # diagnostic cue instead of letting it repeat blindly.
-                            if step_id_at_tool_start is not None:
-                                step_tool_failures[step_id_at_tool_start] = (
-                                    int(step_tool_failures.get(step_id_at_tool_start, 0)) + 1
-                                )
+                            if isinstance(exc, ToolContractError):
+                                contract_errors = state.setdefault("unresolved_tool_contract_errors", [])
+                                contract_message = f"{type(exc).__name__}: {str(exc)[:1000]}"
+                                if contract_message not in contract_errors:
+                                    contract_errors.append(contract_message)
+                                state["unresolved_tool_contract_errors"] = contract_errors[-10:]
                             error_text = f"{type(exc).__name__}: {str(exc)[:2500]}"
                             if operation_id is not None:
                                 try:
@@ -4563,7 +5331,8 @@ class Agent:
                                 "exception_type": type(exc).__name__,
                             }
                             failure["agent_diagnosis"] = _diagnose_tool_failure(
-                                name, args, error_text, state
+                                name, args, error_text, state,
+                                file_snapshot=_snapshot_ask_model_file(cid, name, args),
                             )
                             content = json.dumps(failure, ensure_ascii=False)
                         else:
@@ -4592,7 +5361,8 @@ class Agent:
                                 except Exception:
                                     error_text = str(result)[:6000]
                                 result["agent_diagnosis"] = _diagnose_tool_failure(
-                                    name, args, error_text, state
+                                    name, args, error_text, state,
+                                    file_snapshot=ask_model_snapshot,
                                 )
                             # If saving the receipt fails, do not advance the
                             # checkpoint: recovery must treat the operation as
@@ -4663,17 +5433,6 @@ class Agent:
                                 evidence[step_id_at_tool_start] = receipts[-20:]
 
                             tool_ok = _tool_result_is_successful(result)
-                            failure_step_id = step_id_at_tool_start
-                            if failure_step_id is not None:
-                                if controller_blocked:
-                                    pass
-                                elif not tool_ok:
-                                    step_tool_failures[failure_step_id] = (
-                                        int(step_tool_failures.get(failure_step_id, 0)) + 1
-                                    )
-                                else:
-                                    step_tool_failures[failure_step_id] = 0
-
                             tool_payload = {"ok": tool_ok, "result": result}
                             if acceptance_proof:
                                 tool_payload["acceptance_proof"] = acceptance_proof
@@ -4691,13 +5450,27 @@ class Agent:
                                 legacy_failure_info = classify_failure(name, args, str(failure_blob))
                         except (TypeError, json.JSONDecodeError):
                             legacy_failure_info = classify_failure(name, args, content)
+
+                        # Count every unsuccessful dispatch exactly once, regardless
+                        # of whether it returned an error payload or raised an exception.
+                        if step_id_at_tool_start is not None and not controller_blocked:
+                            if legacy_tool_ok:
+                                step_tool_failures[step_id_at_tool_start] = 0
+                            else:
+                                step_tool_failures[step_id_at_tool_start] = (
+                                    int(step_tool_failures.get(step_id_at_tool_start, 0)) + 1
+                                )
+
                         if legacy_tool_ok:
+                            state["unresolved_tool_contract_errors"] = []
+
                             history = state.setdefault("tool_failure_history", [])
                             history.append({
                                 "status": "success",
                                 "tool_name": name,
                                 "arguments": args,
                                 "call_fingerprint": tool_call_fingerprint(name, args),
+                                "file_snapshot": ask_model_snapshot if name == "ask_model" else None,
                                 "at_round": round_index,
                             })
                             del history[:-40]
@@ -4898,7 +5671,11 @@ class Agent:
                 # Legacy checkpoints {"round", "messages"} remain supported.
                 # Compact only at a safe boundary (no unresolved tool call).
                 # The full removed transcript remains in the durable checkpoint archive.
-                num_ctx = int(_CURRENT_MODEL_CONTEXT.get() or settings.num_ctx)
+                num_ctx = int(
+                    _CURRENT_MODEL_CONTEXT.get()
+                    or checkpoint.get("model_num_ctx")
+                    or (settings.llama_cpp_context if checkpoint.get("provider") == "llama_cpp" else settings.ollama_context_fallback)
+                )
                 selected_model = str(checkpoint.get("model") or "")
                 tool_budget_message = {
                     "role": "system",
@@ -5584,6 +6361,48 @@ class Agent:
             )
             return
 
+        except (TerminalDiagnosticLLMUnavailable, TerminalRecoveryPending) as exc:
+            if isinstance(exc, TerminalDiagnosticLLMUnavailable):
+                pending = {
+                    "terminal_result": exc.terminal_result,
+                    "diagnostic_id": exc.diagnostic_id,
+                    "messages": exc.messages,
+                    "actions": exc.actions,
+                }
+                pause_reason = "terminal_diagnostic_llm_unavailable"
+                report = _terminal_diagnostic_pause_report(exc.terminal_result, exc)
+                diagnostic_id = exc.diagnostic_id
+                diagnostic_messages = exc.messages
+                diagnostic_actions = exc.actions
+            else:
+                pending = exc.pending
+                pause_reason = "terminal_recovery_unverified"
+                report = (
+                    "Задача приостановлена: восстановление терминала не подтверждено. "
+                    + str(exc)[:1000] + "\n"
+                    + _terminal_command_impact_note(
+                        (pending.get("terminal_result") or {}).get("_terminal_command")
+                        if isinstance(pending.get("terminal_result"), dict) else ""
+                    )
+                )
+                diagnostic_id = pending.get("diagnostic_id")
+                diagnostic_messages = pending.get("messages")
+                diagnostic_actions = pending.get("actions")
+            if isinstance(state, dict):
+                state["terminal_diagnostic_pending"] = pending
+                state["pause_reason"] = pause_reason
+                state["phase"] = "tool_running"
+                save_checkpoint(state)
+            if diagnostic_id:
+                try:
+                    db.update_terminal_diagnostic(
+                        diagnostic_id, status="paused",
+                        messages=diagnostic_messages, actions=diagnostic_actions,
+                    )
+                except Exception:
+                    logger.warning("Could not persist paused terminal diagnostic %s", diagnostic_id, exc_info=True)
+            db.update_task(task_id, status="paused", result=report, error=None)
+            db.add_message(cid, "system", report)
         except TaskCancelled as exc:
             control.cancel_control_done.wait(5.0)
             if control.cancellation_confirmed():

@@ -24,6 +24,7 @@ def test_resume_continues_from_saved_in_progress_step(tmp_path, monkeypatch):
             max_tool_rounds=10,
             auto_resume_tasks=False,
             workspace_path=workspace,
+            ollama_context_fallback=32768,
         ),
     )
 

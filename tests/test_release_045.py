@@ -231,7 +231,7 @@ def test_attached_image_question_uses_direct_model_turn_without_planner_and_keep
     monkeypatch.setattr(db, "settings", replace(db.settings, database_path=database_path))
     monkeypatch.setattr(core, "settings", replace(
         core.settings, database_path=database_path, workspace_path=workspace,
-        auto_resume_tasks=False,
+        auto_resume_tasks=False, ollama_context_fallback=32768,
     ))
     db.init_db()
     conversation = db.create_conversation("direct image question")
@@ -296,7 +296,7 @@ def test_unknown_tool_call_cannot_mark_direct_attachment_task_completed(tmp_path
     monkeypatch.setattr(db, "settings", replace(db.settings, database_path=database_path))
     monkeypatch.setattr(core, "settings", replace(
         core.settings, database_path=database_path, workspace_path=workspace,
-        auto_resume_tasks=False,
+        auto_resume_tasks=False, ollama_context_fallback=32768,
     ))
     db.init_db()
     conversation = db.create_conversation("unknown tool guard")

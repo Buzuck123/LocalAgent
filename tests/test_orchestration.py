@@ -4,6 +4,7 @@ from agent.orchestration import (
     classify_failure,
     update_task_state,
     validate_tool_call,
+    should_block_repeated_call,
 )
 
 
@@ -200,3 +201,76 @@ def test_failure_classifier_recognizes_enoent():
     info = classify_failure("load_file_for_model", {"path": "/work/missing.txt"}, "OSError: ENOENT")
     assert info["category"] == "missing_resource"
     assert info["recovery_action"] == "discover_actual_resources"
+
+
+def test_ask_model_transient_service_failure_allows_one_retry():
+    info = classify_failure("ask_model", {"prompt": "Analyze"}, "ConnectionError: service temporarily unavailable")
+    assert info["category"] == "transient_service"
+    assert info["retry_safe_without_state_check"] is True
+    history = [{
+        "tool_name": "ask_model", "status": "failed",
+        "call_fingerprint": 'ask_model|{"prompt":"Analyze"}',
+        "recovery": info,
+    }]
+    assert should_block_repeated_call("ask_model", {"prompt": "Analyze"}, history) is None
+
+
+def test_ask_model_same_file_content_blocks_retry_even_if_path_and_prompt_change():
+    history = [{
+        "tool_name": "ask_model", "status": "failed",
+        "call_fingerprint": 'ask_model|{"file":"/work/source.pdf","prompt":"Summarize"}',
+        "arguments": {"file": "/work/source.pdf", "prompt": "Summarize"},
+        "file_error": True, "file_snapshot": "a" * 64,
+        "error": "ValueError: unsupported document format",
+    }]
+    blocked = should_block_repeated_call(
+        "ask_model", {"file": "/work/copy.pdf", "prompt": "Extract key points"},
+        history, current_file_snapshot="a" * 64,
+    )
+    assert blocked and blocked["recovery_action"] == "prepare_or_change_file_content"
+
+
+def test_ask_model_changed_file_content_allows_retry():
+    history = [{
+        "tool_name": "ask_model", "status": "failed",
+        "call_fingerprint": 'ask_model|{"file":"/work/source.pdf","prompt":"Summarize"}',
+        "arguments": {"file": "/work/source.pdf", "prompt": "Summarize"},
+        "file_error": True, "file_snapshot": "a" * 64,
+        "error": "ValueError: unsupported document format",
+    }]
+    assert should_block_repeated_call(
+        "ask_model", {"file": "/work/source.pdf", "prompt": "Summarize"},
+        history, current_file_snapshot="b" * 64,
+    ) is None
+
+
+def test_ask_model_transient_retry_budget_cannot_be_bypassed_by_prompt_change():
+    failure = {
+        "tool_name": "ask_model", "status": "failed",
+        "recovery": {"category": "transient_service"},
+        "error": "ConnectionError: service unavailable",
+    }
+    blocked = should_block_repeated_call(
+        "ask_model", {"prompt": "A different prompt"},
+        [dict(failure), dict(failure)],
+    )
+    assert blocked is not None
+    assert blocked["category"] == "transient_service_retry_exhausted"
+
+
+def test_ask_model_success_with_same_file_content_resolves_prior_file_failure():
+    history = [{
+        "tool_name": "ask_model", "status": "failed",
+        "call_fingerprint": 'ask_model|{"file":"/work/source.pdf","prompt":"Summarize"}',
+        "arguments": {"file": "/work/source.pdf", "prompt": "Summarize"},
+        "file_error": True, "file_snapshot": "a" * 64,
+        "error": "ValueError: unsupported document format",
+    }, {
+        "tool_name": "ask_model", "status": "success",
+        "arguments": {"file": "/work/source.pdf", "prompt": "Describe"},
+        "file_snapshot": "a" * 64,
+    }]
+    assert should_block_repeated_call(
+        "ask_model", {"file": "/work/source.pdf", "prompt": "Summarize"},
+        history, current_file_snapshot="a" * 64,
+    ) is None

@@ -19,7 +19,7 @@ def test_sqlite_checkpoint_survives_agent_restart_without_replaying_tool(
     monkeypatch.setattr(
         core,
         "settings",
-        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False),
+        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False, ollama_context_fallback=32768),
     )
 
     # Настоящая SQLite: схема, соединения и CRUD-функции проекта.
@@ -110,7 +110,7 @@ def test_sqlite_resume_uses_saved_tool_result_without_reexecution(
     monkeypatch.setattr(
         core,
         "settings",
-        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False),
+        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False, ollama_context_fallback=32768),
     )
 
     core.db.init_db()
@@ -354,6 +354,7 @@ def test_tool_running_recovers_completed_write_from_journal(
             max_tool_rounds=3,
             auto_resume_tasks=False,
             workspace_path=workspace.resolve(),
+            ollama_context_fallback=32768,
         ),
     )
     monkeypatch.setattr(

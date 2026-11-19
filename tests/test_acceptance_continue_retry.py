@@ -12,6 +12,7 @@ def test_failed_acceptance_check_forces_retry_even_if_reviewer_says_continue(tmp
     monkeypatch.setattr(core.db, "settings", SimpleNamespace(database_path=database_path))
     monkeypatch.setattr(core, "settings", SimpleNamespace(
         max_tool_rounds=15, auto_resume_tasks=False, workspace_path=workspace,
+        ollama_context_fallback=32768,
     ))
     core.db.init_db()
     conversation = core.db.create_conversation("Acceptance continue test")

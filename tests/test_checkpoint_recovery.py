@@ -156,7 +156,13 @@ def test_pending_tool_resumes_and_continues(monkeypatch):
             }
 
     monkeypatch.setattr(core, "client", FakeClient())
-    monkeypatch.setattr(core, "settings", SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False))
+    monkeypatch.setattr(core, "settings", SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False, ollama_context_fallback=32768))
+    # Diagnostics are optional and must not block checkpoint recovery.
+    monkeypatch.setattr(
+        core.db,
+        "record_debug_trace",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("debug trace unavailable")),
+    )
 
     agent = make_agent()
     agent._run_task(task["id"], core.TaskControl())
@@ -281,7 +287,7 @@ def test_legacy_checkpoint_without_tool_calls_resumes(monkeypatch):
     monkeypatch.setattr(core, "client", FakeClient())
     monkeypatch.setattr(
         core, "settings",
-        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False),
+        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False, ollama_context_fallback=32768),
     )
 
     agent = make_agent()
@@ -344,7 +350,7 @@ def test_checkpoint_resume_does_not_duplicate_user_message(monkeypatch):
     monkeypatch.setattr(core, "client", FakeClient())
     monkeypatch.setattr(
         core, "settings",
-        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False),
+        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False, ollama_context_fallback=32768),
     )
 
     agent = make_agent()
@@ -567,7 +573,7 @@ def test_completed_journal_operation_resumes_without_dispatch(monkeypatch):
     monkeypatch.setattr(
         core,
         "settings",
-        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False),
+        SimpleNamespace(max_tool_rounds=3, auto_resume_tasks=False, ollama_context_fallback=32768),
     )
 
     make_agent()._run_task(task["id"], core.TaskControl())
@@ -679,3 +685,4 @@ def test_receipt_failure_does_not_advance_checkpoint_or_repeat_tool(monkeypatch)
         and message.get("tool_name") == "terminal"
         for message in last_checkpoint["messages"]
     )
+

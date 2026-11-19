@@ -23,8 +23,13 @@ class Settings:
     llama_cpp_context: int = int(os.getenv("LLAMA_CPP_CONTEXT", "32768"))
     llama_cpp_timeout: int = int(os.getenv("LLAMA_CPP_TIMEOUT", "600"))
     model: str = os.getenv("OLLAMA_MODEL", "ornith-1.5:9b")
-    # Fallback used only for LocalAgent's history budgeting when the selected
-    # Ollama tag does not expose PARAMETER num_ctx. Never sent to Ollama.
+    # Conservative budget used until Ollama reports the loaded model's
+    # actual context through /api/ps. Mirror OLLAMA_CONTEXT_LENGTH here when
+    # that server-level setting is used; OLLAMA_NUM_CTX is legacy and is not
+    # evidence of the context allocated by Ollama.
+    ollama_context_fallback: int = int(os.getenv("OLLAMA_CONTEXT_LENGTH", "4096"))
+    # Legacy LocalAgent-only setting retained for compatibility; do not use it
+    # as evidence of Ollama's allocated runtime context.
     num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "65536"))
     keep_alive: str = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
     # Legacy setting retained for compatibility; chat uses the explicit inactivity timeouts below.
