@@ -762,7 +762,7 @@ print(json.dumps(result))
             for key, args in (
                 ("container_inspect", ("inspect", container_id)),
                 ("container_top", ("top", container_id)),
-                ("container_stats", ("stats", "--no-stream", container_id)),
+                ("container_stats", ("stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.PIDs}}", container_id)),
             ):
                 try:
                     proc = subprocess.run([settings.podman_path, *args], capture_output=True,
