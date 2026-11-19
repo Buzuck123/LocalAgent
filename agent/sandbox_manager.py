@@ -777,6 +777,7 @@ print(json.dumps(result))
                     delta = str(operation.get("output") or "")
                     if delta:
                         snapshot["new_output_since_cursor"] = delta[-1500:]
+                        snapshot["terminal_output_tail"] = delta[-3000:]
                         sample_state["last_output_at"] = time.time()
                         snapshot["idle_seconds"] = 0.0
                     else:
