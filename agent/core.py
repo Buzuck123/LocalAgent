@@ -1141,9 +1141,15 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
             try:
                 response = _client_chat(messages, tools=TERMINAL_DIAGNOSTIC_TOOLS, reasoning=False)
             except Exception as exc:
-                db.update_terminal_diagnostic(
-                    diagnostic_id, status="paused", messages=messages, actions=actions
-                )
+                try:
+                    db.update_terminal_diagnostic(
+                        diagnostic_id, status="paused", messages=messages, actions=actions
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not persist paused diagnostic %s after LLM failure",
+                        diagnostic_id, exc_info=True,
+                    )
                 raise TerminalDiagnosticLLMUnavailable(
                     f"{type(exc).__name__}: {str(exc)[:1000]}",
                     terminal_result=terminal_result,
