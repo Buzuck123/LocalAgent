@@ -1046,6 +1046,55 @@ TERMINAL_DIAGNOSTIC_TOOLS = [
 ]
 
 
+class TerminalDiagnosticLLMUnavailable(RuntimeError):
+    """The diagnostic model is unavailable; preserve the live terminal operation for resume."""
+
+    def __init__(self, message, *, terminal_result, diagnostic_id, messages, actions):
+        super().__init__(message)
+        self.terminal_result = dict(terminal_result or {})
+        self.diagnostic_id = diagnostic_id
+        self.messages = list(messages or [])
+        self.actions = list(actions or [])
+
+
+class TerminalRecoveryPending(RuntimeError):
+    """Terminal/Bash recovery is not verified; keep the task paused for another diagnostic pass."""
+
+    def __init__(self, message, *, pending):
+        super().__init__(message)
+        self.pending = dict(pending or {})
+
+
+def _terminal_command_impact_note(command):
+    text = str(command or "").strip()
+    lower = text.lower()
+    if re.search(r"\b(pip|pip3|uv|poetry|conda|npm|pnpm|yarn|apt|apt-get|dpkg|cargo|go install)\b", lower):
+        impact = "Проверь установленные/обновлённые пакеты и зависимости: установка могла завершиться частично."
+    elif re.search(r"(>|>>|\b(rm|mv|cp|install|touch|mkdir|rmdir|tee|sed -i|truncate)\b)", lower):
+        impact = "Проверь созданные, изменённые и удалённые файлы: файловые операции могли выполниться частично."
+    elif re.search(r"\b(git|commit|checkout|merge|rebase|reset)\b", lower):
+        impact = "Проверь состояние Git, рабочее дерево и незакоммиченные изменения."
+    elif re.search(r"\b(sqlite|migrate|migration|alembic|schema|create table|alter table|drop table)\b", lower):
+        impact = "Проверь состояние базы данных и миграций: транзакция или изменение схемы могли завершиться частично."
+    elif re.search(r"\b(docker|podman|systemctl|service|kill|pkill|chmod|chown)\b", lower):
+        impact = "Проверь состояние процессов, сервисов и прав доступа: системные изменения могли выполниться частично."
+    else:
+        impact = "Проверь побочные эффекты команды и состояние рабочего каталога/окружения: выполнение могло остановиться после частичных изменений."
+    return f"Последняя команда: {text[:700] or '(не сохранена)'}. {impact}"
+
+
+def _terminal_diagnostic_pause_report(terminal_result, error):
+    command = str((terminal_result or {}).get("_terminal_command") or "")
+    return (
+        "Задача приостановлена: диагностическая LLM недоступна "
+        f"({type(error).__name__}: {str(error)[:500]}). "
+        "Терминальная операция не отменялась и не запускалась повторно. "
+        "После возобновления сначала продолжится диагностика, будет проверена исходная операция "
+        "и работоспособность Bash-сессии; основной агент не получит управление до успешной проверки.\n"
+        + _terminal_command_impact_note(command)
+    )
+
+
 def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnostic_id=None,
                              diagnostic_messages=None, diagnostic_actions=None):
     from .sandbox_manager import sandbox_manager
@@ -1089,7 +1138,19 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
     action, reason, recovery = "continue_waiting", "Недостаточно оснований для вмешательства.", None
     try:
         for _ in range(5):
-            response = _client_chat(messages, tools=TERMINAL_DIAGNOSTIC_TOOLS, reasoning=False)
+            try:
+                response = _client_chat(messages, tools=TERMINAL_DIAGNOSTIC_TOOLS, reasoning=False)
+            except Exception as exc:
+                db.update_terminal_diagnostic(
+                    diagnostic_id, status="paused", messages=messages, actions=actions
+                )
+                raise TerminalDiagnosticLLMUnavailable(
+                    f"{type(exc).__name__}: {str(exc)[:1000]}",
+                    terminal_result=terminal_result,
+                    diagnostic_id=diagnostic_id,
+                    messages=messages,
+                    actions=actions,
+                ) from exc
             message = response.get("message", {}) if isinstance(response, dict) else {}
             if not isinstance(message, dict):
                 break
@@ -1183,6 +1244,8 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                 # Stop processing this model response after any destructive action,
                 # even when it failed; the controller will re-poll before retrying.
                 break
+    except TerminalDiagnosticLLMUnavailable:
+        raise
     except Exception as exc:
         action, reason = "continue_waiting", (
             f"Диагностика завершилась ошибкой {type(exc).__name__}; продолжаем наблюдение без вмешательства."
@@ -1273,24 +1336,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                 diagnostic_messages = None
                 diagnostic_actions = None
                 diagnostic_intervened = False
-                diagnostic_deferred = False
-                diagnostic_cycles = 0
-                max_diagnostic_cycles = 3
                 while result.get("_diagnostic_due"):
-                    if diagnostic_cycles >= max_diagnostic_cycles:
-                        diagnostic_deferred = True
-                        result = dict(result)
-                        result["_diagnostic_due"] = False
-                        notice = (
-                            "\n[Диагностика приостановлена после "
-                            f"{max_diagnostic_cycles} циклов без подтверждённого восстановления. "
-                            "Терминальная операция может продолжаться; проверь её повторным вызовом terminal "
-                            "с пустой командой. Новая команда не запускалась.]"
-                        )
-                        result["_terminal_text"] = str(result.get("_terminal_text") or "") + notice
-                        result["_terminal_output"] = str(result.get("_terminal_output") or "") + notice
-                        break
-                    diagnostic_cycles += 1
                     action, reason, diagnostic_id, diagnostic_messages, diagnostic_actions, recovery = _run_terminal_diagnostic(
                         task_id, task["conversation_id"], result,
                         diagnostic_id=diagnostic_id,
@@ -1394,8 +1440,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                             break
                 if diagnostic_id:
                     db.update_terminal_diagnostic(
-                        diagnostic_id, status=("intervened" if diagnostic_intervened else
-                                                "deferred" if diagnostic_deferred else "completed"),
+                        diagnostic_id, status=("intervened" if diagnostic_intervened else "completed"),
                         messages=diagnostic_messages, actions=diagnostic_actions,
                     )
                 # The primary executor is blocked in this dispatch until diagnosis ends.
@@ -4070,7 +4115,7 @@ class Agent:
             # Migrate an in-flight operation from the former autonomous checkpoint
             # shape (no pending-call index) into the unified plan/action loop.
             # Never replay an operation whose durable result is ambiguous.
-            if checkpoint.get("phase") == "tool_running":
+            if checkpoint.get("phase") == "tool_running" and not checkpoint.get("terminal_diagnostic_pending"):
                 legacy_current = checkpoint.get("current_tool")
                 legacy_shape = (
                     isinstance(legacy_current, dict)
@@ -4115,7 +4160,7 @@ class Agent:
                         return
 
             # Recover a tool only when SQLite confirms its saved result.
-            if checkpoint.get("phase") == "tool_running":
+            if checkpoint.get("phase") == "tool_running" and not checkpoint.get("terminal_diagnostic_pending"):
                 current_tool = checkpoint.get("current_tool")
                 recovered = False
 
@@ -4419,6 +4464,10 @@ class Agent:
                     "actions_succeeded": 0, "actions_failed": 0, "successful_tools": [],
                     "failed_categories": {}, "unresolved_errors": [],
                 },
+                "terminal_diagnostic_pending": (
+                    checkpoint.get("terminal_diagnostic_pending")
+                    if isinstance(checkpoint.get("terminal_diagnostic_pending"), dict) else None
+                ),
             }
             if not state.get("execution_events"):
                 append_execution_event(state, "task_started", detail="План и контрольная точка загружены", status="running")
@@ -4427,6 +4476,37 @@ class Agent:
 
             db.update_task(task_id, status="running", error=None)
             save_checkpoint(state)
+
+            pending_terminal_diagnostic = state.get("terminal_diagnostic_pending")
+            if isinstance(pending_terminal_diagnostic, dict):
+                recovered_terminal_result = _resume_pending_terminal_diagnostic(
+                    task_id, cid, pending_terminal_diagnostic
+                )
+                current_tool = state.get("current_tool")
+                if not isinstance(current_tool, dict):
+                    raise RuntimeError("Контрольная точка диагностики не содержит исходный terminal tool call.")
+                tool_index = current_tool.get("index")
+                receipt_id = current_tool.get("operation_id")
+                if not isinstance(tool_index, int) or not isinstance(receipt_id, str):
+                    raise RuntimeError("Контрольная точка диагностики не содержит идентификатор исходной операции.")
+                tool_name = str(current_tool.get("name") or "terminal")
+                tool_arguments = current_tool.get("arguments") if isinstance(current_tool.get("arguments"), dict) else {}
+                db.complete_tool_operation(receipt_id, recovered_terminal_result)
+                messages.extend(_build_tool_messages_for_operation(
+                    tool_name,
+                    json.dumps(recovered_terminal_result, ensure_ascii=False, default=str),
+                    receipt_id,
+                ))
+                state.update({
+                    "phase": "tools_pending",
+                    "messages": messages,
+                    "next_tool_index": tool_index + 1,
+                })
+                state.pop("current_tool", None)
+                state.pop("terminal_diagnostic_pending", None)
+                state.pop("pause_reason", None)
+                state["activity"] = "Терминальная операция и Bash-сессия проверены; продолжение задачи"
+                save_checkpoint(state)
 
             def finalize(answer):
                 set_activity("Завершаю задачу и проверяю результат")
@@ -4710,6 +4790,8 @@ class Agent:
                                             or settings.num_ctx
                                         ),
                                     )
+                        except TerminalDiagnosticLLMUnavailable:
+                            raise
                         except ToolReceiptError:
                             raise
                         except Exception as exc:
@@ -5761,6 +5843,44 @@ class Agent:
             )
             return
 
+        except (TerminalDiagnosticLLMUnavailable, TerminalRecoveryPending) as exc:
+            if isinstance(exc, TerminalDiagnosticLLMUnavailable):
+                pending = {
+                    "terminal_result": exc.terminal_result,
+                    "diagnostic_id": exc.diagnostic_id,
+                    "messages": exc.messages,
+                    "actions": exc.actions,
+                }
+                pause_reason = "terminal_diagnostic_llm_unavailable"
+                report = _terminal_diagnostic_pause_report(exc.terminal_result, exc)
+                diagnostic_id = exc.diagnostic_id
+                diagnostic_messages = exc.messages
+                diagnostic_actions = exc.actions
+            else:
+                pending = exc.pending
+                pause_reason = "terminal_recovery_unverified"
+                report = (
+                    "Задача приостановлена: восстановление терминала не подтверждено. "
+                    + str(exc)[:1000]
+                )
+                diagnostic_id = pending.get("diagnostic_id")
+                diagnostic_messages = pending.get("messages")
+                diagnostic_actions = pending.get("actions")
+            if isinstance(state, dict):
+                state["terminal_diagnostic_pending"] = pending
+                state["pause_reason"] = pause_reason
+                state["phase"] = "tool_running"
+                save_checkpoint(state)
+            if diagnostic_id:
+                try:
+                    db.update_terminal_diagnostic(
+                        diagnostic_id, status="paused",
+                        messages=diagnostic_messages, actions=diagnostic_actions,
+                    )
+                except Exception:
+                    logger.warning("Could not persist paused terminal diagnostic %s", diagnostic_id, exc_info=True)
+            db.update_task(task_id, status="paused", result=report, error=None)
+            db.add_message(cid, "system", report)
         except TaskCancelled as exc:
             control.cancel_control_done.wait(5.0)
             if control.cancellation_confirmed():
