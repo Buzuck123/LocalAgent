@@ -408,7 +408,9 @@ def task_usage(tid: str):
         checkpoint = {}
     provider = str(checkpoint.get("provider") or "ollama") if isinstance(checkpoint, dict) else "ollama"
     fallback_context = settings.llama_cpp_context if provider == "llama_cpp" else settings.ollama_context_fallback
-    context_limit = int(checkpoint.get("model_num_ctx") or fallback_context) if isinstance(checkpoint, dict) else fallback_context
+    has_context_profile = bool(checkpoint.get("model_context_source")) if isinstance(checkpoint, dict) else False
+    saved_context = checkpoint.get("model_num_ctx") if isinstance(checkpoint, dict) else None
+    context_limit = int(saved_context if saved_context and has_context_profile else fallback_context)
     usage["context_limit"] = context_limit
     usage["model_context_length"] = checkpoint.get("model_context_length") if isinstance(checkpoint, dict) else None
     usage["context_source"] = checkpoint.get("model_context_source") if isinstance(checkpoint, dict) else None
