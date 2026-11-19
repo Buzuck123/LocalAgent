@@ -226,7 +226,7 @@ def test_controller_rejects_recovery_without_real_evidence(monkeypatch):
     assert action == "continue_waiting"
     assert recovery is None
     assert manager.interrupt_called is False
-    assert "отсутствующих доказательств" in str(messages)
+    assert "отсутствующие доказательства" in str(messages)
 
 
 def test_terminal_diagnostic_keeps_primary_agent_blocked_until_recovery(monkeypatch):
@@ -460,6 +460,7 @@ def test_repeated_silence_requires_spaced_samples_and_read_only_inspection():
     }
     evidence = evidence1 + evidence2 + [diagnostic]
     selected = [
+        next(item["id"] for item in evidence if item["kind"] == "operation_state"),
         next(item["id"] for item in evidence if item["kind"] == "no_terminal_output"),
         next(item["id"] for item in evidence if item["kind"] == "repeated_no_progress"),
         diagnostic["id"],
