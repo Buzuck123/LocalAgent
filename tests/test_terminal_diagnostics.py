@@ -186,3 +186,81 @@ def test_terminal_recovery_report_is_separate_from_normal_output():
     )
     assert "Bash-сессия пересоздана" in report
     assert "команда не считается выполненной" in report
+
+def test_failed_diagnostic_interrupt_is_not_treated_as_recovery(monkeypatch):
+    from agent import db
+    from agent import sandbox_manager as sandbox_module
+
+    class Manager:
+        def collect_terminal_diagnostics(self, conversation_id, operation_id, **kwargs):
+            return {"runtime_responsive": False}
+
+        def interrupt_operation(self, conversation_id, operation_id):
+            return {
+                "state": "unknown",
+                "interrupted": False,
+                "error": "operation status could not be confirmed",
+            }
+
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
+    monkeypatch.setattr(db, "create_terminal_diagnostic", lambda *args, **kwargs: {})
+    monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
+
+    def fake_chat(messages, tools=None, reasoning=True, model=None):
+        return {"message": {"tool_calls": [{
+            "id": "call-interrupt",
+            "function": {
+                "name": "interrupt_terminal_operation",
+                "arguments": {"reason": "The operation appears stuck."},
+            },
+        }]}}
+
+    monkeypatch.setattr(core, "_client_chat", fake_chat)
+    action, reason, diagnostic_id, messages, actions, recovery = core._run_terminal_diagnostic(
+        "task-1", "conversation-1",
+        {"operation_id": "terminal-op", "_terminal_command": "sleep 999",
+         "_terminal_output": "", "_elapsed_seconds": 600, "_idle_seconds": 600},
+    )
+
+    assert action == "interrupt_operation"
+    assert recovery["state"] == "unknown"
+    assert actions[-1]["result"]["interrupted"] is False
+
+
+def test_terminal_diagnostic_cycles_are_bounded_and_deferred(monkeypatch):
+    from agent import db
+
+    monkeypatch.setattr(
+        db, "get_task",
+        lambda task_id: {"id": task_id, "conversation_id": "conversation-1"},
+    )
+    monkeypatch.setattr(core, "_record_tool_debug_trace", lambda *args, **kwargs: None)
+    calls = []
+
+    def fake_dispatch(name, arguments, **kwargs):
+        calls.append((name, arguments))
+        return {
+            "_terminal_text": "still running",
+            "_terminal_output": "still running",
+            "state": "running",
+            "operation_id": "terminal-op",
+            "_diagnostic_due": True,
+        }
+
+    monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
+    reviews = []
+
+    def fake_diagnostic(*args, **kwargs):
+        reviews.append(True)
+        return "continue_waiting", "Still active.", "diag-1", [], [], None
+
+    monkeypatch.setattr(core, "_run_terminal_diagnostic", fake_diagnostic)
+    result = core._dispatch_tool_for_task(
+        "terminal", {"command": "sleep 999"}, "task-1"
+    )
+
+    assert len(reviews) == 3
+    assert len(calls) == 4  # initial command plus three polls of the same active operation
+    assert "Диагностика приостановлена после 3 циклов" in result["_terminal_output"]
+    assert result["state"] == "running"
+
