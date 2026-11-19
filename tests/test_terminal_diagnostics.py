@@ -91,50 +91,48 @@ def test_terminal_diagnostic_isolated_from_user_task_and_uses_only_diagnostic_to
     assert all("private user goal" not in str(item) for item in messages)
     assert {item["function"]["name"] for item in captured["tools"]} == {
         "get_additional_terminal_diagnostics",
-        "interrupt_terminal_operation",
-        "reset_bash_session",
-        "restart_sandbox_container",
+        "diagnostic_terminal",
+        "propose_terminal_recovery",
     }
+    assert "pip install package" in str(captured["messages"])
+    assert actions[0]["type"] == "evidence"
+    assert actions[0]["evidence"]
 
 
-def test_terminal_diagnostic_can_reset_bash_without_main_agent_context(monkeypatch):
+def test_diagnostic_agent_cannot_reset_bash_directly(monkeypatch):
     from agent import db
     from agent import sandbox_manager as sandbox_module
 
     class Manager:
+        reset_called = False
+
         def collect_terminal_diagnostics(self, conversation_id, operation_id, **kwargs):
-            return {"runtime_responsive": True}
+            return {"runtime_responsive": True, "operation_state": "running"}
 
-        def reset_terminal_session(self, conversation_id, *, confirm_reset, reason):
-            assert confirm_reset is True
-            return {"state": "reset", "workspace_preserved": True}
+        def reset_terminal_session(self, *args, **kwargs):
+            self.reset_called = True
+            raise AssertionError("LLM must not invoke recovery directly")
 
-    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
+    manager = Manager()
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", manager)
     monkeypatch.setattr(db, "create_terminal_diagnostic", lambda *args, **kwargs: {})
     monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
 
     def fake_chat(messages, tools=None, reasoning=True, model=None):
-        return {"message": {
-            "tool_calls": [{
-                "id": "call-1",
-                "function": {
-                    "name": "reset_bash_session",
-                    "arguments": {"reason": "Runtime operation ID is stale."},
-                },
-            }],
-        }}
-
+        return {"message": {"tool_calls": [{
+            "id": "call-1",
+            "function": {"name": "reset_bash_session", "arguments": {"reason": "stale session"}},
+        }]}}
     monkeypatch.setattr(core, "_client_chat", fake_chat)
+
     action, reason, diagnostic_id, messages, actions, recovery = core._run_terminal_diagnostic(
         "task-1", "conversation-1",
         {"operation_id": "terminal-op", "_terminal_command": "sleep 999",
          "_terminal_output": "", "_elapsed_seconds": 600, "_idle_seconds": 600},
     )
-
-    assert action == "reset_bash_session"
-    assert recovery["state"] == "reset"
-    assert any(item.get("role") == "tool" for item in messages)
-
+    assert action == "continue_waiting"
+    assert recovery is None
+    assert manager.reset_called is False
 
 
 def test_ollama_message_sanitizer_uses_diagnostic_tool_catalog():
@@ -187,22 +185,22 @@ def test_terminal_recovery_report_is_separate_from_normal_output():
     assert "Bash-сессия пересоздана" in report
     assert "команда не считается выполненной" in report
 
-def test_failed_diagnostic_interrupt_is_not_treated_as_recovery(monkeypatch):
+def test_controller_rejects_recovery_without_real_evidence(monkeypatch):
     from agent import db
     from agent import sandbox_manager as sandbox_module
 
     class Manager:
+        interrupt_called = False
+
         def collect_terminal_diagnostics(self, conversation_id, operation_id, **kwargs):
-            return {"runtime_responsive": False}
+            return {"runtime_responsive": False, "operation_state": "unknown"}
 
         def interrupt_operation(self, conversation_id, operation_id):
-            return {
-                "state": "unknown",
-                "interrupted": False,
-                "error": "operation status could not be confirmed",
-            }
+            self.interrupt_called = True
+            raise AssertionError("controller must reject missing evidence")
 
-    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
+    manager = Manager()
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", manager)
     monkeypatch.setattr(db, "create_terminal_diagnostic", lambda *args, **kwargs: {})
     monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
 
@@ -210,11 +208,14 @@ def test_failed_diagnostic_interrupt_is_not_treated_as_recovery(monkeypatch):
         return {"message": {"tool_calls": [{
             "id": "call-interrupt",
             "function": {
-                "name": "interrupt_terminal_operation",
-                "arguments": {"reason": "The operation appears stuck."},
+                "name": "propose_terminal_recovery",
+                "arguments": {
+                    "action": "interrupt_terminal_operation",
+                    "reason": "The operation appears stuck.",
+                    "evidence_ids": ["ev_model_invented"],
+                },
             },
         }]}}
-
     monkeypatch.setattr(core, "_client_chat", fake_chat)
     action, reason, diagnostic_id, messages, actions, recovery = core._run_terminal_diagnostic(
         "task-1", "conversation-1",
@@ -222,9 +223,10 @@ def test_failed_diagnostic_interrupt_is_not_treated_as_recovery(monkeypatch):
          "_terminal_output": "", "_elapsed_seconds": 600, "_idle_seconds": 600},
     )
 
-    assert action == "interrupt_operation"
-    assert recovery["state"] == "unknown"
-    assert actions[-1]["result"]["interrupted"] is False
+    assert action == "continue_waiting"
+    assert recovery is None
+    assert manager.interrupt_called is False
+    assert "отсутствующих доказательств" in str(messages)
 
 
 def test_terminal_diagnostic_keeps_primary_agent_blocked_until_recovery(monkeypatch):
