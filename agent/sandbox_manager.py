@@ -697,25 +697,38 @@ print(json.dumps(result))
         self, conversation_id: str, operation_id: str, *,
         command: str = "", output: str = "", elapsed_seconds: float = 0,
         idle_seconds: float = 0, runtime_error: str | None = None,
+        started_at: str | None = None, last_output_at: str | None = None,
+        cursor: int = 0,
     ) -> dict[str, Any]:
-        """Bounded read-only host/container/runtime snapshot; never touches the busy PTY."""
+        """Collect bounded diagnostics without touching the occupied main PTY."""
+        from datetime import datetime, timezone
+
+        def age_from(value, fallback):
+            if not value:
+                return max(0.0, float(fallback or 0))
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds())
+            except (TypeError, ValueError):
+                return max(0.0, float(fallback or 0))
+
         record = db.get_sandbox(conversation_id) or {}
         container_id = str(record.get("container_id") or "")
+        elapsed_now = age_from(started_at, elapsed_seconds)
+        idle_now = age_from(last_output_at, idle_seconds)
         snapshot: dict[str, Any] = {
-            "sampled_at": db.now(),
-            "operation_id": str(operation_id), "command": str(command or "")[:8000],
-            "llm_duration_forecast": {
-                "available": False,
-                "reason": "Предварительный прогноз не запрашивается, чтобы не замедлять обычные команды.",
-            },
-            "terminal_output_tail": str(output or "")[-12000:],
-            "elapsed_seconds": round(max(0.0, float(elapsed_seconds)), 3),
-            "idle_seconds": round(max(0.0, float(idle_seconds)), 3),
-            "runtime_error": str(runtime_error or "")[:800],
+            "sampled_at": db.now(), "operation_id": str(operation_id),
+            "command": str(command or "")[:8000],
+            "terminal_output_tail": str(output or "")[-3000:],
+            "elapsed_seconds": round(elapsed_now, 1),
+            "idle_seconds": round(idle_now, 1),
+            "runtime_error": str(runtime_error or "")[:500],
             "container_id": container_id or None,
+            "operation_state": "unknown",
             "process_scope_note": (
-                "container_top перечисляет процессы всего контейнера; принадлежность конкретной операции "
-                "не считается доказанной без отдельной корреляции."
+                "container_top относится ко всему контейнеру; он не доказывает принадлежность процесса operation."
             ),
         }
         runtime = self._runtimes.get(conversation_id)
@@ -729,12 +742,27 @@ print(json.dumps(result))
         except Exception as exc:
             snapshot["runtime_responsive"] = False
             snapshot["runtime_health_error"] = type(exc).__name__
+        if snapshot["runtime_responsive"] and runtime is not None:
+            getter = getattr(runtime, "get_operation", None)
+            if callable(getter):
+                try:
+                    operation = getter(
+                        operation_id, session="main", cursor=max(0, int(cursor or 0)),
+                        max_output_chars=2048, wait_timeout=0,
+                    )
+                    snapshot["operation_state"] = str(operation.get("state") or "unknown")
+                    snapshot["operation_exit_code"] = operation.get("exit_code")
+                    delta = str(operation.get("output") or "")
+                    if delta:
+                        snapshot["new_output_since_cursor"] = delta[-1500:]
+                        snapshot["idle_seconds"] = 0.0
+                except Exception as exc:
+                    snapshot["operation_poll_error"] = type(exc).__name__
         if container_id:
             for key, args in (
                 ("container_inspect", ("inspect", container_id)),
                 ("container_top", ("top", container_id)),
                 ("container_stats", ("stats", "--no-stream", container_id)),
-                ("container_logs", ("logs", "--tail", "80", container_id)),
             ):
                 try:
                     proc = subprocess.run([settings.podman_path, *args], capture_output=True,
@@ -743,22 +771,58 @@ print(json.dumps(result))
                     secret = str(record.get("auth_token") or "")
                     if secret:
                         output_text = output_text.replace(secret, "[REDACTED]")
-                    snapshot[key] = {"returncode": int(proc.returncode),
-                                     "output": output_text[:10000]}
+                    snapshot[key] = {"returncode": int(proc.returncode), "output": output_text[:5000]}
                 except Exception as exc:
                     snapshot[key] = {"error": type(exc).__name__}
         for key, args in (
-            ("host_memory", ["free", "-b"]),
+            ("host_memory", ["free", "-h"]),
             ("host_disk", ["df", "-P", "-h", str(settings.workspace_path)]),
             ("host_load", ["uptime"]),
         ):
             try:
                 proc = subprocess.run(args, capture_output=True, text=True, timeout=5, check=False)
                 snapshot[key] = {"returncode": int(proc.returncode),
-                                 "output": str(proc.stdout or proc.stderr or "")[:2500]}
+                                 "output": str(proc.stdout or proc.stderr or "")[:1200]}
             except Exception as exc:
                 snapshot[key] = {"error": type(exc).__name__}
         return snapshot
+
+    def run_diagnostic_terminal(self, conversation_id: str, command: str, *, timeout: int = 10) -> dict[str, Any]:
+        """Run one allow-listed read-only command in an isolated, unprivileged SWE-ReX session."""
+        if not isinstance(command, str) or not command.strip() or len(command) > 2000 or "\\x00" in command:
+            raise ValueError("Диагностическая команда должна быть непустой и не длиннее 2000 символов.")
+        if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 20:
+            raise ValueError("Тайм-аут диагностической команды должен быть от 1 до 20 секунд.")
+        argv = shlex.split(command, posix=True)
+        allowed = {
+            "ps", "ls", "stat", "file", "head", "tail", "cat", "df", "free",
+            "uptime", "ss", "lsof", "du", "wc", "readlink", "realpath",
+            "id", "whoami", "uname", "date", "mount", "namei",
+        }
+        executable = os.path.basename(argv[0]) if argv else ""
+        if not argv or executable not in allowed:
+            raise ValueError("Разрешены только команды чтения: ps, ls, stat, file, head, tail, cat, df, free, uptime, ss, lsof, du, wc, readlink, realpath, id, whoami, uname, date, mount, namei.")
+        forbidden = {"-exec", "-execdir", "-delete", "-fprint", "-fls", "--pre", "--post", "--output", "-o"}
+        if any(arg in forbidden or arg.startswith("--pre=") or arg.startswith("--post=") for arg in argv[1:]):
+            raise ValueError("Команда содержит аргумент, несовместимый с режимом только чтения.")
+        runtime = self.get_runtime(conversation_id, check_proxy=False)
+        if not runtime.is_alive():
+            raise SandboxError("SWE-ReX не отвечает; диагностическая Bash-сессия не запускается.")
+        runtime.ensure_session("diagnostic")
+        argv[0] = "/usr/bin/" + executable
+        command_line = "exec /usr/bin/setpriv --reuid=localagent-diagnostic --regid=localagent-diagnostic --clear-groups -- " + shlex.join(argv)
+        result = runtime.run(command_line, session="diagnostic", timeout=timeout)
+        output = str(result.get("stdout") or "")
+        return {
+            "ok": result.get("exit_code") == 0 and not result.get("timed_out"),
+            "stdout": output[-8000:],
+            "stderr": str(result.get("stderr") or "")[-1500:],
+            "exit_code": result.get("exit_code"),
+            "timed_out": bool(result.get("timed_out")),
+            "session": "diagnostic",
+            "execution_user": "localagent-diagnostic",
+            "workspace_access": "unprivileged; subject to container filesystem permissions",
+        }
 
     def is_runtime_responsive(self, conversation_id: str) -> bool:
         """Check SWE-ReX availability without touching the persistent PTY."""
