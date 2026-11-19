@@ -48,7 +48,7 @@ def test_ollama_profile_marks_localagent_fallback_as_unconfirmed():
 
     profile = client.model_profile("qwen3.5:9b")
 
-    assert profile["num_ctx"] == core.settings.num_ctx
+    assert profile["num_ctx"] == core.settings.ollama_context_fallback
     assert profile["model_context_length"] == 262144
     assert profile["runtime_context_confirmed"] is False
     assert profile["source"] == "localagent_fallback_unconfirmed"
