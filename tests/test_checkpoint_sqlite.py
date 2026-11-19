@@ -354,6 +354,7 @@ def test_tool_running_recovers_completed_write_from_journal(
             max_tool_rounds=3,
             auto_resume_tasks=False,
             workspace_path=workspace.resolve(),
+            ollama_context_fallback=32768,
         ),
     )
     monkeypatch.setattr(
