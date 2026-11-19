@@ -56,6 +56,7 @@ def test_model_cannot_complete_file_step_without_creating_file(tmp_path, monkeyp
         max_tool_rounds=12,
         auto_resume_tasks=False,
         workspace_path=workspace,
+        ollama_context_fallback=32768,
     ))
     core.db.init_db()
     conversation = core.db.create_conversation("Acceptance gate test")
