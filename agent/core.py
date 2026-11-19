@@ -3493,7 +3493,7 @@ class OllamaClient:
                 configured_context = int(match.group(1)) * 1024
                 source = "tag_suffix"
         if configured_context <= 0:
-            configured_context = int(settings.ollama_context_fallback)
+            configured_context = int(getattr(settings, "ollama_context_fallback", 4096))
             source = "localagent_fallback_unconfirmed"
 
         runtime_context = None
@@ -5022,7 +5022,7 @@ class Agent:
                 contract_errors = state.get("unresolved_tool_contract_errors", [])
                 if isinstance(contract_errors, list) and contract_errors:
                     completion_blocker = (
-                        "Задача не может быть завершена: модель предложила недопустимый вызов инструмента, "
+                        "Задача не может быть отмечена выполненной: модель предложила недопустимый вызов инструмента, "
                         "который не был исправлен. Последняя ошибка: "
                         + str(contract_errors[-1])[:500]
                     )
