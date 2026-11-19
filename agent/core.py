@@ -1292,6 +1292,43 @@ def _record_tool_debug_trace(task_id, event_type, payload):
         )
 
 
+def _verify_or_recover_terminal_session(conversation_id, command):
+    from .sandbox_manager import sandbox_manager
+
+    verification = sandbox_manager.verify_terminal_session(conversation_id)
+    if verification.get("verified"):
+        return {"verified": True, "action": None, "verification": verification}
+    reason = (
+        "Bash-сессия не прошла проверочную команду после выполнения "
+        + str(command or "терминальной операции")[:500]
+        + ": " + str(verification.get("error") or "причина не определена")
+    )
+    try:
+        recovery = sandbox_manager.reset_terminal_session(
+            conversation_id, confirm_reset=True, reason=reason[:1000]
+        )
+    except Exception as exc:
+        recovery = {"verified": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+    if isinstance(recovery, dict) and recovery.get("verified") is True:
+        return {"verified": True, "action": "reset_bash_session", "recovery": recovery, "reason": reason}
+    try:
+        recovery = sandbox_manager.restart_container(
+            conversation_id, reason=(reason + "; Bash reset did not restore the session")[:1000]
+        )
+    except Exception as exc:
+        recovery = {"verified": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+    if isinstance(recovery, dict) and recovery.get("verified") is True:
+        return {"verified": True, "action": "restart_container", "recovery": recovery,
+                "reason": reason + "; Bash reset did not restore the session"}
+    return {
+        "verified": False,
+        "action": "restart_container",
+        "reason": reason,
+        "recovery": recovery,
+        "error": str(recovery.get("error") or recovery.get("state") or "неизвестная ошибка"),
+    }
+
+
 def _resume_pending_terminal_diagnostic(task_id, conversation_id, pending):
     """Resume the saved diagnostic before the main agent can see a pending terminal tool call."""
     from .sandbox_manager import sandbox_manager
@@ -1422,42 +1459,26 @@ def _resume_pending_terminal_diagnostic(task_id, conversation_id, pending):
     # A completed/interrupted operation is not enough: prove that the persistent
     # Bash session can execute a harmless command before releasing the main agent.
     if result.get("state") != "waiting_input":
-        verification = sandbox_manager.verify_terminal_session(conversation_id)
-        if not verification.get("verified"):
-            recovery_reason = (
-                "Bash-сессия не прошла проверочную команду после возобновления: "
-                + str(verification.get("error") or "причина не определена")
+        session_recovery = _verify_or_recover_terminal_session(
+            conversation_id, result.get("_terminal_command")
+        )
+        if not session_recovery.get("verified"):
+            updated_pending = {
+                **pending,
+                "terminal_result": result,
+                "diagnostic_id": diagnostic_id,
+                "messages": messages or [],
+                "actions": actions or [],
+            }
+            raise TerminalRecoveryPending(
+                "Не удалось подтвердить работоспособность Bash-сессии даже после попытки её восстановления: "
+                + str(session_recovery.get("error") or "неизвестная ошибка"),
+                pending=updated_pending,
             )
-            try:
-                recovery = sandbox_manager.reset_terminal_session(
-                    conversation_id, confirm_reset=True, reason=recovery_reason[:1000]
-                )
-            except Exception as exc:
-                recovery = {"verified": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
-            final_recovery_action = "reset_bash_session"
-            final_recovery_reason = recovery_reason
-            if not (isinstance(recovery, dict) and recovery.get("verified") is True):
-                try:
-                    recovery = sandbox_manager.restart_container(
-                        conversation_id, reason=(recovery_reason + "; reset Bash did not restore it")[:1000]
-                    )
-                except Exception as exc:
-                    recovery = {"verified": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
-                final_recovery_action = "restart_container"
-                final_recovery_reason = recovery_reason + "; Bash reset did not restore the session"
-            if not (isinstance(recovery, dict) and recovery.get("verified") is True):
-                updated_pending = {
-                    **pending,
-                    "terminal_result": result,
-                    "diagnostic_id": diagnostic_id,
-                    "messages": messages or [],
-                    "actions": actions or [],
-                }
-                raise TerminalRecoveryPending(
-                    "Не удалось подтвердить работоспособность Bash-сессии даже после попытки её восстановления: "
-                    + str(recovery.get("error") or recovery.get("state") or "неизвестная ошибка"),
-                    pending=updated_pending,
-                )
+        if session_recovery.get("action"):
+            final_recovery_action = session_recovery["action"]
+            final_recovery_reason = session_recovery["reason"]
+            recovery = session_recovery["recovery"]
             result["state"] = "reset" if final_recovery_action == "reset_bash_session" else "restarted"
 
     if final_recovery_action:
@@ -1561,6 +1582,68 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                                     30.0, float(getattr(settings, "terminal_max_wait_seconds", 300))
                                 )
                                 continue
+                        if result.get("_terminal_recover_original_operation"):
+                            try:
+                                poll = sandbox_manager.get_operation(
+                                    task["conversation_id"], str(result.get("operation_id") or ""),
+                                    cursor=int(result.get("cursor") or 0),
+                                    max_output_chars=1_048_576, wait_timeout=2,
+                                )
+                                chunk = str(poll.get("stdout") or "")
+                                stderr = str(poll.get("stderr") or "")
+                                if stderr and stderr not in chunk:
+                                    chunk = (chunk.rstrip() + "\n" + stderr).lstrip("\n")
+                                if chunk:
+                                    result["_terminal_output"] = str(result.get("_terminal_output") or "") + chunk
+                                    result["_terminal_text"] = str(result.get("_terminal_text") or "") + chunk
+                                polled_state = str(poll.get("state") or "runtime_unresponsive")
+                                result.update({
+                                    "state": polled_state,
+                                    "cursor": poll.get("cursor", result.get("cursor", 0)),
+                                    "exit_code": poll.get("exit_code"),
+                                    "timed_out": poll.get("timed_out", polled_state == "timed_out"),
+                                    "interrupted": poll.get("interrupted", polled_state == "interrupted"),
+                                })
+                                if polled_state in {"completed", "interrupted", "timed_out", "failed"}:
+                                    session_recovery = _verify_or_recover_terminal_session(
+                                        task["conversation_id"], result.get("_terminal_command")
+                                    )
+                                    if not session_recovery.get("verified"):
+                                        raise TerminalRecoveryPending(
+                                            "Исходная операция завершилась, но Bash-сессия не восстановлена: "
+                                            + str(session_recovery.get("error") or "неизвестная ошибка"),
+                                            pending={
+                                                "terminal_result": result,
+                                                "diagnostic_id": diagnostic_id,
+                                                "messages": diagnostic_messages or [],
+                                                "actions": diagnostic_actions or [],
+                                            },
+                                        )
+                                    if session_recovery.get("action"):
+                                        result["diagnostic_report"] = _terminal_recovery_report(
+                                            session_recovery["action"], session_recovery["reason"],
+                                            {"recovery": session_recovery["recovery"]},
+                                        )
+                                        diagnostic_intervened = True
+                                    result["shell_state"] = "available"
+                                    result["_diagnostic_due"] = False
+                                    break
+                                if polled_state == "waiting_input":
+                                    result["shell_state"] = "waiting_input"
+                                    result["_diagnostic_due"] = False
+                                    break
+                                result["_diagnostic_due"] = True
+                                continue
+                            except TerminalRecoveryPending:
+                                raise
+                            except Exception as exc:
+                                result = dict(result)
+                                result["state"] = "runtime_unresponsive"
+                                result["_terminal_recover_original_operation"] = True
+                                result["_diagnostic_due"] = True
+                                result["_runtime_error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+                                result["_elapsed_seconds"] = float(result.get("_elapsed_seconds") or 0) + 2
+                                continue
                         result = dispatch_tool("terminal", {"command": ""},
                                                conversation_id=task["conversation_id"])
                         continue
@@ -1571,7 +1654,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                         from .sandbox_manager import sandbox_manager
                         try:
                             final_poll = sandbox_manager.get_operation(
-                                task["conversation_id"], operation_id,
+                                task["conversation_id"], str(result.get("operation_id") or ""),
                                 cursor=int(result.get("cursor") or 0), wait_timeout=0,
                             )
                             final_state = str(final_poll.get("state") or "runtime_unresponsive")
@@ -1596,14 +1679,16 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                         except Exception as exc:
                             result = dict(result)
                             result["state"] = "runtime_unresponsive"
-                            result["_diagnostic_due"] = False
+                            result["_terminal_recover_original_operation"] = True
+                            result["_diagnostic_due"] = True
+                            result["_runtime_error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
                             notice = (
-                                "\n[Прерывание совпало с завершением операции, но получить её итоговый результат "
-                                f"не удалось: {type(exc).__name__}. Новая команда не запускалась.]"
+                                "\n[Прерывание совпало с завершением операции, но итог пока недоступен. "
+                                "Диагност продолжит проверять исходную операцию; новая команда не запускается.]"
                             )
                             result["_terminal_text"] = str(result.get("_terminal_text") or "") + notice
                             result["_terminal_output"] = str(result.get("_terminal_output") or "") + notice
-                            break
+                            continue
                     if action in {"interrupt_operation", "reset_bash_session", "restart_container"}:
                         if action == "interrupt_operation":
                             recovery_confirmed = (
