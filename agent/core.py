@@ -1152,10 +1152,16 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
         "content": "Краткая история предыдущих диагностических циклов:\\n"
                    + json.dumps(history_summary, ensure_ascii=False, default=str)[:5000],
     }]
+    model_report = dict(report)
+    model_operation = dict(model_report.get("operation") or {})
+    model_operation.pop("command", None)
+    model_report["operation"] = model_operation
+    full_command = str(snapshot.get("command") or "")
     messages.append({"role": "user", "content":
-        "Текущая диагностическая картина. Исходная пользовательская задача намеренно не передаётся. "
+        "Исходная команда (полностью, без сокращения):\\n" + full_command
+        + "\\n\\nКомпактная диагностическая картина. Исходная пользовательская задача намеренно не передаётся. "
         "Сохраняй evidence_ids для предложений контроллеру.\\n"
-        + json.dumps(report, ensure_ascii=False, default=str)[:115000]})
+        + json.dumps(model_report, ensure_ascii=False, default=str)[:18000]})
     db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
 
     action, reason, recovery = "continue_waiting", "Недостаточно оснований для вмешательства.", None
@@ -1210,7 +1216,11 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                     report, new_evidence = build_diagnostic_context(snapshot, evidence_history)
                     evidence_history.extend(new_evidence)
                     actions.append({"type": "evidence", "evidence": new_evidence, "report": report})
-                    tool_result = {"ok": True, "diagnostics": report}
+                    additional_report = dict(report)
+                    additional_operation = dict(additional_report.get("operation") or {})
+                    additional_operation.pop("command", None)
+                    additional_report["operation"] = additional_operation
+                    tool_result = {"ok": True, "diagnostics": additional_report}
                 elif tool_name == "diagnostic_terminal":
                     from datetime import datetime, timezone
                     try:
