@@ -1672,6 +1672,9 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                                 "interrupted": final_poll.get("interrupted", final_state == "interrupted"),
                                 "cursor": final_poll.get("cursor", result.get("cursor", 0)),
                                 "_diagnostic_due": final_state not in {"completed", "interrupted", "timed_out", "failed"},
+                                "_terminal_recover_original_operation": final_state not in {
+                                    "completed", "interrupted", "timed_out", "failed", "waiting_input"
+                                },
                             })
                             if result["_diagnostic_due"]:
                                 continue
@@ -1749,6 +1752,26 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                                 else "restarted"
                             )
                             result["diagnostic_report"] = _terminal_recovery_report(action, reason, {"recovery": recovery})
+                            session_recovery = _verify_or_recover_terminal_session(
+                                task["conversation_id"], result.get("_terminal_command")
+                            )
+                            if not session_recovery.get("verified"):
+                                raise TerminalRecoveryPending(
+                                    "Действие диагностики выполнено, но работоспособность Bash-сессии не подтверждена: "
+                                    + str(session_recovery.get("error") or "неизвестная ошибка"),
+                                    pending={
+                                        "terminal_result": result,
+                                        "diagnostic_id": diagnostic_id,
+                                        "messages": diagnostic_messages or [],
+                                        "actions": diagnostic_actions or [],
+                                    },
+                                )
+                            result["shell_state"] = "available"
+                            if session_recovery.get("action"):
+                                result["diagnostic_report"] += "\n" + _terminal_recovery_report(
+                                    session_recovery["action"], session_recovery["reason"],
+                                    {"recovery": session_recovery["recovery"]},
+                                )
                             break
                 if diagnostic_id:
                     db.update_terminal_diagnostic(
