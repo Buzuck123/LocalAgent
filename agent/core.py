@@ -1583,6 +1583,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                                 )
                                 continue
                         if result.get("_terminal_recover_original_operation"):
+                            from .sandbox_manager import sandbox_manager
                             try:
                                 poll = sandbox_manager.get_operation(
                                     task["conversation_id"], str(result.get("operation_id") or ""),
