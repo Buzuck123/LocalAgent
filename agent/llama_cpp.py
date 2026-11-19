@@ -36,6 +36,12 @@ class LlamaCppClient:
     def _url(self, path: str) -> str:
         return self.base + (path if path.startswith("/") else "/" + path)
 
+    def _server_url(self, path: str) -> str:
+        # llama.cpp server-native endpoints (/props, /slots) live beside /v1,
+        # while OpenAI-compatible endpoints use the configured /v1 base.
+        base = self.base[:-3] if self.base.endswith("/v1") else self.base
+        return base + (path if path.startswith("/") else "/" + path)
+
     def _json_request(self, path: str, *, method: str = "GET", payload=None, timeout=None):
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         req = Request(self._url(path), data=data, method=method,
@@ -62,18 +68,54 @@ class LlamaCppClient:
             return False
 
     def model_profile(self, model: str | None = None) -> dict:
+        """Return llama.cpp's allocated slot context, not the model's training limit."""
         name = model or db.get_app_setting("selected_llama_cpp_model", self.model)
-        context = int(settings.llama_cpp_context)
+        model_context_length = None
         try:
             item = next((x for x in self._available_models() if x["name"] == name), None)
-            if item and item.get("context_length"):
-                context = int(item["context_length"])
+            if item:
+                model_context_length = item.get("model_context_length")
         except Exception:
             pass
+
+        runtime_context = None
+        source = "llama_cpp_config_fallback_unconfirmed"
+        try:
+            props = self._server_json_request("/props")
+            generation = props.get("default_generation_settings", {}) if isinstance(props, dict) else {}
+            value = generation.get("n_ctx") if isinstance(generation, dict) else None
+            if value is not None and int(value) > 0:
+                runtime_context = int(value)
+                source = "llama_cpp_runtime_props"
+        except Exception:
+            pass
+
+        context = runtime_context or int(settings.llama_cpp_context)
         return {
-            "model": name, "num_ctx": context,
-            "num_predict": None, "source": "llama_cpp_server_config",
+            "model": name,
+            "num_ctx": context,
+            "runtime_context_limit": context,
+            "model_context_length": model_context_length,
+            "num_predict": None,
+            "source": source,
+            "runtime_context_confirmed": runtime_context is not None,
         }
+
+    def _server_json_request(self, path: str, *, timeout=None):
+        req = Request(
+            self._server_url(path),
+            method="GET",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            with self.opener.open(req, timeout=timeout or settings.llama_cpp_timeout) as response:
+                raw = response.read()
+            return json.loads(raw.decode("utf-8")) if raw else {}
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:2000]
+            raise RuntimeError(f"llama.cpp HTTP {exc.code}: {detail}") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"Cannot connect to llama.cpp at {self._server_url(path)}: {exc}") from exc
 
     def _available_models(self) -> list[dict]:
         payload = self._json_request("/models")
@@ -83,7 +125,10 @@ class LlamaCppClient:
                 meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
                 models.append({
                     "name": item["id"], "size": None, "modified_at": None,
-                    "context_length": item.get("context_length") or meta.get("n_ctx_train"),
+                    # n_ctx_train describes the model's training context, not the
+                    # runtime context allocated by the llama.cpp server.
+                    "context_length": meta.get("n_ctx_train"),
+                    "model_context_length": meta.get("n_ctx_train"),
                 })
         return models
 
