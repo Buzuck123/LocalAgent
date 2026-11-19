@@ -4622,6 +4622,7 @@ class Agent:
                 "messages": messages,
                 "pending_calls": pending_calls,
                 "next_tool_index": next_tool_index,
+                "current_tool": checkpoint.get("current_tool") if isinstance(checkpoint.get("current_tool"), dict) else None,
                 "plan": plan,
                 "prepare_step_prompts": prepare_step_prompts,
                 "review_step_results": review_step_results,
