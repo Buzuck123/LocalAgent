@@ -197,7 +197,6 @@ def test_ollama_client_sends_workspace_image_from_model_tool(tmp_path, monkeypat
     monkeypatch.setattr(core, "settings", SimpleNamespace(
         ollama_url="http://127.0.0.1:11434", model="qwen3.5:9b", workspace_path=root.resolve(),
         keep_alive="10m", num_ctx=32768, request_timeout=300,
-        ollama_context_fallback=4096,
     ))
     client = core.OllamaClient()
     captured = {}
