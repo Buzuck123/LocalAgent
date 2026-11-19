@@ -1155,7 +1155,7 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
     messages.append({"role": "user", "content":
         "Текущая диагностическая картина. Исходная пользовательская задача намеренно не передаётся. "
         "Сохраняй evidence_ids для предложений контроллеру.\\n"
-        + json.dumps(report, ensure_ascii=False, default=str)[:18000]})
+        + json.dumps(report, ensure_ascii=False, default=str)[:115000]})
     db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
 
     action, reason, recovery = "continue_waiting", "Недостаточно оснований для вмешательства.", None
