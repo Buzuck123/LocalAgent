@@ -105,22 +105,49 @@ def build_diagnostic_context(snapshot: dict[str, Any],
             "Помогает понять, какие процессы существуют в контейнере.",
             "Это общий список контейнера; принадлежность PID конкретной operation не доказана.")
 
-    for key, label, explanation in (
-        ("container_stats", "Ресурсы контейнера", "CPU/RAM — агрегаты всего контейнера, не отдельной команды."),
-        ("host_memory", "Память хоста", "Показывает общую доступность памяти на хосте."),
-        ("host_disk", "Диск workspace", "Показывает заполнение файловой системы, содержащей workspace."),
-        ("host_load", "Нагрузка хоста", "Общая нагрузка хоста не устанавливает причину задержки команды."),
-    ):
-        value = snapshot.get(key)
-        if isinstance(value, dict) and value.get("error"):
-            add("environment_metric", key, "host" if key.startswith("host_") else "container",
-                f"{label}: проверка не удалась ({value.get('error')}).",
-                explanation)
-        elif isinstance(value, dict):
-            raw = str(value.get("output") or "").strip()
-            if raw:
-                add("environment_metric", key, "host" if key.startswith("host_") else "container",
-                    f"{label}: {raw[:700]}", explanation)
+    stats = snapshot.get("container_stats")
+    if isinstance(stats, dict) and stats.get("returncode") == 0:
+        fields = str(stats.get("output") or "").strip().split("|")
+        if len(fields) >= 4:
+            observation = (
+                f"Контейнер: CPU {fields[0]}, память {fields[1]} ({fields[2]}), процессов {fields[3]}."
+            )
+        else:
+            observation = "Получены агрегированные метрики CPU и памяти контейнера."
+        add("environment_metric", "podman_stats", "container", observation,
+            "Показывает ресурсы всего контейнера, а не отдельной terminal operation.",
+            "Низкая или высокая загрузка контейнера не доказывает зависание конкретной команды.")
+
+    memory = snapshot.get("host_memory")
+    if isinstance(memory, dict) and memory.get("returncode") == 0:
+        rows = [line.split() for line in str(memory.get("output") or "").splitlines() if line.strip()]
+        mem_row = next((row for row in rows if row and row[0] == "Mem:"), None)
+        if mem_row and len(mem_row) >= 7:
+            observation = f"Память хоста: всего {mem_row[1]}, занято {mem_row[2]}, доступно {mem_row[6]}."
+        else:
+            observation = "Состояние памяти хоста получено, но не удалось компактно разобрать вывод."
+        add("environment_metric", "host_memory", "host", observation,
+            "Показывает общую доступность памяти хоста.",
+            "Не устанавливает, какая именно команда потребляет память.")
+
+    disk = snapshot.get("host_disk")
+    if isinstance(disk, dict) and disk.get("returncode") == 0:
+        rows = [line.split() for line in str(disk.get("output") or "").splitlines() if line.strip()]
+        row = rows[-1] if len(rows) > 1 else []
+        observation = (
+            f"Файловая система workspace: размер {row[1]}, занято {row[2]}, свободно {row[3]}, заполнение {row[4]}."
+            if len(row) >= 5 else "Состояние диска workspace получено, но не удалось разобрать вывод."
+        )
+        add("environment_metric", "host_disk", "host", observation,
+            "Показывает заполнение файловой системы, содержащей workspace.",
+            "Не объясняет зависание, если файловая система не заполнена.")
+
+    load = snapshot.get("host_load")
+    if isinstance(load, dict) and load.get("returncode") == 0:
+        add("environment_metric", "host_load", "host",
+            "Снята общая нагрузка хоста: " + str(load.get("output") or "").strip()[:180],
+            "Показывает общую нагрузку хоста.",
+            "Load average не устанавливает причину задержки конкретной команды.")
 
     # Compare only operation-scoped facts from distinct samples. A stable
     # no-output interval is evidence of silence, not proof of a deadlock.
