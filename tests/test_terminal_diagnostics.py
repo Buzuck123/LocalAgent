@@ -229,7 +229,13 @@ def test_failed_diagnostic_interrupt_is_not_treated_as_recovery(monkeypatch):
 
 def test_terminal_diagnostic_keeps_primary_agent_blocked_until_recovery(monkeypatch):
     from agent import db
+    from agent import sandbox_manager as sandbox_module
 
+    class Manager:
+        def verify_terminal_session(self, conversation_id):
+            return {"verified": True}
+
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
     monkeypatch.setattr(
         db, "get_task",
         lambda task_id: {"id": task_id, "conversation_id": "conversation-1"},
