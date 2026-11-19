@@ -19,12 +19,15 @@ def test_ollama_chat_does_not_override_model_tag_parameters(monkeypatch):
     client = core.OllamaClient()
     captured = {}
 
-    def fake_post(path, payload):
+    def fake_post(path, payload, timeout=None):
         captured["path"] = path
         captured["payload"] = payload
+        if path == "/api/show":
+            return {"parameters": ""}
         return {"message": {"role": "assistant", "content": "ok"}}
 
     monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client, "_post_stream", fake_post)
     result = client.chat([{"role": "user", "content": "hello"}], reasoning=False)
 
     assert result["message"]["content"] == "ok"
