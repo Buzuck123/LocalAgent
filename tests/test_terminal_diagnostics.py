@@ -457,6 +457,7 @@ def test_repeated_silence_requires_spaced_samples_and_read_only_inspection():
     diagnostic = {
         "id": "ev_readonly_1", "kind": "diagnostic_terminal",
         "operation_id": "op-1", "timestamp": "2026-11-19T12:00:21+00:00",
+        "command": "ps -eo pid,stat,args", "success": True,
     }
     evidence = evidence1 + evidence2 + [diagnostic]
     selected = [
