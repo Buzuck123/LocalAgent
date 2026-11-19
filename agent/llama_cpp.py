@@ -67,45 +67,60 @@ class LlamaCppClient:
         except Exception:
             return False
 
+    @staticmethod
+    def _context_size_from_args(args) -> int | None:
+        """Read the effective --ctx-size value from a Router model's argv."""
+        if not isinstance(args, list):
+            return None
+        found = None
+        for index, raw in enumerate(args):
+            value = None
+            if raw == "--ctx-size" and index + 1 < len(args):
+                value = args[index + 1]
+            elif isinstance(raw, str) and raw.startswith("--ctx-size="):
+                value = raw.partition("=")[2]
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                found = parsed
+        return found
+
     def model_profile(self, model: str | None = None) -> dict:
-        """Return llama.cpp's allocated slot context, not the model's training limit."""
+        """Return the selected Router preset's configured runtime context."""
         name = model or db.get_app_setting("selected_llama_cpp_model", self.model)
-        model_context_length = None
         item = None
         try:
             item = next((x for x in self._available_models() if x["name"] == name), None)
-            if item:
-                model_context_length = item.get("model_context_length")
         except Exception:
             pass
 
-        # Prefer the Router's per-model effective context when it is supplied.
-        runtime_context = None
+        runtime_context = item.get("runtime_context_limit") if item else None
         source = "llama_cpp_config_fallback_unconfirmed"
-        router_context = item.get("runtime_context_limit") if item else None
-        try:
-            if router_context is not None and int(router_context) > 0:
-                runtime_context = int(router_context)
-                source = "llama_cpp_models_runtime"
-        except (TypeError, ValueError):
-            pass
-        if runtime_context is None:
+        if runtime_context is not None:
+            source = "llama_cpp_router_args"
+        else:
+            # /props is a secondary source when Router argv is unavailable
+            # (typically for a non-Router llama-server endpoint).
             try:
                 props = self._server_json_request("/props")
                 generation = props.get("default_generation_settings", {}) if isinstance(props, dict) else {}
                 value = generation.get("n_ctx") if isinstance(generation, dict) else None
-                if value is not None and int(value) > 0:
-                    runtime_context = int(value)
+                parsed = int(value)
+                if parsed > 0:
+                    runtime_context = parsed
                     source = "llama_cpp_runtime_props"
+            except (TypeError, ValueError, RuntimeError, OSError):
+                pass
             except Exception:
                 pass
 
-        context = runtime_context or int(settings.llama_cpp_context)
+        context = int(runtime_context or settings.llama_cpp_context)
         return {
             "model": name,
             "num_ctx": context,
             "runtime_context_limit": context,
-            "model_context_length": model_context_length,
             "num_predict": None,
             "source": source,
             "runtime_context_confirmed": runtime_context is not None,
@@ -132,14 +147,12 @@ class LlamaCppClient:
         models = []
         for item in payload.get("data", []) if isinstance(payload, dict) else []:
             if isinstance(item, dict) and isinstance(item.get("id"), str):
-                meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                status = item.get("status") if isinstance(item.get("status"), dict) else {}
                 models.append({
                     "name": item["id"], "size": None, "modified_at": None,
-                    # Router-provided context_length is kept separate from
-                    # n_ctx_train, which is only the model's training context.
-                    "context_length": item.get("context_length"),
-                    "runtime_context_limit": item.get("context_length"),
-                    "model_context_length": meta.get("n_ctx_train"),
+                    # Router argv contains the preset's effective --ctx-size,
+                    # including for models that have not been loaded yet.
+                    "runtime_context_limit": self._context_size_from_args(status.get("args")),
                 })
         return models
 
