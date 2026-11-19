@@ -38,6 +38,18 @@ def test_ollama_profile_uses_modelfile_context_before_model_is_loaded():
     assert profile["source"] == "modelfile"
 
 
+def test_ollama_profile_recognizes_nonstandard_context_tag_suffixes():
+    client = core.OllamaClient.__new__(core.OllamaClient)
+    client._post = lambda *args, **kwargs: {"parameters": ""}
+    client.status = lambda: {"models": []}
+
+    profile = client.model_profile("gemma4:12b-20k")
+
+    assert profile["num_ctx"] == 20 * 1024
+    assert profile["source"] == "tag_suffix"
+    assert profile["runtime_context_confirmed"] is False
+
+
 def test_ollama_profile_marks_localagent_fallback_as_unconfirmed():
     client = core.OllamaClient.__new__(core.OllamaClient)
     client._post = lambda *args, **kwargs: {
