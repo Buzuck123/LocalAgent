@@ -74,6 +74,7 @@ def build_diagnostic_context(snapshot: dict[str, Any],
         "Показывает длительность тишины в основной PTY.",
         "Тихая команда может штатно ожидать сеть, ввод или завершение фоновой работы.",
     )
+    evidence[-1]["value_seconds"] = idle
 
     inspect = _parse_inspect(snapshot)
     container_state = (inspect.get("State") or {}) if isinstance(inspect, dict) else {}
@@ -123,12 +124,26 @@ def build_diagnostic_context(snapshot: dict[str, Any],
     ]
     no_progress_id = None
     if prior_samples and state in {"running", "waiting_input"}:
-        no_progress_id = add(
-            "repeated_no_progress", "diagnostic_comparison", "operation",
-            "Операция всё ещё числится выполняющейся; между диагностическими циклами не появилось нового вывода.",
-            "Подтверждает отсутствие наблюдаемого прогресса по выводу в нескольких снимках.",
-            "Не исключает штатное ожидание ввода, сети, I/O или внешнего события.",
-        )
+        from datetime import datetime
+        current_time = datetime.fromisoformat(sampled_at.replace("Z", "+00:00"))
+        comparable = False
+        for prior in reversed(prior_samples):
+            try:
+                prior_time = datetime.fromisoformat(str(prior.get("timestamp") or "").replace("Z", "+00:00"))
+                seconds_between = (current_time - prior_time).total_seconds()
+                prior_idle = float(prior.get("value_seconds") or 0)
+                if seconds_between >= 15 and idle >= prior_idle + 10:
+                    comparable = True
+                    break
+            except (TypeError, ValueError):
+                continue
+        if comparable:
+            no_progress_id = add(
+                "repeated_no_progress", "diagnostic_comparison", "operation",
+                "Операция всё ещё числится выполняющейся; между снимками прошло не менее 15 секунд, нового вывода не было.",
+                "Подтверждает отсутствие наблюдаемого прогресса по выводу в нескольких разнесённых во времени снимках.",
+                "Не исключает штатное ожидание ввода, сети, I/O или внешнего события.",
+            )
 
     report = {
         "operation": {
@@ -184,8 +199,10 @@ def authorize_recovery(action: str, proposal: dict[str, Any], evidence: list[dic
         repeated_silence = (
             state in {"running", "waiting_input"}
             and elapsed >= 900
+            and float(snapshot.get("idle_seconds") or 0) >= 900
             and "no_terminal_output" in kinds
             and "repeated_no_progress" in kinds
+            and "diagnostic_terminal" in kinds
         )
         if timeout_elapsed or repeated_silence:
             return True, "Подтверждены hard timeout или длительное отсутствие наблюдаемого прогресса в повторных снимках."
