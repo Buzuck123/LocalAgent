@@ -247,14 +247,9 @@ def _sanitize_messages_for_ollama(messages: list[dict], tool_definitions=None) -
                 elif name in {"terminal_start", "terminal_poll", "terminal_input", "terminal_interrupt", "terminal_resize"}:
                     message["content"] = "Legacy terminal control result omitted; continue with the current terminal interface."
             if name not in active_names:
-                # A completed historical operation is still a tool receipt even
-                # when its tool was retired. Keep the tool role/name so recovery
-                # does not silently erase the evidence paired with the assistant
-                # tool call; only annotate it as a legacy result.
-                message["content"] = (
-                    "Earlier checkpoint result from a retired tool interface:\n"
-                    + str(message.get("content") or "")
-                )
+                # Keep the historical receipt machine-readable. Its original
+                # tool is no longer callable, so expose it under a neutral name.
+                message["tool_name"] = "legacy_result"
         sanitized.append(message)
     return sanitized
 
