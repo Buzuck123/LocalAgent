@@ -13,7 +13,12 @@ def _manager(monkeypatch, *, idle=0.02, maximum=0.2):
     manager._guard = threading.RLock()
     manager._active_operations = {}
     manager._new_sessions = set()
-    manager.get_runtime = lambda cid: SimpleNamespace(ensure_session=lambda session="main": False)
+    manager.get_runtime = lambda cid: SimpleNamespace(
+        ensure_session=lambda session="main": False,
+        run=lambda command, session="main", timeout=10: {
+            "stdout": "__LOCALAGENT_TERMINAL_READY__", "exit_code": 0, "timed_out": False,
+        },
+    )
     monkeypatch.setattr(
         sandbox_module, "settings",
         SimpleNamespace(
@@ -60,7 +65,7 @@ def test_terminal_waits_through_silence_until_command_finishes(monkeypatch):
     ])
 
     def get_operation(*a, **k):
-        time.sleep(0.11)
+        time.sleep(0.06)
         try:
             return next(outputs)
         except StopIteration:
