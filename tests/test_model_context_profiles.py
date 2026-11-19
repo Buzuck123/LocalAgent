@@ -75,6 +75,24 @@ def test_llama_cpp_profile_uses_server_props_not_training_context():
     assert profile["source"] == "llama_cpp_runtime_props"
 
 
+
+def test_llama_cpp_profile_uses_router_runtime_context_when_props_is_not_proxied():
+    client = LlamaCppClient.__new__(LlamaCppClient)
+    client.model = "bonsai"
+    client._available_models = lambda: [{
+        "name": "bonsai",
+        "runtime_context_limit": 65536,
+        "model_context_length": 262144,
+    }]
+    client._server_json_request = lambda path: {}
+
+    profile = client.model_profile("bonsai")
+
+    assert profile["num_ctx"] == 65536
+    assert profile["model_context_length"] == 262144
+    assert profile["runtime_context_confirmed"] is True
+    assert profile["source"] == "llama_cpp_models_runtime"
+
 def test_llama_cpp_profile_fallback_does_not_use_training_context():
     client = LlamaCppClient.__new__(LlamaCppClient)
     client.model = "bonsai"
