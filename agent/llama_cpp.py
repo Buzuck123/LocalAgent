@@ -89,6 +89,17 @@ class LlamaCppClient:
                 source = "llama_cpp_runtime_props"
         except Exception:
             pass
+        if runtime_context is None:
+            # Some Router builds expose their effective per-model context on
+            # /v1/models even when the native /props endpoint is not proxied.
+            try:
+                item = next((x for x in self._available_models() if x["name"] == name), None)
+                value = item.get("runtime_context_limit") if item else None
+                if value is not None and int(value) > 0:
+                    runtime_context = int(value)
+                    source = "llama_cpp_models_runtime"
+            except Exception:
+                pass
 
         context = runtime_context or int(settings.llama_cpp_context)
         return {
@@ -125,9 +136,10 @@ class LlamaCppClient:
                 meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
                 models.append({
                     "name": item["id"], "size": None, "modified_at": None,
-                    # n_ctx_train describes the model's training context, not the
-                    # runtime context allocated by the llama.cpp server.
-                    "context_length": meta.get("n_ctx_train"),
+                    # Router-provided context_length is kept separate from
+                    # n_ctx_train, which is only the model's training context.
+                    "context_length": item.get("context_length"),
+                    "runtime_context_limit": item.get("context_length"),
                     "model_context_length": meta.get("n_ctx_train"),
                 })
         return models
