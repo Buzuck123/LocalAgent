@@ -117,7 +117,13 @@ $('provider-select').addEventListener('change',async()=>{
     finally{select.disabled=false}
 });
 async function refreshSelectedModelProfile(){
-    try{const p=await api('/api/ollama/model-profile');const predict=Number(p.num_predict)>0?` · генерация до ${Number(p.num_predict).toLocaleString('ru-RU')}`:'';$('status').textContent=`${p.model} · контекст ${Number(p.num_ctx).toLocaleString('ru-RU')}${predict}`;}
+    try{
+        const p=await api('/api/ollama/model-profile');
+        const predict=Number(p.num_predict)>0?` · генерация до ${Number(p.num_predict).toLocaleString('ru-RU')}`:'';
+        const modelMax=Number(p.model_context_length)>0?` · предел модели ${Number(p.model_context_length).toLocaleString('ru-RU')}`:'';
+        const source=p.runtime_context_confirmed?'контекст сервера':'контекст по настройке';
+        $('status').textContent=`${p.model} · ${source} ${Number(p.runtime_context_limit??p.num_ctx).toLocaleString('ru-RU')}${modelMax}${predict}`;
+    }
     catch(_){$('status').textContent='Параметры модели недоступны'}
 }
 $('model-refresh').addEventListener('click',async()=>{await loadOllamaModels();await refreshSelectedModelProfile()});
