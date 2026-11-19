@@ -704,9 +704,11 @@ print(json.dumps(result))
         from datetime import datetime, timezone
 
         def age_from(value, fallback):
-            if not value:
+            if value is None:
                 return max(0.0, float(fallback or 0))
             try:
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return max(0.0, time.time() - float(value))
                 parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
