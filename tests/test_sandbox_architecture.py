@@ -463,7 +463,10 @@ def test_restore_all_reconnects_existing_containers_without_creating_new_ones(mo
     runtime = FakeRuntime()
     manager = SandboxManager(runtime_factory=lambda **kw: runtime, command_runner=podman)
     assert manager.restore_all() == {"conversation-restore": "restored"}
-    assert runtime.sessions == ["main"]
+    # Reconnecting to a running persisted container must not issue a
+    # duplicate create_session request; get_runtime verifies the existing PTY
+    # through its normal auth-cleanup command instead.
+    assert runtime.sessions == []
     assert not any(args[1:2] == ["run"] for args, _, _ in podman.calls)
 
 
