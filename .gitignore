@@ -17,3 +17,4 @@ docs/
 
 # Local source backups
 *.before_*
+/data/attachments/
