@@ -810,7 +810,7 @@ print(json.dumps(result))
             raise SandboxError("SWE-ReX не отвечает; диагностическая Bash-сессия не запускается.")
         runtime.ensure_session("diagnostic")
         argv[0] = "/usr/bin/" + executable
-        command_line = "exec /usr/bin/setpriv --reuid=localagent-diagnostic --regid=localagent-diagnostic --clear-groups -- " + shlex.join(argv)
+        command_line = "exec /usr/bin/setpriv --no-new-privs --bounding-set=-all --inh-caps=-all --ambient-caps=-all --reset-env --reuid=localagent-diagnostic --regid=localagent-diagnostic --clear-groups -- " + shlex.join(argv)
         result = runtime.run(command_line, session="diagnostic", timeout=timeout)
         output = str(result.get("stdout") or "")
         return {
