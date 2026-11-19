@@ -3428,24 +3428,19 @@ class OllamaClient:
             raise RuntimeError(f"Cannot connect to Ollama at {self.base}: {exc}") from exc
 
     def model_profile(self, model: str | None = None) -> dict:
-        """Return the effective context window for one exact Ollama tag.
+        """Return the runtime context budget and separate model architecture limit.
 
-        Explicit Modelfile PARAMETER num_ctx wins. If absent, a conventional
-        -32k/-64k tag suffix is recognized; otherwise the legacy env value is
-        only a fallback. The result is cached per exact tag.
+        Ollama /api/ps is authoritative for a loaded model's allocated context.
+        Before the model is loaded, use the tag's explicit num_ctx, a recognized
+        tag suffix, or the LocalAgent fallback (marked as unconfirmed). The
+        architecture context from /api/show is informational only and is never
+        used as the runtime budget.
         """
         name = model or db.get_app_setting("selected_ollama_model", self.model)
-        cache_key = "ollama_model_profile_v2:" + str(name)
-        try:
-            cached = db.get_app_setting(cache_key)
-            if cached:
-                obj = json.loads(cached)
-                if isinstance(obj, dict) and obj.get("model") == name and int(obj.get("num_ctx", 0)) > 0:
-                    return obj
-        except Exception:
-            pass
+        raw = {}
         explicit = None
         explicit_num_predict = None
+        model_context_length = None
         try:
             raw = self._post("/api/show", {"model": name}, timeout=30)
             parameters = raw.get("parameters", "") if isinstance(raw, dict) else ""
@@ -3453,48 +3448,78 @@ class OllamaClient:
                 explicit = parameters.get("num_ctx")
                 explicit_num_predict = parameters.get("num_predict")
             elif isinstance(parameters, str):
-                match = re.search(r"(?im)^\s*num_ctx\s+(\d+)\s*$", parameters)
+                match = re.search(r"(?im)^\\s*num_ctx\\s+(\\d+)\\s*$", parameters)
                 if match:
                     explicit = match.group(1)
-                match = re.search(r"(?im)^\s*num_predict\s+(-?\d+)\s*$", parameters)
+                match = re.search(r"(?im)^\\s*num_predict\\s+(-?\\d+)\\s*$", parameters)
                 if match:
                     explicit_num_predict = match.group(1)
-            # Some Ollama builds expose parameters as a Modelfile string.
             modelfile = raw.get("modelfile", "") if isinstance(raw, dict) else ""
             if isinstance(modelfile, str):
                 if explicit is None:
-                    match = re.search(r"(?im)^\s*PARAMETER\s+num_ctx\s+(\d+)\s*$", modelfile)
+                    match = re.search(r"(?im)^\\s*PARAMETER\\s+num_ctx\\s+(\\d+)\\s*$", modelfile)
                     if match:
                         explicit = match.group(1)
                 if explicit_num_predict is None:
-                    match = re.search(r"(?im)^\s*PARAMETER\s+num_predict\s+(-?\d+)\s*$", modelfile)
+                    match = re.search(r"(?im)^\\s*PARAMETER\\s+num_predict\\s+(-?\\d+)\\s*$", modelfile)
                     if match:
                         explicit_num_predict = match.group(1)
+            model_info = raw.get("model_info", {}) if isinstance(raw, dict) else {}
+            if isinstance(model_info, dict):
+                lengths = [
+                    int(value) for key, value in model_info.items()
+                    if str(key).endswith(".context_length") and str(value).isdigit() and int(value) > 0
+                ]
+                model_context_length = max(lengths, default=None)
         except Exception:
             raw = {}
+
         try:
-            context = int(explicit) if explicit is not None else 0
+            configured_context = int(explicit) if explicit is not None else 0
         except (TypeError, ValueError):
-            context = 0
-        source = "modelfile" if context else "fallback"
-        if not context:
+            configured_context = 0
+        source = "modelfile" if configured_context > 0 else "fallback"
+        if configured_context <= 0:
             match = re.search(r"(?:-|:)(32|64|128|256)k(?:$|[-_.])", str(name), re.I)
             if match:
-                context = int(match.group(1)) * 1024
+                configured_context = int(match.group(1)) * 1024
                 source = "tag_suffix"
-        if not context:
-            context = int(settings.num_ctx)
+        if configured_context <= 0:
+            configured_context = int(settings.num_ctx)
+            source = "localagent_fallback_unconfirmed"
+
+        runtime_context = None
+        try:
+            status = self.status()
+            loaded_models = status.get("models", []) if isinstance(status, dict) else []
+            loaded = next(
+                (item for item in loaded_models
+                 if isinstance(item, dict) and str(item.get("name") or item.get("model") or "") == str(name)),
+                None,
+            )
+            if loaded:
+                value = loaded.get("context_length")
+                if value is not None and int(value) > 0:
+                    runtime_context = int(value)
+        except Exception:
+            pass
+
         try:
             num_predict = int(explicit_num_predict) if explicit_num_predict is not None else None
         except (TypeError, ValueError):
             num_predict = None
-        profile = {"model": name, "num_ctx": context, "num_predict": num_predict, "source": source}
-        if source != "fallback":
-            try:
-                db.set_app_setting(cache_key, json.dumps(profile))
-            except Exception:
-                pass
-        return profile
+        context = runtime_context or configured_context
+        if runtime_context:
+            source = "ollama_runtime"
+        return {
+            "model": name,
+            "num_ctx": context,
+            "runtime_context_limit": context,
+            "model_context_length": model_context_length,
+            "num_predict": num_predict,
+            "source": source,
+            "runtime_context_confirmed": runtime_context is not None,
+        }
 
     def _post_stream(self, endpoint: str, payload: dict, timeout: int | None = None) -> dict:
         with self._request_lock:
