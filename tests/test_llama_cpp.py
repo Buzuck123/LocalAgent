@@ -9,7 +9,7 @@ def test_model_profile_uses_configured_server_context():
     profile = client.model_profile("bonsai")
     assert profile["model"] == "bonsai"
     assert profile["num_ctx"] == settings.llama_cpp_context
-    assert profile["source"] == "llama_cpp_server_config"
+    assert profile["source"] == "llama_cpp_config_fallback_unconfirmed"
 
 
 def test_openai_tool_receipt_is_paired_with_call_id():
