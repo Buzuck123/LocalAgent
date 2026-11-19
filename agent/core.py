@@ -1318,10 +1318,30 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                                                conversation_id=task["conversation_id"])
                         continue
                     if action in {"interrupt_operation", "reset_bash_session", "restart_container"}:
+                        if action == "interrupt_operation":
+                            recovery_confirmed = (
+                                isinstance(recovery, dict)
+                                and (recovery.get("state") == "interrupted"
+                                     or recovery.get("interrupted") is True)
+                            )
+                        elif action == "reset_bash_session":
+                            recovery_confirmed = (
+                                isinstance(recovery, dict)
+                                and recovery.get("state") == "reset"
+                                and recovery.get("verified") is True
+                            )
+                        else:
+                            recovery_confirmed = (
+                                isinstance(recovery, dict)
+                                and recovery.get("state") == "restarted"
+                                and recovery.get("verified") is True
+                            )
                         if not recovery_confirmed:
                             # Failed/unconfirmed recovery must not be reported as an
-                            # intervention. Poll the same operation and diagnose again.
-                            action = "continue_waiting"
+                            # intervention. Re-poll the same operation before another review.
+                            result = dispatch_tool("terminal", {"command": ""},
+                                                   conversation_id=task["conversation_id"])
+                            continue
                         else:
                             diagnostic_intervened = True
                             result = dict(result)
