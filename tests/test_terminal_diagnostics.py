@@ -417,3 +417,100 @@ def test_interrupt_race_polls_original_operation_instead_of_starting_new_command
     assert result["state"] == "completed"
     assert "final output" in result["_terminal_output"]
 
+
+
+
+def test_diagnostic_report_is_compact_and_explains_metric_limits():
+    from agent.terminal_diagnostics import build_diagnostic_context
+
+    snapshot = {
+        "sampled_at": "2026-11-19T12:00:00+00:00",
+        "operation_id": "op-1",
+        "command": "python3 worker.py --input data.csv",
+        "elapsed_seconds": 1000,
+        "idle_seconds": 1000,
+        "operation_state": "running",
+        "runtime_responsive": True,
+        "container_top": {"returncode": 0, "output": "PID COMMAND\n1 server"},
+        "container_stats": {"returncode": 0, "output": "0.00%|50MiB / 4GiB|1.2%|4"},
+    }
+    report, evidence = build_diagnostic_context(snapshot)
+
+    assert report["operation"]["command"] == snapshot["command"]
+    assert "не доказывают зависание" in " ".join(report["important_limits"])
+    assert any("всего контейнера" in item["meaning"] for item in evidence)
+    assert len(str(report)) < 12000
+
+
+def test_repeated_silence_requires_spaced_samples_and_read_only_inspection():
+    from agent.terminal_diagnostics import build_diagnostic_context, authorize_recovery
+
+    first = {
+        "sampled_at": "2026-11-19T12:00:00+00:00", "operation_id": "op-1",
+        "command": "python3 worker.py", "elapsed_seconds": 1000, "idle_seconds": 1000,
+        "operation_state": "running", "runtime_responsive": True,
+    }
+    _, evidence1 = build_diagnostic_context(first)
+    second = dict(first, sampled_at="2026-11-19T12:00:20+00:00",
+                  elapsed_seconds=1020, idle_seconds=1020)
+    _, evidence2 = build_diagnostic_context(second, evidence1)
+    diagnostic = {
+        "id": "ev_readonly_1", "kind": "diagnostic_terminal",
+        "operation_id": "op-1", "timestamp": "2026-11-19T12:00:21+00:00",
+    }
+    evidence = evidence1 + evidence2 + [diagnostic]
+    selected = [
+        next(item["id"] for item in evidence if item["kind"] == "no_terminal_output"),
+        next(item["id"] for item in evidence if item["kind"] == "repeated_no_progress"),
+        diagnostic["id"],
+    ]
+    allowed, reason = authorize_recovery(
+        "interrupt_terminal_operation",
+        {"evidence_ids": selected}, evidence, second,
+    )
+    assert allowed is True
+
+    invented, _ = authorize_recovery(
+        "interrupt_terminal_operation",
+        {"evidence_ids": ["ev_not_real"]}, evidence, second,
+    )
+    assert invented is False
+
+
+def test_diagnostic_terminal_only_allows_read_commands_and_uses_separate_session():
+    import pytest
+
+    manager = object.__new__(SandboxManager)
+
+    class Runtime:
+        def __init__(self):
+            self.sessions = []
+            self.calls = []
+
+        def is_alive(self):
+            return True
+
+        def ensure_session(self, session):
+            self.sessions.append(session)
+            return True
+
+        def run(self, command, *, session, timeout):
+            self.calls.append((command, session, timeout))
+            return {"stdout": "PID COMMAND", "stderr": "", "exit_code": 0, "timed_out": False}
+
+    runtime = Runtime()
+    manager.get_runtime = lambda *args, **kwargs: runtime
+    result = manager.run_diagnostic_terminal("conversation-1", "ps -eo pid,ppid,stat,args")
+
+    assert result["ok"] is True
+    assert runtime.sessions == ["diagnostic"]
+    command, session, timeout = runtime.calls[0]
+    assert session == "diagnostic"
+    assert "localagent-diagnostic" in command
+    assert "--no-new-privs" in command
+    assert timeout == 10
+
+    with pytest.raises(ValueError):
+        manager.run_diagnostic_terminal("conversation-1", "rm -rf /host-workspace")
+    with pytest.raises(ValueError):
+        manager.run_diagnostic_terminal("conversation-1", "bash -c 'touch /host-workspace/x'")
