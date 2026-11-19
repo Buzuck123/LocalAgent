@@ -1158,9 +1158,9 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
     model_report["operation"] = model_operation
     full_command = str(snapshot.get("command") or "")
     messages.append({"role": "user", "content":
-        "Исходная команда (полностью, без сокращения):\\n" + full_command
-        + "\\n\\nКомпактная диагностическая картина. Исходная пользовательская задача намеренно не передаётся. "
-        "Сохраняй evidence_ids для предложений контроллеру.\\n"
+        "Исходная команда (полностью, без сокращения):\n" + full_command
+        + "\n\nКомпактная диагностическая картина. Исходная пользовательская задача намеренно не передаётся. "
+        "Сохраняй evidence_ids для предложений контроллеру.\n"
         + json.dumps(model_report, ensure_ascii=False, default=str)[:18000]})
     db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
 
