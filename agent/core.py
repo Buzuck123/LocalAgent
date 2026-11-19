@@ -4407,12 +4407,18 @@ class Agent:
             except Exception:
                 profile = None
             if isinstance(profile, dict) and int(profile.get("runtime_context_limit") or profile.get("num_ctx") or 0) > 0:
-                pinned_context = int(profile.get("runtime_context_limit") or profile["num_ctx"])
-                cp["model_num_ctx"] = pinned_context
-                cp["model_context_length"] = profile.get("model_context_length")
-                cp["model_context_source"] = profile.get("source")
-                cp["model_context_confirmed"] = bool(profile.get("runtime_context_confirmed", False))
-                cp["model_num_predict"] = profile.get("num_predict")
+                profile_confirmed = bool(profile.get("runtime_context_confirmed", False))
+                if profile_confirmed or not cp.get("model_context_confirmed"):
+                    pinned_context = int(profile.get("runtime_context_limit") or profile["num_ctx"])
+                    cp["model_num_ctx"] = pinned_context
+                    cp["model_context_length"] = profile.get("model_context_length")
+                    cp["model_context_source"] = profile.get("source")
+                    cp["model_context_confirmed"] = profile_confirmed
+                    cp["model_num_predict"] = profile.get("num_predict")
+                else:
+                    # Preserve a previously observed runtime allocation if the
+                    # provider is currently unloaded and can only offer a guess.
+                    pinned_context = int(cp["model_num_ctx"])
             else:
                 pinned_context = int(cp.get("model_num_ctx") or (
                     settings.llama_cpp_context if task_provider == "llama_cpp"
