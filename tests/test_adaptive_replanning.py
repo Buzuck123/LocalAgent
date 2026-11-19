@@ -344,6 +344,7 @@ def test_agent_replans_after_three_tool_errors(tmp_path, monkeypatch):
             max_tool_rounds=30,
             auto_resume_tasks=False,
             workspace_path=workspace,
+            ollama_context_fallback=32768,
         ),
     )
 
