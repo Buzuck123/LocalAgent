@@ -1275,7 +1275,8 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
         )
         messages.append({"role": "assistant", "content": json.dumps({"action": action, "reason": reason}, ensure_ascii=False)})
 
-    actions.append({"action": action, "reason": reason, "snapshot": snapshot})
+    if not actions or actions[-1].get("action") != action or "result" not in actions[-1]:
+        actions.append({"action": action, "reason": reason, "snapshot": snapshot})
     db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
     return action, reason, diagnostic_id, messages, actions, recovery
 
