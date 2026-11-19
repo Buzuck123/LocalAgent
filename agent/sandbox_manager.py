@@ -525,7 +525,7 @@ print(json.dumps(result))
 
         command_started_at = float(active.get("started_monotonic", time.monotonic()))
         call_started_at = time.monotonic()
-        idle_limit = max(0.1, float(getattr(settings, "terminal_idle_timeout_seconds", 10)))
+        idle_limit = max(0.1, float(getattr(settings, "terminal_idle_timeout_seconds", 300)))
         max_wait = max(1.0, float(getattr(settings, "terminal_max_wait_seconds", 300)))
         last_output_at = float(active.get("last_output_monotonic", call_started_at))
         state = "running"
