@@ -1282,7 +1282,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                         result = dict(result)
                         result["_diagnostic_due"] = False
                         notice = (
-                            "\\n[Диагностика приостановлена после "
+                            "\n[Диагностика приостановлена после "
                             f"{max_diagnostic_cycles} циклов без подтверждённого восстановления. "
                             "Терминальная операция может продолжаться; проверь её повторным вызовом terminal "
                             "с пустой командой. Новая команда не запускалась.]"
