@@ -1158,8 +1158,25 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                     actions=actions,
                 ) from exc
             message = response.get("message", {}) if isinstance(response, dict) else {}
-            if not isinstance(message, dict):
-                break
+            if not isinstance(message, dict) or (
+                not message.get("content") and not message.get("tool_calls")
+            ):
+                try:
+                    db.update_terminal_diagnostic(
+                        diagnostic_id, status="paused", messages=messages, actions=actions
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not persist empty diagnostic response %s",
+                        diagnostic_id, exc_info=True,
+                    )
+                raise TerminalDiagnosticLLMUnavailable(
+                    "Диагностическая LLM вернула пустой или некорректный ответ.",
+                    terminal_result=terminal_result,
+                    diagnostic_id=diagnostic_id,
+                    messages=messages,
+                    actions=actions,
+                )
             calls = message.get("tool_calls")
             if not isinstance(calls, list) or not calls:
                 assistant_text = str(message.get("content") or "")
@@ -6215,7 +6232,11 @@ class Agent:
                 pause_reason = "terminal_recovery_unverified"
                 report = (
                     "Задача приостановлена: восстановление терминала не подтверждено. "
-                    + str(exc)[:1000]
+                    + str(exc)[:1000] + "\n"
+                    + _terminal_command_impact_note(
+                        (pending.get("terminal_result") or {}).get("_terminal_command")
+                        if isinstance(pending.get("terminal_result"), dict) else ""
+                    )
                 )
                 diagnostic_id = pending.get("diagnostic_id")
                 diagnostic_messages = pending.get("messages")
