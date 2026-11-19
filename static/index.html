@@ -274,7 +274,9 @@ async function loadActivity(task){
         ]);
         const state=execution.task_state||{};
         const counts=`Действия: ${state.actions_succeeded||0} успешно · ${state.actions_failed||0} ошибок`;
-        const tokenInfo = usageData ? ` · Контекст: ${usageData.current_prompt_tokens||0}/${usageData.context_limit||0} (${usageData.current_context_percent||0}%) · максимум ${usageData.max_prompt_tokens||0} (${usageData.max_context_percent||0}%) · токены всего: ${usageData.prompt_tokens_total||0} вход / ${usageData.generated_tokens_total||0} выход` : '';
+        const contextSource = usageData?.context_confirmed ? 'сервер' : 'настройка';
+        const modelLimit = Number(usageData?.model_context_length)>0 ? ` · предел модели ${Number(usageData.model_context_length).toLocaleString('ru-RU')}` : '';
+        const tokenInfo = usageData ? ` · Рабочий контекст (${contextSource}): ${usageData.current_prompt_tokens||0}/${usageData.context_limit||0} (${usageData.current_context_percent||0}%) · пик запроса ${usageData.max_prompt_tokens||0} (${usageData.max_context_percent||0}%)${modelLimit} · токены всего: ${usageData.prompt_tokens_total||0} вход / ${usageData.generated_tokens_total||0} выход` : '';
         $('activity-history-summary').textContent='Ход работы · '+counts+tokenInfo+' · операций в журнале: '+(data.total||0);
         const historySig=JSON.stringify({id:task.id,total:data.total,operations:data.operations?.map(op=>[
             op.operation_id,op.status,op.status_detail,op.activity,op.updated_at
