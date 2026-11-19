@@ -406,8 +406,13 @@ def task_usage(tid: str):
         checkpoint = json.loads(task.get("checkpoint_json") or "{}")
     except Exception:
         checkpoint = {}
-    context_limit = int(checkpoint.get("model_num_ctx") or settings.num_ctx) if isinstance(checkpoint, dict) else settings.num_ctx
+    provider = str(checkpoint.get("provider") or "ollama") if isinstance(checkpoint, dict) else "ollama"
+    fallback_context = settings.llama_cpp_context if provider == "llama_cpp" else settings.num_ctx
+    context_limit = int(checkpoint.get("model_num_ctx") or fallback_context) if isinstance(checkpoint, dict) else fallback_context
     usage["context_limit"] = context_limit
+    usage["model_context_length"] = checkpoint.get("model_context_length") if isinstance(checkpoint, dict) else None
+    usage["context_source"] = checkpoint.get("model_context_source") if isinstance(checkpoint, dict) else None
+    usage["context_confirmed"] = bool(checkpoint.get("model_context_confirmed", False)) if isinstance(checkpoint, dict) else False
     usage["model"] = checkpoint.get("model") if isinstance(checkpoint, dict) else None
     usage["current_context_percent"] = round(100 * usage["current_prompt_tokens"] / context_limit, 1) if context_limit else 0
     usage["max_context_percent"] = round(100 * usage["max_prompt_tokens"] / context_limit, 1) if context_limit else 0
