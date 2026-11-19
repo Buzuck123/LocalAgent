@@ -296,6 +296,11 @@ class SandboxManager:
             # The auth token is needed by the SWE-ReX server only. Remove it
             # from the persistent interactive shell before the model can use it.
             cleared = runtime.run("unset SWEREX_AUTH_TOKEN", session="main", timeout=10)
+            if cleared.get("shell_recovered") is True:
+                # run() had to create a missing PTY while reconnecting. Preserve
+                # that fact so the terminal can report loss of shell-local state.
+                with self._guard:
+                    self._new_sessions.add(conversation_id)
             if cleared.get("timed_out") and cleared.get("shell_recovered") is True:
                 # A stale interactive shell may have survived a server/client
                 # reconnect. The adapter reset it; retry this idempotent cleanup.
