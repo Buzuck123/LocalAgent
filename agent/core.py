@@ -1331,7 +1331,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                             final_chunk = str(final_poll.get("stdout") or "")
                             final_stderr = str(final_poll.get("stderr") or "")
                             if final_stderr and final_stderr not in final_chunk:
-                                final_chunk = (final_chunk.rstrip() + "\\n" + final_stderr).lstrip("\\n")
+                                final_chunk = (final_chunk.rstrip() + "\n" + final_stderr).lstrip("\n")
                             result = dict(result)
                             result["_terminal_output"] = str(result.get("_terminal_output") or "") + final_chunk
                             result["_terminal_text"] = str(result.get("_terminal_text") or "") + final_chunk
