@@ -707,6 +707,12 @@ def _restore_tool_operation_payload(record, tool_name, arguments, diagnosis_stat
         failure["ok"] = False
         failure.setdefault("error", "Инструмент завершился ошибкой до сохранения результата.")
         failure["exception_type"] = failure.get("exception_type", "ToolError")
+        if failure["exception_type"] == "ToolContractError" and isinstance(diagnosis_state, dict):
+            contract_errors = diagnosis_state.setdefault("unresolved_tool_contract_errors", [])
+            contract_message = f"ToolContractError: {str(failure.get('error') or '')[:1000]}"
+            if contract_message not in contract_errors:
+                contract_errors.append(contract_message)
+            diagnosis_state["unresolved_tool_contract_errors"] = contract_errors[-10:]
         if diagnosis_state is not None:
             failure["agent_diagnosis"] = _diagnose_tool_failure(
                 tool_name, arguments, failure["error"], diagnosis_state
@@ -4594,11 +4600,19 @@ class Agent:
                             recovered_payload = _restore_tool_operation_payload(
                                 stored_result, tool_name, tool_arguments, checkpoint
                             )
-                            messages.extend(_build_tool_messages_for_operation(
+                            recovered_messages = _build_tool_messages_for_operation(
                                 tool_name,
                                 json.dumps(recovered_payload, ensure_ascii=False, default=str),
                                 operation_id,
-                            ))
+                            )
+                            existing_event_ids = {
+                                item.get("_event_id") for item in messages
+                                if isinstance(item, dict) and item.get("_event_id")
+                            }
+                            messages.extend(
+                                item for item in recovered_messages
+                                if item.get("_event_id") not in existing_event_ids
+                            )
                             checkpoint["messages"] = messages
                             checkpoint["phase"] = "loop"
                             checkpoint["activity"] = _tool_activity_summary(
@@ -5418,10 +5432,6 @@ class Agent:
                                 evidence[step_id_at_tool_start] = receipts[-20:]
 
                             tool_ok = _tool_result_is_successful(result)
-                            failure_step_id = step_id_at_tool_start
-                            if failure_step_id is not None:
-                                if controller_blocked:
-                                    pass
                             tool_payload = {"ok": tool_ok, "result": result}
                             if acceptance_proof:
                                 tool_payload["acceptance_proof"] = acceptance_proof
