@@ -516,3 +516,28 @@ def test_diagnostic_terminal_only_allows_read_commands_and_uses_separate_session
         manager.run_diagnostic_terminal("conversation-1", "rm -rf /host-workspace")
     with pytest.raises(ValueError):
         manager.run_diagnostic_terminal("conversation-1", "bash -c 'touch /host-workspace/x'")
+
+
+
+def test_diagnostic_terminal_does_not_create_session_when_swerex_is_unresponsive():
+    import pytest
+    from agent.sandbox_manager import SandboxError
+
+    manager = object.__new__(SandboxManager)
+
+    class Runtime:
+        created = False
+
+        def is_alive(self):
+            return False
+
+        def ensure_session(self, session):
+            self.created = True
+            raise AssertionError("session must not be created before health check")
+
+    runtime = Runtime()
+    manager._runtimes = {"conversation-1": runtime}
+
+    with pytest.raises(SandboxError, match="SWE-ReX не отвечает"):
+        manager.run_diagnostic_terminal("conversation-1", "ps -ef")
+    assert runtime.created is False
