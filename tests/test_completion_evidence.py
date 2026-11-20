@@ -1,4 +1,7 @@
-from agent.core import (\n    _completion_evidence_problem, _tool_result_is_successful,\n    _plan_steps_are_complete, _fallback_final_answer,\n)
+from agent.core import (
+    _completion_evidence_problem, _tool_result_is_successful,
+    _plan_steps_are_complete, _fallback_final_answer,
+)
 from agent.planning import create_plan, validate_plan
 
 
