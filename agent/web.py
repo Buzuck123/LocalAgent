@@ -541,7 +541,7 @@ def select_llm_provider(payload: ProviderSelect):
     # selected backend BEFORE switching, otherwise a legacy paused Qwen task
     # could accidentally resume against the newly selected server.
     for task in all_tasks:
-        if task.get("status") not in {"paused", "interrupted"}:
+        if task.get("status") not in {"paused", "interrupted", "failed"}:
             continue
         try:
             checkpoint = json.loads(task.get("checkpoint_json") or "{}")
