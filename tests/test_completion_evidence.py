@@ -1,4 +1,4 @@
-from agent.core import _completion_evidence_problem, _tool_result_is_successful
+from agent.core import (\n    _completion_evidence_problem, _tool_result_is_successful,\n    _plan_steps_are_complete, _fallback_final_answer,\n)
 from agent.planning import create_plan, validate_plan
 
 
@@ -83,3 +83,39 @@ def test_terminal_acceptance_uses_private_receipt_metadata_not_model_output():
         [message],
     )
     assert proof and "result.txt" in proof
+
+
+
+def test_completed_plan_is_not_blocked_by_historical_tool_failures():
+    plan = {
+        "steps": [
+            {"id": "step_1", "status": "completed"},
+            {"id": "step_2", "status": "completed"},
+            {"id": "step_3", "status": "skipped"},
+        ]
+    }
+    assert _plan_steps_are_complete(plan)
+
+
+def test_incomplete_plan_does_not_suppress_tool_failure_blocker():
+    plan = {
+        "steps": [
+            {"id": "step_1", "status": "completed"},
+            {"id": "step_2", "status": "in_progress"},
+        ]
+    }
+    assert not _plan_steps_are_complete(plan)
+
+
+def test_fallback_final_answer_reports_verified_step_results():
+    answer = _fallback_final_answer({
+        "steps": [{
+            "id": "step_1",
+            "description": "Prepare audio segments",
+            "status": "completed",
+            "verification": "Created 6 segment files.",
+        }]
+    })
+    assert "Prepare audio segments" in answer
+    assert "Created 6 segment files." in answer
+    assert "пустой ответ" in answer
