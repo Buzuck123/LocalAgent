@@ -22,6 +22,9 @@ from . import db
 from .tools import TOOL_DEFINITIONS, dispatch_tool
 from .attachments import ATTACHMENT_ROOT, model_message_content
 from .media_capabilities import model_supports_audio_input
+
+# Backward-compatible alias for existing integrations and regression tests.
+_model_supports_audio_input = model_supports_audio_input
 from .environment import capability_catalog_prompt
 from .orchestration import (
     ToolContractError, validate_tool_call, classify_failure,
