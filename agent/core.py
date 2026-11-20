@@ -2692,6 +2692,42 @@ def _tool_result_is_successful(result):
     return True
 
 
+def _plan_steps_are_complete(plan: Any) -> bool:
+    """Whether every declared plan step reached a terminal successful state."""
+    if not isinstance(plan, dict):
+        return False
+    steps = plan.get("steps")
+    return bool(
+        isinstance(steps, list)
+        and steps
+        and all(
+            isinstance(step, dict) and step.get("status") in {"completed", "skipped"}
+            for step in steps
+        )
+    )
+
+
+def _fallback_final_answer(plan: Any) -> str:
+    """Build a truthful user-facing summary if the model repeatedly returns no text."""
+    if not isinstance(plan, dict):
+        return "Работа по задаче завершена, но модель не сформировала текстовый итоговый отчёт."
+    lines = ["Работа по задаче завершена.", "", "Результаты по этапам:"]
+    for step in plan.get("steps", []):
+        if not isinstance(step, dict):
+            continue
+        status = "выполнен" if step.get("status") == "completed" else "пропущен"
+        lines.append(f"- {step.get('description') or step.get('id')}: {status}.")
+        verification = step.get("verification")
+        if verification:
+            lines.append(f"  Подтверждение: {str(verification)[:700]}")
+    lines.extend([
+        "",
+        "Автоматически сформировать более подробный сводный отчёт не удалось: модель вернула пустой ответ.",
+        "Проверьте опубликованные файлы и результаты этапов в рабочем каталоге.",
+    ])
+    return "\n".join(lines)
+
+
 def _unresolved_tool_errors_problem(task_state: Any) -> str | None:
     """Return a completion blocker while any tool failure remains unresolved."""
     if not isinstance(task_state, dict):
@@ -5065,7 +5101,14 @@ class Agent:
                             "Задача не может быть завершена: для запроса на создание и проверку Python-скрипта "
                             "не подтверждена работа через универсальный terminal: " + ", ".join(sorted(missing)) + "."
                         )
-                if completion_blocker is None and int(state.get("plan_revision_count", 0) or 0) == 0:
+                # Failed attempts remain useful diagnostic history, but they must
+                # not veto a plan whose every stage has subsequently been completed.
+                # In that case the final response should describe any limitations
+                # rather than pausing after the work itself is demonstrably done.
+                if (
+                    completion_blocker is None
+                    and not _plan_steps_are_complete(plan)
+                ):
                     completion_blocker = _unresolved_tool_errors_problem(state.get("task_state", {}))
                 if completion_blocker:
                     reason = completion_blocker
@@ -5100,7 +5143,45 @@ class Agent:
                         save_checkpoint(state)
                         db.update_task(task_id, status="paused", result=reason, error=None)
                         return False
-                answer = answer.strip() or "(Модель вернула пустой ответ.)"
+                answer = answer.strip() if isinstance(answer, str) else ""
+                if not answer:
+                    retry_count = int(state.get("final_answer_retry_count", 0) or 0)
+                    if retry_count < 2:
+                        state["final_answer_retry_count"] = retry_count + 1
+                        completed_steps = [
+                            {
+                                "id": step.get("id"),
+                                "description": step.get("description"),
+                                "status": step.get("status"),
+                                "verification": step.get("verification"),
+                            }
+                            for step in plan.get("steps", [])
+                            if isinstance(step, dict)
+                        ]
+                        unresolved = state.get("task_state", {}).get("unresolved_errors", [])
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Все этапы плана уже завершены. Предыдущий ответ для пользователя "
+                                "получился пустым. Сейчас сформируй содержательный итоговый отчёт "
+                                "на языке пользователя, используя уже имеющиеся результаты и историю "
+                                "инструментов. Перечисли фактически полученные результаты, созданные/"
+                                "опубликованные файлы и ограничения, если они есть. Не утверждай, что "
+                                "непроверенные результаты проверены. Не начинай задачу заново и не "
+                                "повторяй уже выполненные операции. Верни обычный текстовый ответ в чат.\n\n"
+                                "Завершённые этапы:\n"
+                                + json.dumps(completed_steps, ensure_ascii=False, default=str)[:12000]
+                                + "\n\nНеразрешённые ошибки предыдущих попыток (учти их как ограничения, "
+                                "но не считай автоматически провалом всей задачи):\n"
+                                + json.dumps(unresolved[-12:] if isinstance(unresolved, list) else [], ensure_ascii=False, default=str)[:6000]
+                            ),
+                        })
+                        state["phase"] = "loop"
+                        state["messages"] = messages
+                        state["final_answer"] = ""
+                        save_checkpoint(state)
+                        return "continue"
+                    answer = _fallback_final_answer(plan)
                 history = db.get_messages(cid, limit=100)
                 already_saved = (
                     bool(history)
