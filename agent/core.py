@@ -4353,7 +4353,7 @@ class Agent:
                 control.resume()
                 db.update_task(task_id, status="running")
                 return db.get_task(task_id)
-            # Restart a task from its original user request. Conversation history is retained.
+            # Start a fresh worker; the unified runner restores its messages and pending work from checkpoint_json.
             control = TaskControl()
             self.controls[task_id] = control
             db.update_task(task_id, status="queued", error=None)
