@@ -250,3 +250,74 @@ def test_audio_attachment_uses_openai_input_audio_shape(tmp_path):
     audio_part = next(part for part in result[0]["content"] if part["type"] == "input_audio")
     assert audio_part["input_audio"]["format"] == "wav"
     assert audio_part["input_audio"]["data"]
+
+
+
+def test_qwen_video_attachment_sends_frames_without_extracting_audio(tmp_path, monkeypatch):
+    from agent import attachments
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"jpeg")
+    monkeypatch.setattr(attachments, "ATTACHMENT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        attachments, "extract_video_frames",
+        lambda path, max_frames=60: {
+            "duration_seconds": 3.0,
+            "frames": [{"path": str(frame), "timestamp_seconds": 1.0}],
+            "frame_count": 1,
+        },
+    )
+
+    def forbidden_audio(*args, **kwargs):
+        raise AssertionError("audio extraction must not run for Qwen")
+
+    monkeypatch.setattr(attachments, "extract_video_audio", forbidden_audio)
+    result = LlamaCppClient._safe_messages([{
+        "role": "user", "content": "Analyze video",
+        "attachments": [{"kind": "video", "name": "clip.mp4", "path": str(video)}],
+    }], "qwen3.5:9b")
+    assert any(part.get("type") == "image_url" for part in result[0]["content"])
+    assert not any(part.get("type") == "input_audio" for part in result[0]["content"])
+
+
+def test_gemma_video_attachment_includes_audio(tmp_path, monkeypatch):
+    from agent import attachments
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"jpeg")
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF" + b"\\x00" * 40)
+    monkeypatch.setattr(attachments, "ATTACHMENT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        attachments, "extract_video_frames",
+        lambda path, max_frames=60: {
+            "duration_seconds": 3.0,
+            "frames": [{"path": str(frame), "timestamp_seconds": 1.0}],
+            "frame_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        attachments, "extract_video_audio",
+        lambda path, max_seconds=30.0: {"path": str(audio)},
+    )
+    result = LlamaCppClient._safe_messages([{
+        "role": "user", "content": "Analyze video",
+        "attachments": [{"kind": "video", "name": "clip.mp4", "path": str(video)}],
+    }], "gemma4-12b")
+    assert any(part.get("type") == "image_url" for part in result[0]["content"])
+    assert any(part.get("type") == "input_audio" for part in result[0]["content"])
+
+
+def test_qwen_standalone_audio_is_not_attached(tmp_path):
+    audio_path = tmp_path / "speech.wav"
+    audio_path.write_bytes(b"RIFF" + b"\\x00" * 40)
+    result = LlamaCppClient._safe_messages([{
+        "role": "user", "content": "Transcribe",
+        "attachments": [{"kind": "audio", "name": "speech.wav", "path": str(audio_path)}],
+    }], "qwen3.5:9b")
+    assert not any(part.get("type") == "input_audio" for part in result[0]["content"])
+    assert any("не поддерживает анализ аудио" in part.get("text", "") for part in result[0]["content"])
