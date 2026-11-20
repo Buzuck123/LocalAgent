@@ -327,7 +327,7 @@ async function loadTasks(){
     const currentText=active?(active.awaiting_clarification?'Ожидает ответа на уточнение — отправьте ответ обычным сообщением':(active.status==='cancelling'?'Отмена выполняется':active.status)+' · '+(active.activity||'Состояние задачи')):'Нет задач в этом диалоге';
     if($('activity-current').textContent!==currentText)$('activity-current').textContent=currentText;
     const resumeButton=$('activity-resume');
-    resumeButton.hidden=!(active&&active.status==='interrupted'&&!active.awaiting_clarification);
+    resumeButton.hidden=!(active&&['interrupted','failed'].includes(active.status)&&!active.awaiting_clarification);
     resumeButton.onclick=async()=>{if(!active)return;resumeButton.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(active.id)+'/resume',{method:'POST'});taskListSignature='';await loadTasks()}catch(e){alert('Не удалось возобновить задачу: '+e.message)}finally{resumeButton.disabled=false}};
     await loadActivity(active||null);
     const signature=JSON.stringify(ts.map(t=>({
@@ -342,9 +342,10 @@ async function loadTasks(){
         let label=document.createElement('span');label.textContent=t.status+' · '+(t.activity||'Состояние задачи');d.append(label);
         const taskActions = t.status==='interrupted'
             ? [['resume','Возобновить'],['cancel','Отмена']]
+            : t.status==='failed' ? [['resume','Повторить / продолжить']]
             : [['pause','Пауза'],['resume','Продолжить'],['cancel','Отмена']];
         for(const [action,caption] of taskActions){
-            if(['completed','failed','cancelled'].includes(t.status))continue;
+            if(['completed','cancelled'].includes(t.status))continue;
             if(t.status==='cancelling' && action!=='cancel')continue;
             let b=document.createElement('button');b.textContent=t.status==='cancelling'&&action==='cancel'?'Отмена…':caption;b.disabled=t.status==='cancelling';b.style.margin='2px';
             b.onclick=async()=>{try{await api('/api/tasks/'+t.id+'/'+action,{method:'POST'});await loadTasks()}catch(e){alert(e.message)}};d.append(b)
