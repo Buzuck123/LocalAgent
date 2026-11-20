@@ -290,8 +290,11 @@ def extract_video_frames(path: str | Path, *, max_frames: int = MAX_VIDEO_FRAMES
     if not isinstance(max_frames, int) or not 1 <= max_frames <= MAX_VIDEO_FRAMES:
         raise ValueError(f"max_frames must be between 1 and {MAX_VIDEO_FRAMES}")
 
+    # Include the frame profile in the key so old low-resolution cached frames
+    # are never reused after changing the video analysis resolution.
+    frame_profile = "min-short-side-720-v1"
     cache_key = hashlib.sha256(
-        f"{source}:{size}:{source.stat().st_mtime_ns}:{max_frames}".encode("utf-8")
+        f"{source}:{size}:{source.stat().st_mtime_ns}:{max_frames}:{frame_profile}".encode("utf-8")
     ).hexdigest()
     if ATTACHMENT_ROOT.is_symlink():
         raise ValueError("Managed attachment directory cannot be a symbolic link")
@@ -308,7 +311,13 @@ def extract_video_frames(path: str | Path, *, max_frames: int = MAX_VIDEO_FRAMES
         raise ValueError("Cached video frame cannot be a symbolic link")
     if not frames:
         fps = min(1.0, max_frames / duration)
-        vf = f"fps={fps:.8f},scale=w=320:h=320:force_original_aspect_ratio=decrease,setsar=1"
+        # Keep the short side at 720 px (landscape 1280x720, portrait 720x1280),
+        # preserving aspect ratio and upscaling smaller sources when necessary.
+        vf = (
+            f"fps={fps:.8f},"
+            "scale=w='if(gte(iw\\,ih)\\,-2\\,720)':"
+            "h='if(gte(iw\\,ih)\\,720\\,-2)',setsar=1"
+        )
         result = subprocess.run(
             [ffmpeg, "-nostdin", "-v", "error", "-i", str(source),
              "-vf", vf, "-frames:v", str(max_frames), "-q:v", "4",
@@ -331,7 +340,7 @@ def extract_video_frames(path: str | Path, *, max_frames: int = MAX_VIDEO_FRAMES
         ],
         "frame_count": len(frames),
         "audio_included": False,
-        "note": "Видео нормализовано до последовательности JPEG-кадров не чаще 1 кадра/с, не более 60 секунд; звук обрабатывается отдельным аудиофрагментом.",
+        "note": "Видео нормализовано до JPEG-кадров с короткой стороной не менее 720 px (с сохранением пропорций), не чаще 1 кадра/с и не более 60 секунд; звук обрабатывается отдельным аудиофрагментом.",
     }
 
 
