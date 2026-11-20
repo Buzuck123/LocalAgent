@@ -686,3 +686,50 @@ def test_receipt_failure_does_not_advance_checkpoint_or_repeat_tool(monkeypatch)
         for message in last_checkpoint["messages"]
     )
 
+
+def test_failed_task_can_resume_from_saved_checkpoint(monkeypatch):
+    checkpoint = {
+        "version": 4,
+        "phase": "loop",
+        "messages": [{"role": "user", "content": "Продолжи работу"}],
+        "pending_calls": [],
+        "next_tool_index": 0,
+        "provider": "ollama",
+        "model": "qwen3.5:9b",
+    }
+    task = {
+        "id": "task-failed-resume",
+        "conversation_id": "conversation-1",
+        "status": "failed",
+        "error": "RuntimeError: temporary provider error",
+        "checkpoint_json": json.dumps(checkpoint),
+    }
+    updates = []
+    started = []
+
+    monkeypatch.setattr(core.db, "get_task", lambda task_id: task)
+    def update_task(task_id, **fields):
+        updates.append(fields)
+        task.update(fields)
+    monkeypatch.setattr(core.db, "update_task", update_task)
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+        def start(self):
+            started.append(self)
+
+    monkeypatch.setattr(core.threading, "Thread", FakeThread)
+    agent = make_agent()
+
+    resumed = agent.resume(task["id"])
+
+    assert resumed["status"] == "queued"
+    assert resumed["error"] is None
+    assert json.loads(resumed["checkpoint_json"]) == checkpoint
+    assert len(started) == 1
+    assert started[0].args[0] == task["id"]
+    assert isinstance(started[0].args[1], core.TaskControl)
+
