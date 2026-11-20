@@ -3747,7 +3747,7 @@ class OllamaClient:
         messages = _sanitize_messages_for_ollama(messages, tool_definitions=tools)
         messages = _prepare_messages_for_next_model_turn(messages)
         selected_model = model or db.get_app_setting("selected_ollama_model", self.model)
-        audio_supported = _model_supports_audio_input(selected_model)
+        audio_supported = model_supports_audio_input(selected_model)
         # Media references stay in checkpoints; this boundary converts them to
         # Ollama's supported images payload. Videos are sampled into timestamped
         # frames because Ollama's /api/chat currently has no native video field.
