@@ -1129,7 +1129,7 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
     operation_id = str(terminal_result.get("operation_id") or "")
 
     def collect_snapshot():
-        return sandbox_manager.collect_terminal_diagnostics(
+        snapshot = sandbox_manager.collect_terminal_diagnostics(
             conversation_id, operation_id,
             command=str(terminal_result.get("_terminal_command") or ""),
             output=str(terminal_result.get("_terminal_output") or ""),
@@ -1140,6 +1140,15 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
             last_output_at=terminal_result.get("_terminal_last_output_at"),
             cursor=int(terminal_result.get("cursor") or 0),
         )
+        # The collector supplies runtime/container facts; preserve operation facts
+        # from the terminal result even when a collector/test double omits them.
+        snapshot = dict(snapshot) if isinstance(snapshot, dict) else {}
+        snapshot.setdefault("command", str(terminal_result.get("_terminal_command") or ""))
+        snapshot.setdefault("elapsed_seconds", float(terminal_result.get("_elapsed_seconds") or 0))
+        snapshot.setdefault("idle_seconds", float(terminal_result.get("_idle_seconds") or 0))
+        snapshot.setdefault("terminal_output_tail", str(terminal_result.get("_terminal_output") or "")[-1500:])
+        snapshot.setdefault("operation_id", operation_id)
+        return snapshot
 
     snapshot = collect_snapshot()
     snapshot["command_hard_timeout_seconds"] = terminal_result.get("_terminal_hard_timeout")
