@@ -4344,7 +4344,7 @@ class Agent:
             resume_checkpoint = {}
         if isinstance(resume_checkpoint, dict) and resume_checkpoint.get("pause_reason") == "needs_user_input":
             raise ValueError("Задача ожидает ответа на уточнение. Отправьте ответ обычным сообщением в этом диалоге.")
-        if task["status"] not in {"paused", "interrupted"}:
+        if task["status"] not in {"paused", "interrupted", "failed"}:
             raise ValueError(f"Cannot resume task in state {task['status']}")
         with self._lock:
             control = self.controls.get(task_id)
