@@ -5158,7 +5158,11 @@ class Agent:
                             for step in plan.get("steps", [])
                             if isinstance(step, dict)
                         ]
-                        unresolved = state.get("task_state", {}).get("unresolved_errors", [])
+                        task_summary = state.get("task_state", {})
+                        unresolved = (
+                            task_summary.get("unresolved_errors", [])
+                            if isinstance(task_summary, dict) else []
+                        )
                         messages.append({
                             "role": "user",
                             "content": (
