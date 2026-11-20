@@ -176,7 +176,6 @@ def build_diagnostic_context(snapshot: dict[str, Any],
     ]
     no_progress_id = None
     if prior_samples and state in {"running", "waiting_input"}:
-        from datetime import datetime
         current_time = datetime.fromisoformat(sampled_at.replace("Z", "+00:00"))
         comparable = False
         for prior in reversed(prior_samples):
