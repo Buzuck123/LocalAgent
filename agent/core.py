@@ -21,6 +21,7 @@ from .config import settings
 from . import db
 from .tools import TOOL_DEFINITIONS, dispatch_tool
 from .attachments import ATTACHMENT_ROOT, model_message_content
+from .media_capabilities import model_supports_audio_input
 from .environment import capability_catalog_prompt
 from .orchestration import (
     ToolContractError, validate_tool_call, classify_failure,
@@ -3316,11 +3317,6 @@ def _prepare_messages_for_next_model_turn(messages: list[dict], continuation_pro
     return prepared
 
 
-def _model_supports_audio_input(model_name: str) -> bool:
-    """The implemented WAV-via-images audio transport is currently Gemma 4-specific."""
-    return str(model_name or "").casefold().startswith("gemma4")
-
-
 def _mark_loaded_media_not_attached(model_messages: list[dict], kind: str, reason: str) -> None:
     """Keep a preceding load_file_for_model receipt truthful when media is model-incompatible."""
     if not model_messages:
@@ -5360,7 +5356,7 @@ class Agent:
                         else:
                             if name == "load_file_for_model" and isinstance(result, dict):
                                 selected_model = str(checkpoint.get("model") or "").lower()
-                                if result.get("ok") is True and result.get("kind") == "audio" and "gemma" not in selected_model:
+                                if result.get("ok") is True and result.get("kind") == "audio" and not model_supports_audio_input(selected_model):
                                     result = {
                                         "ok": False,
                                         "error": (
@@ -5376,6 +5372,18 @@ class Agent:
                                         result, messages, checkpoint,
                                         str(checkpoint.get("model") or ""),
                                     )
+                                    if (
+                                        isinstance(result, dict)
+                                        and result.get("ok") is True
+                                        and result.get("kind") == "video"
+                                        and not model_supports_audio_input(selected_model)
+                                    ):
+                                        result["audio_delivery"] = "not_attached_model_unsupported"
+                                        result["note"] = (
+                                            str(result.get("note") or "").strip()
+                                            + " Видео будет анализироваться без звука; "
+                                            "для анализа звуковой дорожки используй ask_model."
+                                        ).strip()
                             _update_pending_terminal_operations(state, name, result)
                             if not _tool_result_is_successful(result) and not controller_blocked:
                                 try:
