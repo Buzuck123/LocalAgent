@@ -17,6 +17,7 @@ from urllib.request import Request, build_opener, ProxyHandler
 
 from . import db
 from .config import settings
+from .media_capabilities import model_supports_audio_input
 
 
 class LlamaCppClient:
@@ -206,7 +207,7 @@ class LlamaCppClient:
                 "message": "Модель загружена процессом llama-server; остановка выполняется на стороне сервера."}
 
     @staticmethod
-    def _media_parts(attachments: list[dict], text: str) -> list[dict]:
+    def _media_parts(attachments: list[dict], text: str, model: str) -> list[dict]:
         """Convert managed media files to OpenAI-compatible content parts."""
         parts: list[dict] = [{"type": "text", "text": text}] if text else []
 
@@ -238,6 +239,12 @@ class LlamaCppClient:
             if kind == "image":
                 add_image(path, f"Прикреплённое изображение: {name}")
             elif kind == "audio":
+                if not model_supports_audio_input(model):
+                    parts.append({
+                        "type": "text",
+                        "text": f"Аудиовложение {name} не передано: выбранная модель не поддерживает анализ аудио. Для анализа используй ask_model.",
+                    })
+                    continue
                 raw = read_managed(path)
                 encoded = base64.b64encode(raw).decode("ascii")
                 parts.append({"type": "text", "text": f"Аудиовложение: {name}. Прослушай и проанализируй звук."})
@@ -252,7 +259,7 @@ class LlamaCppClient:
                     if frame_path == root or root not in frame_path.parents:
                         raise ValueError("Извлечённый кадр видео находится вне каталога вложений")
                     add_image(str(frame_path), f"Кадр {index}, {frame['timestamp_seconds']:.2f} с")
-                audio = extract_video_audio(path, max_seconds=30.0)
+                audio = extract_video_audio(path, max_seconds=30.0) if model_supports_audio_input(model) else None
                 if audio:
                     audio_path = Path(audio["path"]).resolve(strict=True)
                     if audio_path == root or root not in audio_path.parents:
@@ -308,7 +315,7 @@ class LlamaCppClient:
                     pending_call_ids.extend(str(call["id"]) for call in calls if call.get("id"))
             attachments = source.get("attachments")
             if role == "user" and isinstance(attachments, list) and attachments:
-                item["content"] = LlamaCppClient._media_parts(attachments, content)
+                item["content"] = LlamaCppClient._media_parts(attachments, content, model)
                 if output and output[-1].get("role") == "tool":
                     try:
                         prior_receipt = json.loads(output[-1].get("content", ""))
@@ -327,8 +334,16 @@ class LlamaCppClient:
                 if isinstance(receipt, dict) and isinstance(receipt.get("result"), dict):
                     result = receipt["result"]
                     if result.get("kind") in {"image", "audio", "video"}:
-                        result["delivery"] = "attached_to_llama_cpp_multimodal_request"
-                        result["note"] = "Медиафайл будет передан в мультимодальном запросе следующего хода."
+                        if result.get("kind") == "audio" and not model_supports_audio_input(model):
+                            result["delivery"] = "not_attached_model_unsupported"
+                            result["note"] = "Аудиофайл не передан: выбранная модель не поддерживает анализ аудио. Для анализа используй ask_model."
+                        elif result.get("kind") == "video" and not model_supports_audio_input(model):
+                            result["delivery"] = "video_frames_only"
+                            result["audio_delivery"] = "not_attached_model_unsupported"
+                            result["note"] = "Видео будет передано по кадрам без звука; для анализа звуковой дорожки используй ask_model."
+                        else:
+                            result["delivery"] = "attached_to_llama_cpp_multimodal_request"
+                            result["note"] = "Медиафайл будет передан в мультимодальном запросе следующего хода."
                         item["content"] = json.dumps(receipt, ensure_ascii=False, default=str)
             output.append(item)
         if system_parts:
