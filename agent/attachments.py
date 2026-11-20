@@ -292,7 +292,7 @@ def extract_video_frames(path: str | Path, *, max_frames: int = MAX_VIDEO_FRAMES
 
     # Include the frame profile in the key so old low-resolution cached frames
     # are never reused after changing the video analysis resolution.
-    frame_profile = "min-short-side-720-v1"
+    frame_profile = "max-1280x720-no-upscale-v2"
     cache_key = hashlib.sha256(
         f"{source}:{size}:{source.stat().st_mtime_ns}:{max_frames}:{frame_profile}".encode("utf-8")
     ).hexdigest()
@@ -311,12 +311,12 @@ def extract_video_frames(path: str | Path, *, max_frames: int = MAX_VIDEO_FRAMES
         raise ValueError("Cached video frame cannot be a symbolic link")
     if not frames:
         fps = min(1.0, max_frames / duration)
-        # Keep the short side at 720 px (landscape 1280x720, portrait 720x1280),
-        # preserving aspect ratio and upscaling smaller sources when necessary.
+        # Downscale to fit within 1280x720 without upscaling smaller sources.
+        # The original aspect ratio is preserved for both landscape and portrait video.
         vf = (
             f"fps={fps:.8f},"
-            "scale=w='if(gte(iw\\,ih)\\,-2\\,720)':"
-            "h='if(gte(iw\\,ih)\\,720\\,-2)',setsar=1"
+            "scale=w='min(iw,1280)':h='min(ih,720)':"
+            "force_original_aspect_ratio=decrease,setsar=1"
         )
         result = subprocess.run(
             [ffmpeg, "-nostdin", "-v", "error", "-i", str(source),
@@ -340,7 +340,7 @@ def extract_video_frames(path: str | Path, *, max_frames: int = MAX_VIDEO_FRAMES
         ],
         "frame_count": len(frames),
         "audio_included": False,
-        "note": "Видео нормализовано до JPEG-кадров с короткой стороной не менее 720 px (с сохранением пропорций), не чаще 1 кадра/с и не более 60 секунд; звук обрабатывается отдельным аудиофрагментом.",
+        "note": "Видео нормализовано до JPEG-кадров размером не более 1280×720 (с сохранением пропорций, без увеличения видео меньшего разрешения), не чаще 1 кадра/с и не более 60 секунд; звук обрабатывается отдельным аудиофрагментом.",
     }
 
 
