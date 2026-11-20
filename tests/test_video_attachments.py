@@ -31,6 +31,11 @@ def test_extract_video_frames_samples_video_and_caches(tmp_path, monkeypatch):
     assert result["audio_included"] is False
     assert [item["timestamp_seconds"] for item in result["frames"]] == [0.0, 1.0, 2.0, 3.0]
     assert len(calls) == 2
+    ffmpeg_args = calls[1]
+    video_filter = ffmpeg_args[ffmpeg_args.index("-vf") + 1]
+    assert "720" in video_filter
+    assert "320" not in video_filter
+    assert "force_original_aspect_ratio" not in video_filter
 
     second = attachments.extract_video_frames(video)
     assert second["frame_count"] == 4
