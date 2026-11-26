@@ -541,3 +541,62 @@ def test_diagnostic_terminal_does_not_create_session_when_swerex_is_unresponsive
     with pytest.raises(SandboxError, match="SWE-ReX не отвечает"):
         manager.run_diagnostic_terminal("conversation-1", "ps -ef")
     assert runtime.created is False
+
+
+def test_automatic_process_snapshot_satisfies_read_only_recovery_evidence():
+    from agent.terminal_diagnostics import build_diagnostic_context, authorize_recovery
+
+    first = {
+        "sampled_at": "2026-11-19T12:00:00+00:00", "operation_id": "op-auto",
+        "command": "cat > /tmp/result.json", "elapsed_seconds": 900, "idle_seconds": 900,
+        "operation_state": "running", "runtime_responsive": True,
+    }
+    _, evidence1 = build_diagnostic_context(first)
+    second = {
+        **first,
+        "sampled_at": "2026-11-19T12:00:20+00:00",
+        "elapsed_seconds": 920,
+        "idle_seconds": 920,
+        "process_snapshot": {
+            "ok": True,
+            "exit_code": 0,
+            "stdout": "PID PPID STAT ELAPSED COMMAND\\n1 0 Ssl 01:00 python3 server.py\\n",
+        },
+    }
+    _, evidence2 = build_diagnostic_context(second, evidence1)
+    evidence = evidence1 + evidence2
+    selected = [
+        next(item["id"] for item in evidence if item["kind"] == "operation_state" and item["timestamp"] == second["sampled_at"]),
+        next(item["id"] for item in evidence if item["kind"] == "no_terminal_output" and item["timestamp"] == second["sampled_at"]),
+        next(item["id"] for item in evidence if item["kind"] == "repeated_no_progress"),
+        next(item["id"] for item in evidence if item["kind"] == "diagnostic_process_snapshot"),
+    ]
+
+    allowed, reason = authorize_recovery(
+        "interrupt_terminal_operation",
+        {"evidence_ids": selected}, evidence, second,
+    )
+    assert allowed is True
+    assert "повторных снимках" in reason
+
+
+def test_failed_automatic_process_snapshot_cannot_authorize_recovery():
+    from agent.terminal_diagnostics import build_diagnostic_context, authorize_recovery
+
+    snapshot = {
+        "sampled_at": "2026-11-19T12:00:20+00:00", "operation_id": "op-no-ps",
+        "command": "sleep 999", "elapsed_seconds": 1000, "idle_seconds": 1000,
+        "operation_state": "running", "runtime_responsive": True,
+        "process_snapshot": {"ok": False, "error": "diagnostic session unavailable"},
+    }
+    _, evidence = build_diagnostic_context(snapshot)
+    selected = [
+        next(item["id"] for item in evidence if item["kind"] == "operation_state"),
+        next(item["id"] for item in evidence if item["kind"] == "no_terminal_output"),
+        next(item["id"] for item in evidence if item["kind"] == "diagnostic_process_snapshot_unavailable"),
+    ]
+    allowed, _ = authorize_recovery(
+        "interrupt_terminal_operation",
+        {"evidence_ids": selected}, evidence, snapshot,
+    )
+    assert allowed is False
