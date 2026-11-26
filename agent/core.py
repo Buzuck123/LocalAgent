@@ -141,7 +141,7 @@ def _parse_tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
 
 def _normalize_terminal_text(value) -> str:
     """Normalize PTY line endings without adding shell/controller formatting."""
-    return str(value or "").replace("\\r\\n", "\\n")
+    return str(value or "").replace("\r\n", "\n")
 
 
 def _model_visible_tool_result(tool_name: str, result):
