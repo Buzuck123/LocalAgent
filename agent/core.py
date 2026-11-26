@@ -157,8 +157,6 @@ def _terminal_receipt_text(result: dict, result_id=None) -> str:
             f"\n\n[Output truncated; retrieve the complete output with "
             f"get_tool_result(result_id='{result_id}', start=0, length=4000).]"
         )
-    if result_id:
-        output += f"\n[result_id={result_id}]"
     return output
 
 
