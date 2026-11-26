@@ -144,16 +144,28 @@ def _normalize_terminal_text(value) -> str:
     return str(value or "").replace("\r\n", "\n")
 
 
+def _terminal_receipt_text(result: dict, result_id=None) -> str:
+    """Build the concise terminal transcript while preserving its retrieval handle."""
+    output = _normalize_terminal_text(result.get("_terminal_text"))
+    if result.get("output_truncated") and result_id:
+        output += (
+            f"\n\n[Output truncated; retrieve the complete output with "
+            f"get_tool_result(result_id='{result_id}', start=0, length=4000).]"
+        )
+    if result_id:
+        output += f"\n[result_id={result_id}]"
+    return output
+
+
 def _model_visible_tool_result(tool_name: str, result):
     """Remove controller/runtime metadata before evidence or retrieval reaches the LLM."""
     if not isinstance(result, dict):
         return result
-    if tool_name == "terminal" and "_terminal_text" in result:
-        # The model-visible terminal result is the transcript itself, not a
-        # JSON object. _terminal_text also carries concise running/input notices.
-        output = result.get("_terminal_text")
-        if output is None:
-            output = result.get("_terminal_output")
+    if tool_name == "terminal" and ("_terminal_text" in result or "_terminal_output" in result):
+        # Retrieval uses the captured output, not the potentially shortened screen preview.
+        output = result.get("_terminal_output")
+        if output is None or (not output and result.get("_terminal_text")):
+            output = result.get("_terminal_text")
         return _normalize_terminal_text(output)
     hidden = {
         "_localagent_internal", "_model_attachment", "operation_id", "process_id",
@@ -245,12 +257,9 @@ def _sanitize_messages_for_ollama(messages: list[dict], tool_definitions=None) -
                     and "_terminal_text" in payload["result"]
                 ):
                     terminal_result = payload["result"]
-                    message["content"] = _normalize_terminal_text(terminal_result.get("_terminal_text"))
-                    if terminal_result.get("output_truncated") and payload.get("result_id"):
-                        message["content"] += (
-                            f"\n\n[Terminal output was truncated; retrieve the full output with "
-                            f"get_tool_result(result_id='{payload['result_id']}', start=0, length=4000).]"
-                        )
+                    message["content"] = _terminal_receipt_text(
+                        terminal_result, payload.get("result_id")
+                    )
                 elif (
                     isinstance(payload, dict)
                     and isinstance(payload.get("result"), dict)
@@ -2787,12 +2796,7 @@ def _build_tool_messages(tool_name: str, content: str) -> list[dict]:
         if payload.get("result_id"):
             internal["result_id"] = payload["result_id"]
         message["_localagent_internal"] = internal
-        message["content"] = _normalize_terminal_text(result.get("_terminal_text"))
-        if result.get("output_truncated") and payload.get("result_id"):
-            message["content"] += (
-                f"\n\n[Terminal output was truncated; retrieve the full output with "
-                f"get_tool_result(result_id='{payload['result_id']}', start=0, length=4000).]"
-            )
+        message["content"] = _terminal_receipt_text(result, payload.get("result_id"))
         return [message]
     model_attachments = []
     if isinstance(result, dict):
