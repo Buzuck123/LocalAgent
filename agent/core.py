@@ -139,20 +139,22 @@ def _parse_tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
     return {}, f"Tool arguments must be an object or JSON string, got {type(value).__name__}"
 
 
+def _normalize_terminal_text(value) -> str:
+    """Normalize PTY line endings without adding shell/controller formatting."""
+    return str(value or "").replace("\\r\\n", "\\n")
+
+
 def _model_visible_tool_result(tool_name: str, result):
     """Remove controller/runtime metadata before evidence or retrieval reaches the LLM."""
     if not isinstance(result, dict):
         return result
     if tool_name == "terminal" and "_terminal_text" in result:
-        # Preserve the full captured terminal output for get_tool_result; the
-        # initial tool message separately carries the concise screen/status text.
-        output = result.get("_terminal_output")
+        # The model-visible terminal result is the transcript itself, not a
+        # JSON object. _terminal_text also carries concise running/input notices.
+        output = result.get("_terminal_text")
         if output is None:
-            output = result.get("_terminal_text")
-        output = str(output or "")
-        if result.get("state") == "waiting_input":
-            output = (output.rstrip() + "\\n[Терминал ожидает ввода. Передай ответ следующей командой terminal.]").strip()
-        return {"output": output}
+            output = result.get("_terminal_output")
+        return _normalize_terminal_text(output)
     hidden = {
         "_localagent_internal", "_model_attachment", "operation_id", "process_id",
         "pool", "process_pool", "shell_id", "operation_token", "session", "cursor", "next_cursor", "oldest_cursor",
@@ -168,6 +170,8 @@ def _model_visible_tool_content(tool_name: str, content: str) -> str:
         return str(content)
     if not isinstance(payload, dict):
         return str(content)
+    if tool_name == "terminal" and isinstance(payload.get("result"), dict):
+        return _model_visible_tool_result(tool_name, payload["result"])
     if isinstance(payload.get("result"), dict):
         payload["result"] = _model_visible_tool_result(tool_name, payload["result"])
     return json.dumps(payload, ensure_ascii=False, default=str)
@@ -237,11 +241,12 @@ def _sanitize_messages_for_ollama(messages: list[dict], tool_definitions=None) -
                     and isinstance(payload.get("result"), dict)
                     and "_terminal_text" in payload["result"]
                 ):
-                    message["content"] = str(payload["result"].get("_terminal_text") or "")
-                    if payload.get("result_id"):
+                    terminal_result = payload["result"]
+                    message["content"] = _normalize_terminal_text(terminal_result.get("_terminal_text"))
+                    if terminal_result.get("output_truncated") and payload.get("result_id"):
                         message["content"] += (
-                            f"\n\n[Result archived as {payload['result_id']}; "
-                            "use get_tool_result with this result_id and start/length to retrieve more.]"
+                            f"\n\n[Terminal output was truncated; retrieve the full output with "
+                            f"get_tool_result(result_id='{payload['result_id']}', start=0, length=4000).]"
                         )
                 elif (
                     isinstance(payload, dict)
@@ -2779,11 +2784,11 @@ def _build_tool_messages(tool_name: str, content: str) -> list[dict]:
         if payload.get("result_id"):
             internal["result_id"] = payload["result_id"]
         message["_localagent_internal"] = internal
-        message["content"] = str(result.get("_terminal_text") or "")
-        if payload.get("result_id"):
+        message["content"] = _normalize_terminal_text(result.get("_terminal_text"))
+        if result.get("output_truncated") and payload.get("result_id"):
             message["content"] += (
-                f"\n\n[Result archived as {payload['result_id']}; "
-                "use get_tool_result with this result_id and start/length to retrieve more.]"
+                f"\n\n[Terminal output was truncated; retrieve the full output with "
+                f"get_tool_result(result_id='{payload['result_id']}', start=0, length=4000).]"
             )
         return [message]
     model_attachments = []
