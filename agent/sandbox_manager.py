@@ -794,7 +794,7 @@ print(json.dumps(result))
         # process belonging to a particular SWE-ReX operation.
         try:
             process_snapshot = self.run_diagnostic_terminal(
-                conversation_id, "ps -eo pid,ppid,stat,etime,args", timeout=10,
+                conversation_id, "ps -eo pid,ppid,stat,etime,comm", timeout=10,
             )
             snapshot["process_snapshot"] = {
                 "ok": process_snapshot.get("ok") is True,
