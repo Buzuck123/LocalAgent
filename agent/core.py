@@ -167,11 +167,14 @@ def _model_visible_tool_content(tool_name: str, content: str) -> str:
     try:
         payload = json.loads(content)
     except (TypeError, json.JSONDecodeError):
-        return str(content)
+        return _normalize_terminal_text(content) if tool_name == "terminal" else str(content)
+    if tool_name == "terminal":
+        if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+            return _model_visible_tool_result(tool_name, payload["result"])
+        # Terminal output may itself be valid JSON; keep it as printed text.
+        return _normalize_terminal_text(content)
     if not isinstance(payload, dict):
         return str(content)
-    if tool_name == "terminal" and isinstance(payload.get("result"), dict):
-        return _model_visible_tool_result(tool_name, payload["result"])
     if isinstance(payload.get("result"), dict):
         payload["result"] = _model_visible_tool_result(tool_name, payload["result"])
     return json.dumps(payload, ensure_ascii=False, default=str)
