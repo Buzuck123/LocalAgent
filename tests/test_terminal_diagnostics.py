@@ -171,9 +171,7 @@ def test_normal_long_terminal_result_exposes_only_terminal_output():
         "exit_code": 1,
         "_diagnostic_due": False,
     }
-    assert core._model_visible_tool_result("terminal", result) == {
-        "output": "raw terminal output"
-    }
+    assert core._model_visible_tool_result("terminal", result) == "raw terminal output"
 
 
 def test_terminal_recovery_report_is_separate_from_normal_output():
