@@ -164,12 +164,12 @@ def test_terminal_rejects_actual_nul_byte(monkeypatch):
         raise AssertionError("NUL byte was accepted")
 
 
-def test_terminal_tool_requires_command_argument_but_accepts_empty_wait_command():
+def test_terminal_command_is_optional_for_minimal_wait_call():
     terminal = next(
         item["function"] for item in TOOL_DEFINITIONS
         if item["function"]["name"] == "terminal"
     )
-    assert terminal["parameters"]["required"] == ["command"]
+    assert "required" not in terminal["parameters"]
     assert terminal["parameters"]["properties"]["command"]["type"] == "string"
 
 
