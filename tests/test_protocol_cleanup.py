@@ -391,7 +391,7 @@ def test_terminal_receipt_uses_plain_completed_output_and_preserves_result_id():
     messages = _build_tool_messages("terminal", json.dumps({
         "ok": True,
         "result": {
-            "_terminal_text": "screen preview\\r\\n[internal monitor notice]",
+            "_terminal_text": "first line\\r\\nsecond line\\r\\n",
             "_terminal_output": "first line\\r\\nsecond line\\r\\n",
             "state": "completed",
         },
