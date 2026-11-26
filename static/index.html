@@ -553,8 +553,9 @@ async function loadTasks(){
     let ts=await api('/api/tasks'+(current?'?conversation_id='+encodeURIComponent(current):''));
     const activeStatuses=['running','queued','paused','interrupted','failed','cancelling'];
     const active=ts.find(t=>t.status==='running')||ts.find(t=>t.status==='queued')||ts.find(t=>activeStatuses.includes(t.status))||ts[0];
-    const currentText=active?(active.awaiting_clarification?'Ожидает ответа на уточнение — отправьте ответ обычным сообщением':(active.status==='cancelling'?'Отмена выполняется':active.status)+' · '+(active.activity||'Состояние задачи')):'Нет задач в этом диалоге';
-    if($('activity-current').textContent!==currentText)$('activity-current').textContent=currentText;
+    // loadActivity is the single owner of the inline activity summary.
+    // Updating it here as well caused the summary to alternate between two
+    // formats on every polling cycle.
     await loadActivity(active||null);
     const signature=JSON.stringify(ts.map(t=>({
         id:t.id,status:t.status,activity:t.activity,error:t.error,result:t.result,
