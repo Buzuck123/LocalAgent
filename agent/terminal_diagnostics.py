@@ -127,6 +127,8 @@ def build_diagnostic_context(snapshot: dict[str, Any],
             "Успешная read-only проверка списка процессов контейнера; не зависит от решения диагностической LLM вызывать отдельный инструмент.",
             "Список относится ко всему контейнеру; принадлежность PID конкретной SWE-ReX operation не доказана.",
         )
+        evidence[-1]["success"] = True
+        evidence[-1]["command"] = "ps -eo pid,ppid,stat,etime,comm"
     elif isinstance(process_snapshot, dict):
         add(
             "diagnostic_process_snapshot_unavailable", "read_only_diagnostic_bash", "container",
