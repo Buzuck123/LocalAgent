@@ -209,3 +209,33 @@ def test_truncated_terminal_transcript_keeps_archive_retrieval_hint():
     assert message["content"].startswith("visible output\n")
     assert "tr_full" in message["content"]
     assert "get_tool_result" in message["content"]
+
+
+def test_restored_terminal_tool_message_is_plain_normalized_text():
+    import json
+    from agent.core import _sanitize_messages_for_ollama
+
+    content = json.dumps({
+        "ok": True,
+        "result": {
+            "_terminal_text": "line one\r\nline two\r\n",
+            "state": "completed",
+            "output_truncated": False,
+        },
+        "result_id": "tr_old",
+    })
+    messages = _sanitize_messages_for_ollama([{
+        "role": "tool",
+        "tool_name": "terminal",
+        "content": content,
+    }])
+    assert messages[0]["content"] == "line one\nline two\n"
+
+
+def test_terminal_json_stdout_is_not_reinterpreted_as_tool_metadata():
+    from agent.core import _model_visible_tool_content
+
+    printed_json = '{ "status": "ok", "count": 2 }\r\n'
+    assert _model_visible_tool_content("terminal", printed_json) == (
+        '{ "status": "ok", "count": 2 }\n'
+    )
