@@ -50,9 +50,13 @@ def test_pause_report_separates_success_and_failure(monkeypatch, tmp_path):
     assert "Проверить результат" in report
 
 
-def test_activity_panel_is_below_dialog_and_has_operation_history():
+def test_activity_disclosure_is_below_dialog_and_has_operation_history():
     html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text(encoding="utf-8")
-    assert html.index('<div id="messages">') < html.index('<div id="activity-panel"')
+    assert html.index('<div id="messages">') < html.index('<details id="activity-inline"')
+    assert 'id="activity-current"' in html
+    assert 'id="activity-plan"' in html
     assert 'id="activity-history"' in html
     assert "'/api/tasks/'+encodeURIComponent(task.id)+'/operations" in html
-    assert html.count('id="activity-panel"') == 1
+    assert html.count('id="activity-inline"') == 1
+    assert 'id="task-sidebar"' in html
+    assert 'id="tasklist"' in html
