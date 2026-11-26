@@ -787,6 +787,28 @@ print(json.dumps(result))
                     snapshot["diagnostic_cursor"] = sample_state.get("cursor")
                 except Exception as exc:
                     snapshot["operation_poll_error"] = type(exc).__name__
+        # Always collect a read-only process snapshot in the isolated diagnostic
+        # session. The diagnostic LLM must not be able to omit this evidence merely
+        # by choosing not to call diagnostic_terminal itself. This is container-wide
+        # evidence only; it does not by itself identify or prove the lifetime of the
+        # process belonging to a particular SWE-ReX operation.
+        try:
+            process_snapshot = self.run_diagnostic_terminal(
+                conversation_id, "ps -eo pid,ppid,stat,etime,args", timeout=10,
+            )
+            snapshot["process_snapshot"] = {
+                "ok": process_snapshot.get("ok") is True,
+                "exit_code": process_snapshot.get("exit_code"),
+                "stdout": str(process_snapshot.get("stdout") or "")[-12000:],
+                "stderr": str(process_snapshot.get("stderr") or "")[-1500:],
+                "scope": "container-wide; process-to-operation ownership is not established",
+            }
+        except Exception as exc:
+            snapshot["process_snapshot"] = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                "scope": "unavailable; no conclusion about operation process liveness",
+            }
         if container_id:
             for key, args in (
                 ("container_inspect", ("inspect", container_id)),
