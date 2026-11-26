@@ -373,9 +373,8 @@ def task_operation_detail(tid: str, operation_id: str):
         if not raw:
             return None
         raw = str(raw)
-        if len(raw) > 250_000:
-            return {"truncated": True, "serialized_chars": len(raw),
-                    "note": "Результат слишком велик для безопасного предпросмотра"}
+        if len(raw) > 100_000:
+            return {"truncated": True, "preview": raw[:limit], "serialized_chars": len(raw)}
         try:
             value = json.loads(raw)
         except (TypeError, json.JSONDecodeError):

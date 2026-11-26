@@ -34,6 +34,10 @@ def test_execution_endpoint_returns_bounded_state_and_plan(monkeypatch):
     assert result["events"][0]["detail"] == "файл не найден"
     assert result["plan"]["completed_steps"] == 1
     assert result["plan"]["remaining_steps"] == ["Создать результат"]
+    assert result["plan"]["steps"] == [
+        {"id": "s1", "description": "Изучить входные данные", "status": "completed"},
+        {"id": "s2", "description": "Создать результат", "status": "pending"},
+    ]
 
 
 def test_execution_endpoint_returns_404_for_unknown_task(monkeypatch):
