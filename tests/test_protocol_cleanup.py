@@ -384,7 +384,7 @@ def test_planning_tool_call_summaries_exclude_retired_terminal_ids_and_arguments
     assert visible[1]["arguments"] == {"source_path": "/workspace/out.txt"}
     assert "operation_id" not in str(visible)
 
-def test_terminal_receipt_uses_plain_completed_output_and_preserves_result_id():
+def test_terminal_receipt_uses_plain_completed_output_without_archive_id():
     import json
     from agent.core import _build_tool_messages
 
@@ -397,7 +397,8 @@ def test_terminal_receipt_uses_plain_completed_output_and_preserves_result_id():
         },
         "result_id": "tr_receipt_1",
     }))
-    assert messages[0]["content"] == "first line\nsecond line\n[result_id=tr_receipt_1]"
+    assert messages[0]["content"] == "first line\nsecond line\n"
+    assert "tr_receipt_1" not in messages[0]["content"]
 
 
 def test_truncated_terminal_receipt_explains_how_to_retrieve_full_output():
