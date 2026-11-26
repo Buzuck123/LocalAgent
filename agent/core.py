@@ -146,7 +146,14 @@ def _normalize_terminal_text(value) -> str:
 
 def _terminal_receipt_text(result: dict, result_id=None) -> str:
     """Build the concise terminal transcript while preserving its retrieval handle."""
-    output = _normalize_terminal_text(result.get("_terminal_text"))
+    state = str(result.get("state") or "")
+    if state in {"completed", "failed", "interrupted", "timed_out"} and result.get("_terminal_output"):
+        source = result.get("_terminal_output")
+    else:
+        source = result.get("_terminal_text")
+        if source is None:
+            source = result.get("_terminal_output")
+    output = _normalize_terminal_text(source)
     if result.get("output_truncated") and result_id:
         output += (
             f"\n\n[Output truncated; retrieve the complete output with "
