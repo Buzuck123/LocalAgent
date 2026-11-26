@@ -383,3 +383,38 @@ def test_planning_tool_call_summaries_exclude_retired_terminal_ids_and_arguments
     assert visible[0]["arguments"] == {"command": "pwd", "timeout": 10}
     assert visible[1]["arguments"] == {"source_path": "/workspace/out.txt"}
     assert "operation_id" not in str(visible)
+
+def test_terminal_receipt_uses_plain_completed_output_and_preserves_result_id():
+    import json
+    from agent.core import _build_tool_messages
+
+    messages = _build_tool_messages("terminal", json.dumps({
+        "ok": True,
+        "result": {
+            "_terminal_text": "screen preview\\r\\n[internal monitor notice]",
+            "_terminal_output": "first line\\r\\nsecond line\\r\\n",
+            "state": "completed",
+        },
+        "result_id": "tr_receipt_1",
+    }))
+    assert messages[0]["content"] == "first line\\nsecond line\\n[result_id=tr_receipt_1]"
+
+
+def test_truncated_terminal_receipt_explains_how_to_retrieve_full_output():
+    import json
+    from agent.core import _build_tool_messages, _model_visible_tool_result
+
+    result = {
+        "_terminal_text": "short preview",
+        "_terminal_output": "complete captured output",
+        "output_truncated": True,
+        "state": "completed",
+    }
+    message = _build_tool_messages("terminal", json.dumps({
+        "ok": True, "result": result, "result_id": "tr_full_1",
+    }))[0]["content"]
+    assert "short preview" in message
+    assert "get_tool_result(result_id='tr_full_1'" in message
+    assert "result_id=tr_full_1" in message
+    assert _model_visible_tool_result("terminal", result) == "complete captured output"
+
