@@ -445,6 +445,15 @@ async function loadActivity(task){
             api('/api/tasks/'+encodeURIComponent(task.id)+'/execution'),
             api('/api/tasks/'+encodeURIComponent(task.id)+'/usage')
         ]);
+        // Fetch every page: the API returns total separately from the current page.
+        // Keep the page size modest so large task histories do not create one huge request.
+        const totalOperations=Number(data.total)||0;
+        for(let offset=(data.operations||[]).length;offset<totalOperations;offset+=50){
+            const page=await api('/api/tasks/'+encodeURIComponent(task.id)+'/operations?limit=50&offset='+offset);
+            const operations=page.operations||[];
+            if(!operations.length)break;
+            data.operations=(data.operations||[]).concat(operations);
+        }
         const state=execution.task_state||{};
         const counts=`${state.actions_succeeded||0} успешно · ${state.actions_failed||0} ошибок`;
         const labels={running:'Выполняется',queued:'В очереди',paused:'Приостановлена',interrupted:'Прервана',failed:'Ошибка',completed:'Завершена',cancelling:'Отменяется'};
@@ -504,7 +513,7 @@ async function loadActivity(task){
             if(event.detail){const detail=document.createElement('div');detail.className='timeline-detail';detail.textContent=event.detail;row.append(detail)}
             fragment.append(row);
         }
-        for(const op of (data.operations||[]).slice(0,30)){
+        for(const op of (data.operations||[])){
             const row=document.createElement('details');row.className='tool-card '+(op.status||'');
             const summary=document.createElement('summary');summary.className='tool-summary';
             const icon=document.createElement('span');icon.className='tool-status-icon';
