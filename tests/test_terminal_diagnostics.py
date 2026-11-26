@@ -560,7 +560,7 @@ def test_automatic_process_snapshot_satisfies_read_only_recovery_evidence():
         "process_snapshot": {
             "ok": True,
             "exit_code": 0,
-            "stdout": "PID PPID STAT ELAPSED COMMAND\\n1 0 Ssl 01:00 python3 server.py\\n",
+            "stdout": "PID PPID STAT ELAPSED COMM\\n1 0 Ssl 01:00 python3\\n",
         },
     }
     _, evidence2 = build_diagnostic_context(second, evidence1)
