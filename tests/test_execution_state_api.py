@@ -44,3 +44,38 @@ def test_execution_endpoint_returns_404_for_unknown_task(monkeypatch):
         assert exc.status_code == 404
     else:
         raise AssertionError("unknown task should return 404")
+
+
+def test_operation_detail_is_task_scoped_and_redacts_secrets(monkeypatch):
+    operation = {
+        "operation_id": "op-1",
+        "task_id": "task-1",
+        "tool_name": "terminal",
+        "status": "completed",
+        "created_at": "2026-11-26T10:00:00+00:00",
+        "updated_at": "2026-11-26T10:00:01+00:00",
+        "arguments_json": json.dumps({"command": "echo ok", "api_key": "do-not-show"}),
+        "result_json": json.dumps({"exit_code": 0, "stdout": "ok", "password": "hidden"}),
+    }
+    monkeypatch.setattr(web.db, "get_task", lambda tid: {"id": tid})
+    monkeypatch.setattr(web.db, "get_tool_operation", lambda operation_id: operation)
+
+    result = web.task_operation_detail("task-1", "op-1")
+
+    assert result["arguments"]["command"] == "echo ok"
+    assert result["arguments"]["api_key"] == "[REDACTED]"
+    assert result["result"]["stdout"] == "ok"
+    assert result["result"]["password"] == "[REDACTED]"
+
+
+def test_operation_detail_does_not_cross_task_boundary(monkeypatch):
+    operation = {"operation_id": "op-1", "task_id": "other-task"}
+    monkeypatch.setattr(web.db, "get_task", lambda tid: {"id": tid})
+    monkeypatch.setattr(web.db, "get_tool_operation", lambda operation_id: operation)
+
+    try:
+        web.task_operation_detail("task-1", "op-1")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    else:
+        raise AssertionError("operation from another task must not be exposed")
