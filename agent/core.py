@@ -152,9 +152,14 @@ def _terminal_receipt_text(result: dict, result_id=None) -> str:
     if source is None:
         source = result.get("_terminal_output")
     output = _normalize_terminal_text(source)
+    if result_id and not result.get("state"):
+        # Older/incomplete receipts may not carry a terminal state. Preserve the
+        # archive handle rather than making a potentially unfinished result unretrievable.
+        output += f"\n\n[result_id={result_id}]"
     if result.get("output_truncated") and result_id:
         output += (
-            f"\n\n[Output truncated; retrieve the complete output with "
+            f"\n\n[result_id={result_id}]"
+            f"\n[Output truncated; retrieve the complete output with "
             f"get_tool_result(result_id='{result_id}', start=0, length=4000).]"
         )
     return output
