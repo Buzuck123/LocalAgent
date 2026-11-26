@@ -564,10 +564,10 @@ TOOL_DEFINITIONS.insert(1, {"type": "function", "function": {
     ),
     "parameters": {"type": "object", "properties": {
         "command": {"type": "string", "maxLength": 100000,
-                    "description": "Bash command, empty string to wait, interactive input, or CTRL+C."},
+                    "description": "Bash command to execute. Use an empty string only to wait for an active command; while it is active, send interactive input or CTRL+C here."},
         "timeout": {"type": ["integer", "null"], "minimum": 1, "maximum": 600, "default": None,
                     "description": "Optional hard execution limit in seconds for a new command."}},
-        "additionalProperties": False}}})
+        "required": ["command"], "additionalProperties": False}}})
 
 TOOL_DEFINITIONS.insert(2, {"type": "function", "function": {
     "name": "reset_terminal_session",
