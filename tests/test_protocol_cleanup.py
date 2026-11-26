@@ -391,13 +391,13 @@ def test_terminal_receipt_uses_plain_completed_output_and_preserves_result_id():
     messages = _build_tool_messages("terminal", json.dumps({
         "ok": True,
         "result": {
-            "_terminal_text": "first line\\r\\nsecond line\\r\\n",
-            "_terminal_output": "first line\\r\\nsecond line\\r\\n",
+            "_terminal_text": "first line\r\nsecond line\r\n",
+            "_terminal_output": "first line\r\nsecond line\r\n",
             "state": "completed",
         },
         "result_id": "tr_receipt_1",
     }))
-    assert messages[0]["content"] == "first line\\nsecond line\\n[result_id=tr_receipt_1]"
+    assert messages[0]["content"] == "first line\nsecond line\n[result_id=tr_receipt_1]"
 
 
 def test_truncated_terminal_receipt_explains_how_to_retrieve_full_output():
