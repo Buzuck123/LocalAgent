@@ -103,11 +103,15 @@ def estimate_tokens(messages: list[dict[str, Any]], model: str | None = None,
                 pass
     except ImportError:
         pass
-    model_name = str(model or "").lower()
-    chars_per_token = 3.0 if any(name in model_name for name in ("qwen", "gemma", "deepseek")) else 3.3
+    # Model-family names do not identify a tokenizer. In particular, the old
+    # 3 chars/token rule materially undercounted Cyrillic prompts. Use a
+    # deliberately conservative script-aware fallback until a provider-specific
+    # tokenizer is injected; this is a budget guard, not an exact token count.
     cjk = sum(1 for ch in text if "\u3400" <= ch <= "\u9fff" or "\u3040" <= ch <= "\u30ff" or "\uac00" <= ch <= "\ud7af")
-    other = max(0, len(text) - cjk)
-    return max(1, int(other / chars_per_token + cjk / 1.5) + overhead)
+    cyrillic = sum(1 for ch in text if "\u0400" <= ch <= "\u052f")
+    remaining = max(0, len(text) - cjk - cyrillic)
+    estimated = remaining / 2.7 + cyrillic / 1.8 + cjk / 1.3
+    return max(1, int(estimated * 1.15) + overhead)
 
 
 def context_growth_forecast(messages: list[dict[str, Any]], num_ctx: int, *,
@@ -134,7 +138,7 @@ def context_growth_forecast(messages: list[dict[str, Any]], num_ctx: int, *,
         "expected_growth_tokens": expected,
         "projected_tokens": projected,
         "projected_ratio": round(projected / limit, 4),
-        "estimate_kind": "conservative_heuristic",
+        "estimate_kind": "conservative_script_aware_heuristic",
     }
 
 

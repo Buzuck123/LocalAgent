@@ -295,3 +295,19 @@ def test_context_growth_forecast_adds_observed_input_growth_and_response_reserve
     assert stats["observed_next_input_tokens"] > 0
     assert stats["response_reserve_tokens"] == 2000
     assert stats["expected_growth_tokens"] == stats["observed_next_input_tokens"] + 2000
+
+
+def test_cyrillic_context_estimate_is_more_conservative_than_old_three_chars_rule():
+    latin = estimate_tokens([{"role": "user", "content": "a" * 9000}])
+    cyrillic = estimate_tokens([{"role": "user", "content": "я" * 9000}])
+    assert cyrillic > latin
+    assert cyrillic >= 5000
+
+
+def test_context_forecast_reports_script_aware_estimator():
+    stats = context_growth_forecast(
+        [{"role": "user", "content": "Проверка размера контекста" * 100}],
+        32768,
+        model="qwen3.5:9b",
+    )
+    assert stats["estimate_kind"] == "conservative_script_aware_heuristic"

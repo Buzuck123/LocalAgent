@@ -5832,32 +5832,61 @@ class Agent:
                         "tool_schema_tokens_included": True,
                         "response_reserve_included": True,
                     }
-                if context_stats["projected_ratio"] >= 0.70:
+                if context_stats["projected_ratio"] >= 0.58:
                     archive = state.setdefault("archived_messages", [])
                     prior_archive = list(archive) if isinstance(archive, list) else []
-                    messages, summary, archived = compact_messages(
-                        messages,
-                        goal=task["user_message"],
-                        previous_summary="",  # raw archived messages remain the authoritative source
-                        keep_recent=12,
-                        prior_archived_messages=prior_archive,
-                        goal_event_id=task.get("initial_message_event_id"),
-                    )
+                    # Budget the compacted projection from the selected context,
+                    # not from a fixed 24k-character summary. Re-run deterministic
+                    # compaction with a smaller recent tail until it fits.
+                    target_tokens = max(1024, int(num_ctx * 0.48))
+                    summary_char_budget = max(1800, min(9000, int(target_tokens * 1.65)))
+                    compacted = None
+                    summary = ""
+                    archived = []
+                    for keep_recent in (8, 5, 3, 1):
+                        compacted, summary, archived = compact_messages(
+                            messages,
+                            goal=task["user_message"],
+                            previous_summary="",
+                            keep_recent=keep_recent,
+                            max_summary_chars=summary_char_budget,
+                            prior_archived_messages=prior_archive,
+                            goal_event_id=task.get("initial_message_event_id"),
+                        )
+                        projected_after = estimate_tokens(
+                            [*compacted, tool_budget_message], model=selected_model
+                        ) + int(checkpoint.get("model_num_predict") or 0)
+                        if projected_after <= target_tokens:
+                            break
+                        summary_char_budget = max(1200, int(summary_char_budget * 0.70))
+                    # Do not let a second LLM summarization silently expand the
+                    # compacted context. Accept it only when materially smaller.
                     llm_summary = _compact_context_summary_with_llm(
                         task["user_message"], summary, reasoning=reasoning,
                     )
-                    if llm_summary:
+                    if llm_summary and estimate_tokens(
+                        [{"role": "system", "content": llm_summary}], model=selected_model
+                    ) < estimate_tokens(
+                        [{"role": "system", "content": summary}], model=selected_model
+                    ):
                         summary = llm_summary
-                        state["context_compaction_mode"] = "llm"
+                        state["context_compaction_mode"] = "llm_smaller"
                     else:
-                        state["context_compaction_mode"] = "deterministic_fallback"
+                        state["context_compaction_mode"] = "deterministic"
                     if isinstance(archive, list):
-                        archive.extend(archived)
-                    summary_message = next((m for m in messages if isinstance(m, dict) and m.get("role") == "system" and str(m.get("content", "")).startswith(CONTEXT_SUMMARY_MARKER)), None)
+                        known = {m.get("_event_id") for m in archive if isinstance(m, dict)}
+                        archive.extend(m for m in archived if m.get("_event_id") not in known)
+                    summary_message = next((m for m in compacted if isinstance(m, dict) and m.get("role") == "system" and str(m.get("content", "")).startswith(CONTEXT_SUMMARY_MARKER)), None)
                     if summary_message is not None:
                         summary_message["content"] = CONTEXT_SUMMARY_MARKER + "\n" + summary
+                    messages = compacted
                     state["context_summary"] = summary
                     state["context_compactions"] = int(state.get("context_compactions", 0)) + 1
+                    state["context_stats_after_compaction"] = context_growth_forecast(
+                        [*messages, tool_budget_message], num_ctx,
+                        expected_output_tokens=checkpoint.get("model_num_predict"),
+                        model=selected_model,
+                    )
                     state["messages"] = messages
                     state["phase"] = "thinking"
                     state["activity"] = "Сокращает рабочий контекст, сохраняя состояние задачи"

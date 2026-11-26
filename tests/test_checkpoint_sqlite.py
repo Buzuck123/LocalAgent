@@ -480,3 +480,34 @@ def test_tool_running_recovers_completed_write_from_journal(
     assert recovered_task["result"] == "Файл создан, результат восстановлен."
     assert final_checkpoint["phase"] == "completed"
     assert "current_tool" not in final_checkpoint
+
+
+def test_sqlite_maintenance_reclaims_free_pages_and_truncates_wal(tmp_path, monkeypatch):
+    import sqlite3
+    from types import SimpleNamespace
+    from agent import db
+
+    path = tmp_path / "maintenance.sqlite3"
+    monkeypatch.setattr(db, "settings", SimpleNamespace(database_path=path))
+    db.init_db()
+
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE growth_test (payload BLOB)")
+    con.execute("INSERT INTO growth_test VALUES (?)", (b"x" * (2 * 1024 * 1024),))
+    con.commit()
+    con.execute("DELETE FROM growth_test")
+    con.commit()
+    con.close()
+
+    before = path.stat().st_size
+    result = db.maintain_database(
+        force_checkpoint=True, vacuum_threshold=0.10, minimum_size_bytes=0
+    )
+    after = path.stat().st_size
+
+    assert result["vacuum"] == "completed"
+    assert after < before
+    assert result["free_ratio"] > 0
+    with sqlite3.connect(path) as check:
+        assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert check.execute("SELECT COUNT(*) FROM growth_test").fetchone()[0] == 0

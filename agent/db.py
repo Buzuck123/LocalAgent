@@ -30,11 +30,63 @@ def connect():
     con = sqlite3.connect(str(settings.database_path), timeout=30, factory=_ClosingConnection)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys=ON")
-    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=30000")
+    # Set per-connection durability/performance policy. journal_mode=WAL is
+    # established once in init_db; querying/changing it on every connection
+    # needlessly contends with active readers and writers.
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA wal_autocheckpoint=1000")
     return con
 
+
+def maintain_database(*, force_checkpoint: bool = False, vacuum_threshold: float = 0.50,
+                      minimum_size_bytes: int = 32 * 1024 * 1024) -> dict[str, Any]:
+    """Bound SQLite/WAL disk growth without touching live application data.
+
+    WAL is checkpointed at startup. VACUUM is only run when the main database
+    is both sizeable and mostly free pages; ordinary writes never trigger it.
+    """
+    path = Path(settings.database_path)
+    if not path.exists():
+        return {"checkpoint": "skipped", "vacuum": "skipped", "reason": "database_missing"}
+    result: dict[str, Any] = {}
+    with _lock:
+        con = sqlite3.connect(str(path), timeout=30, factory=_ClosingConnection)
+        try:
+            con.execute("PRAGMA busy_timeout=30000")
+            if force_checkpoint:
+                row = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                result["checkpoint"] = list(row) if row else "completed"
+            page_count = int(con.execute("PRAGMA page_count").fetchone()[0])
+            free_pages = int(con.execute("PRAGMA freelist_count").fetchone()[0])
+            db_size = path.stat().st_size if path.exists() else 0
+            free_ratio = free_pages / max(1, page_count)
+            result.update({
+                "database_size_bytes": db_size,
+                "page_count": page_count,
+                "free_pages": free_pages,
+                "free_ratio": round(free_ratio, 4),
+            })
+            if db_size >= minimum_size_bytes and free_ratio >= vacuum_threshold:
+                con.execute("VACUUM")
+                # VACUUM may itself write into the WAL; truncate once more so
+                # startup maintenance does not leave its own large journal.
+                row = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                result["post_vacuum_checkpoint"] = list(row) if row else "completed"
+                result["vacuum"] = "completed"
+                result["database_size_after_bytes"] = path.stat().st_size
+            else:
+                result["vacuum"] = "not_needed"
+            wal_path = Path(str(path) + "-wal")
+            result["wal_size_bytes"] = wal_path.stat().st_size if wal_path.exists() else 0
+        finally:
+            con.close()
+    return result
+
 def init_db():
+    # WAL is a database-level mode; set it once rather than on every connect().
     with _lock, connect() as con:
+        con.execute("PRAGMA journal_mode=WAL")
         con.executescript("""
         CREATE TABLE IF NOT EXISTS conversations (
             id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -199,6 +251,16 @@ def init_db():
         # A process restart cannot safely resume an in-flight HTTP/tool call.
         # Mark interrupted tasks explicitly so users can inspect/retry them.
         con.execute("UPDATE tasks SET status='interrupted', error='Application restarted while task was running', updated_at=? WHERE status='running'", (now(),))
+
+    # Reclaim abandoned pages from earlier versions and truncate a stale WAL.
+    # This is startup-only and guarded by size/free-page thresholds.
+    try:
+        maintain_database(force_checkpoint=True)
+    except sqlite3.OperationalError as exc:
+        # Another process may be using the DB during a rolling restart. Normal
+        # SQLite auto-checkpointing remains enabled; retry on next startup.
+        import logging
+        logging.getLogger(__name__).warning("SQLite startup maintenance deferred: %s", exc)
 
 def get_sandbox(conversation_id: str) -> dict | None:
     with connect() as con:
