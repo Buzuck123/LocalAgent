@@ -535,13 +535,27 @@ async function loadActivity(task){
                     const addSection=(label,value)=>{
                         const section=document.createElement('section');section.className='tool-detail-section';
                         const heading=document.createElement('div');heading.className='tool-detail-heading';heading.textContent=label;section.append(heading);
-                        const pre=document.createElement('pre');pre.textContent=value===null||value===undefined?'Нет данных':JSON.stringify(value,null,2);section.append(pre);
+                        const pre=document.createElement('pre');pre.textContent=value===null||value===undefined?'Нет данных':typeof value==='string'?value:JSON.stringify(value,null,2);section.append(pre);
                         const copy=document.createElement('button');copy.type='button';copy.className='copy-button';copy.textContent='Копировать';
                         copy.onclick=async()=>{try{await navigator.clipboard.writeText(pre.textContent);copy.textContent='Скопировано'}catch(_){copy.textContent='Не удалось скопировать'}};
                         section.append(copy);detail.append(section);
                     };
-                    addSection('Аргументы',full.arguments);
-                    addSection('Результат',full.result);
+                    if(full.tool_name==='terminal'){
+                        const args=full.arguments&&typeof full.arguments==='object'?full.arguments:{};
+                        const raw=full.result;
+                        const terminalResult=raw&&typeof raw==='object'&&raw.result&&typeof raw.result==='object'?raw.result:raw;
+                        const command=args.command??terminalResult?._terminal_command??'';
+                        let output='';
+                        if(typeof terminalResult==='string')output=terminalResult;
+                        else if(terminalResult&&typeof terminalResult==='object'){
+                            output=terminalResult._terminal_text??terminalResult._terminal_output??terminalResult.output??terminalResult.stdout??terminalResult.error??'';
+                        }
+                        addSection('Команда',command||'Ожидание завершения команды');
+                        addSection('Вывод',output||'Команда не вернула текстовый вывод.');
+                    }else{
+                        addSection('Аргументы',full.arguments);
+                        addSection('Результат',full.result);
+                    }
                     row.dataset.loaded='1';
                 }catch(error){detail.textContent='Не удалось загрузить подробности: '+error.message}
                 finally{row.dataset.loading='0'}
