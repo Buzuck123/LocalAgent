@@ -162,3 +162,50 @@ def test_terminal_rejects_actual_nul_byte(monkeypatch):
         assert "NUL" in str(exc)
     else:
         raise AssertionError("NUL byte was accepted")
+
+
+def test_terminal_tool_requires_command_argument_but_accepts_empty_wait_command():
+    terminal = next(
+        item["function"] for item in TOOL_DEFINITIONS
+        if item["function"]["name"] == "terminal"
+    )
+    assert terminal["parameters"]["required"] == ["command"]
+    assert terminal["parameters"]["properties"]["command"]["type"] == "string"
+
+
+def test_model_receives_plain_normalized_terminal_transcript_without_archive_noise():
+    import json
+    from agent.core import _build_tool_messages, _model_visible_tool_result
+
+    result = {
+        "_terminal_text": "first line\r\nsecond line\r\n",
+        "_terminal_output": "first line\r\nsecond line\r\n",
+        "state": "completed",
+        "exit_code": 0,
+        "output_truncated": False,
+    }
+    payload = json.dumps({"ok": True, "result": result, "result_id": "tr_test"})
+    message = _build_tool_messages("terminal", payload)[0]
+
+    assert message["content"] == "first line\nsecond line\n"
+    assert "tr_test" not in message["content"]
+    assert message["_localagent_internal"]["exit_code"] == 0
+    assert _model_visible_tool_result("terminal", result) == "first line\nsecond line\n"
+
+
+def test_truncated_terminal_transcript_keeps_archive_retrieval_hint():
+    import json
+    from agent.core import _build_tool_messages
+
+    result = {
+        "_terminal_text": "visible output\r\n",
+        "_terminal_output": "visible output\r\n",
+        "state": "completed",
+        "output_truncated": True,
+    }
+    payload = json.dumps({"ok": True, "result": result, "result_id": "tr_full"})
+    message = _build_tool_messages("terminal", payload)[0]
+
+    assert message["content"].startswith("visible output\n")
+    assert "tr_full" in message["content"]
+    assert "get_tool_result" in message["content"]
