@@ -136,10 +136,10 @@ def test_tool_result_retrieval_representation_hides_internal_terminal_fields():
             "_localagent_internal": {"exit_code": 2, "operation_id": "secret"},
         },
     })
-    visible = json.loads(_model_visible_tool_content("terminal", raw))
-    assert visible["result"] == {"output": "full output"}
-    assert "secret" not in json.dumps(visible)
-    assert "exit_code" not in json.dumps(visible)
+    visible = _model_visible_tool_content("terminal", raw)
+    assert visible == "full output"
+    assert "secret" not in visible
+    assert "exit_code" not in visible
 
 
 def test_terminal_archive_retrieval_keeps_full_output_not_only_screen_preview():
@@ -150,7 +150,7 @@ def test_terminal_archive_retrieval_keeps_full_output_not_only_screen_preview():
         "_terminal_output": "complete captured terminal output",
         "_localagent_internal": {"exit_code": 0, "operation_id": "hidden"},
     })
-    assert result == {"output": "complete captured terminal output"}
+    assert result == "complete captured terminal output"
 
 
 def test_ollama_message_boundary_filters_retired_tools_and_old_publish_arguments():
