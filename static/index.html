@@ -25,7 +25,7 @@ header{padding:14px 20px;background:#fff;border-bottom:1px solid #ddd;display:fl
 #messages{padding:20px;overflow:auto;flex:1}.msg{max-width:900px;margin:0 auto 12px;padding:12px 14px;border-radius:12px;background:#fff;white-space:pre-wrap;overflow-wrap:anywhere}
 .msg.user{background:#e2ebfa}.role{font-size:12px;color:#657080;margin-bottom:5px}
 form{display:flex;gap:10px;padding:16px;background:#fff;border-top:1px solid #ddd;align-items:center}#attachment-input{display:none}#attach-button{white-space:nowrap}#attachment-list{font-size:12px;color:#4b5563;max-width:220px;overflow-wrap:anywhere}textarea{resize:vertical;min-height:54px;max-height:200px;flex:1;padding:10px;border:1px solid #ccd0d5;border-radius:8px}
-#activity-panel{flex:0 0 48px;height:48px;min-height:48px;max-height:48px;padding:7px 16px;background:#edf3fb;border-top:1px solid #d7e1ef;font-size:13px;overflow:hidden;overflow-wrap:anywhere}
+#activity-panel{flex:0 0 48px;flex-shrink:0;height:48px;min-height:48px;max-height:48px;padding:7px 16px;background:#edf3fb;border-top:1px solid #d7e1ef;font-size:13px;overflow:hidden;overflow-wrap:anywhere}
 #activity-panel.expanded{flex-basis:190px;height:190px;min-height:190px;max-height:190px}
 #activity-panel,#tasks{transition:none!important;animation:none!important}
 #activity-toolbar{display:flex;align-items:center;gap:10px;min-width:0}
@@ -36,7 +36,7 @@ form{display:flex;gap:10px;padding:16px;background:#fff;border-top:1px solid #dd
 #activity-history-details{margin-top:7px}#activity-history-details summary{cursor:pointer;font-weight:600}#activity-history{max-height:140px;overflow:auto;margin-top:5px;border-top:1px solid #d7e1ef}.operation{padding:5px 3px;border-bottom:1px solid #d7e1ef;overflow-wrap:anywhere}.operation .op-meta{font-size:11px;color:#64748b}.operation.failed{background:#fff0f0}.operation.running{background:#fff8e6}
 #activity-panel.collapsed{flex-basis:48px;height:48px;min-height:48px;max-height:48px;padding-top:6px;padding-bottom:6px}
 #activity-panel.collapsed #activity-report,#activity-panel.collapsed #activity-history-details{display:none}
-#tasks{flex:0 0 112px;height:112px;min-height:112px;max-height:112px;padding:10px 20px;overflow-y:auto;overflow-x:hidden;background:#f4f5f7;border-top:1px solid #ddd;font-size:13px}.task{padding:5px 0;border-bottom:1px solid #ddd;overflow-wrap:anywhere}
+#tasks{flex:0 0 112px;flex-shrink:0;height:112px;min-height:112px;max-height:112px;padding:10px 20px;overflow-y:auto;overflow-x:hidden;background:#f4f5f7;border-top:1px solid #ddd;font-size:13px}.task{padding:5px 0;border-bottom:1px solid #ddd;overflow-wrap:anywhere}
 .small{font-size:12px;color:#c3cad4}header button{white-space:nowrap}
 @media(max-width:700px){form#send{flex-wrap:wrap}#attachment-list{max-width:100%}.layout{grid-template-columns:150px 1fr}aside{padding:8px}#messages{padding:10px}form{padding:8px;flex-direction:column}#activity-panel{padding:7px 10px;flex-basis:48px;height:48px;min-height:48px;max-height:48px}#activity-panel.expanded{flex-basis:170px;height:170px;min-height:170px;max-height:170px}#activity-panel.collapsed{flex-basis:48px;height:48px;min-height:48px;max-height:48px}#tasks{flex-basis:105px;height:105px;min-height:105px;max-height:105px;padding:8px 10px}#activity-history{max-height:75px}#activity-report{max-height:60px}#activity-heading{font-size:12px}#activity-toggle{padding:5px 7px}}
 
@@ -92,7 +92,7 @@ form#send>button[type=submit]{background:#6688d8;color:#fff;font-weight:650;padd
   flex:0 0 48px;height:48px;min-height:48px;max-height:48px;
   padding:7px 20px;background:#fff;border-top:1px solid var(--line);font-size:12px;
 }
-#activity-panel.expanded{flex-basis:340px;height:340px;min-height:340px;max-height:340px}
+#activity-panel.expanded{flex:0 0 340px;flex-shrink:0;height:340px;min-height:340px;max-height:340px}
 #activity-toolbar{gap:12px}
 #activity-heading{font-size:12px;color:#29364b}
 #activity-current{color:#64738b}
@@ -143,7 +143,7 @@ form#send>button[type=submit]{background:#6688d8;color:#fff;font-weight:650;padd
 .timeline-event.failed{border-color:#e58c88}.timeline-event.completed{border-color:#77c3a2}
 .timeline-title{font-weight:650}.timeline-detail{margin-top:2px;color:#929daf}
 .timeline-empty{padding:12px;color:#929daf;font-size:11px}
-#tasks{flex:0 0 84px;height:84px;min-height:84px;max-height:84px;padding:7px 20px;background:#f7f8fb;border-top:1px solid var(--line);font-size:11px}
+#tasks{flex:0 0 56px;flex-shrink:0;height:56px;min-height:56px;max-height:56px;padding:7px 20px;background:#f7f8fb;border-top:1px solid var(--line);font-size:11px}
 #tasks>strong{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#8995a7}
 .task{padding:3px 0;border-color:#e8ecf2}
 .task button{padding:4px 7px;font-size:10px;background:#e9eef8;color:#5b6b86}
@@ -151,7 +151,7 @@ form#send>button[type=submit]{background:#6688d8;color:#fff;font-weight:650;padd
   .layout{grid-template-columns:210px minmax(0,1fr)}
   header{padding:10px 14px;flex-wrap:wrap}
   #model-control{flex-wrap:wrap}
-  #activity-panel.expanded{flex-basis:300px;height:300px;min-height:300px;max-height:300px}
+  #activity-panel.expanded{flex:0 0 300px;flex-shrink:0;height:300px;min-height:300px;max-height:300px}
 }
 @media(max-width:700px){
   .layout{grid-template-columns:135px minmax(0,1fr)}
@@ -159,12 +159,12 @@ form#send>button[type=submit]{background:#6688d8;color:#fff;font-weight:650;padd
   aside h2{font-size:15px}
   header{padding:8px 10px}
   #messages{padding:12px}
-  #activity-panel.expanded{flex-basis:250px;height:250px;min-height:250px;max-height:250px}
+  #activity-panel.expanded{flex:0 0 250px;flex-shrink:0;height:250px;min-height:250px;max-height:250px}
   #activity-plan{max-height:115px}
   #activity-history{max-height:100px}
   .plan-steps{grid-template-columns:1fr}
   .step-status{display:none}
-  #tasks{flex-basis:70px;height:70px;min-height:70px;max-height:70px;padding:5px 9px}
+  #tasks{flex:0 0 48px;height:48px;min-height:48px;max-height:48px;padding:5px 9px}
   form#send{padding:8px;gap:6px}
 }
 </style></head>
@@ -197,8 +197,7 @@ async function loadDebugTraceSettings(){
     catch(e){$('status').textContent='Настройки трассировки недоступны: '+e.message}
 }
 async function saveDebugTraceSettings(){
-    const enabled=$('debug-trace').checked;const thinking=enabled&&$('debug-thinking').checked;
-    $('debug-thinking').disabled=!enabled;
+    const enabled=$('debug-trace').checked;const thinking=enabled&&$('debug-thinking').checked;    $('debug-thinking').disabled=!enabled;
     try{await api('/api/settings/debug-trace',{method:'PUT',body:JSON.stringify({enabled,thinking})});}
     catch(e){alert('Не удалось сохранить настройки трассировки: '+e.message);await loadDebugTraceSettings()}
 }
@@ -378,9 +377,6 @@ async function loadActivity(task){
         }else if(task?.status==='failed' && task.error){
             const heading=document.createElement('strong');heading.textContent='Задача завершилась с ошибкой';fragment.append(heading,document.createElement('br'));
             const body=document.createElement('span');body.textContent=task.error;fragment.append(body);
-        }else if(task?.status==='completed' && task.result){
-            const heading=document.createElement('strong');heading.textContent='Итог';fragment.append(heading,document.createElement('br'));
-            const body=document.createElement('span');body.textContent=task.result;fragment.append(body);
         }
         report.replaceChildren(fragment);
         activityReportSignature=reportSig;
@@ -397,8 +393,7 @@ async function loadActivity(task){
         const [data,execution,usageData]=await Promise.all([
             api('/api/tasks/'+encodeURIComponent(task.id)+'/operations?limit=50&offset=0'),
             api('/api/tasks/'+encodeURIComponent(task.id)+'/execution'),
-            api('/api/tasks/'+encodeURIComponent(task.id)+'/usage')
-        ]);
+            api('/api/tasks/'+encodeURIComponent(task.id)+'/usage')        ]);
         const state=execution.task_state||{};
         const counts=`${state.actions_succeeded||0} успешно · ${state.actions_failed||0} ошибок`;
         const contextSource=usageData?.context_confirmed?'сервер':'настройка';
@@ -518,9 +513,8 @@ async function loadTasks(){
     if(signature===taskListSignature)return;
     taskListSignature=signature;
     $('tasklist').replaceChildren();
-    for(const t of ts){
+    for(const t of ts.filter(item=>['running','queued','paused','interrupted','failed','cancelling'].includes(item.status))){
         let d=document.createElement('div');d.className='task';
-        let label=document.createElement('span');label.textContent=t.status+' · '+(t.activity||'Состояние задачи');d.append(label);
         const taskActions = t.status==='interrupted'
             ? [['resume','Возобновить'],['cancel','Отмена']]
             : t.status==='failed' ? [['resume','Повторить / продолжить']]
@@ -531,8 +525,6 @@ async function loadTasks(){
             let b=document.createElement('button');b.textContent=t.status==='cancelling'&&action==='cancel'?'Отмена…':caption;b.disabled=t.status==='cancelling';b.style.margin='2px';
             b.onclick=async()=>{try{await api('/api/tasks/'+t.id+'/'+action,{method:'POST'});await loadTasks()}catch(e){alert(e.message)}};d.append(b)
         }
-        if(t.error && t.status!=='failed' && (!active || t.id!==active.id)){let err=document.createElement('div');err.textContent='Ошибка: '+t.error;d.append(err)}
-        if(t.result && t.status!=='paused' && (!active || t.id!==active.id)){let res=document.createElement('div');res.textContent='Результат: '+t.result;d.append(res)}
         $('tasklist').append(d)
     }
 }
