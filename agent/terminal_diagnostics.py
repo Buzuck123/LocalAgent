@@ -114,6 +114,27 @@ def build_diagnostic_context(snapshot: dict[str, Any],
             "Состояние контейнера не удалось подтвердить.",
             "Данных недостаточно для вывода о контейнере.")
 
+    # The collector runs this fixed read-only ps command automatically in the
+    # isolated, unprivileged diagnostic session. It is valid process-inspection
+    # evidence for the recovery gate, but remains container-wide rather than
+    # operation-specific.
+    process_snapshot = snapshot.get("process_snapshot")
+    if isinstance(process_snapshot, dict) and process_snapshot.get("ok") is True:
+        process_output = str(process_snapshot.get("stdout") or "").strip()
+        add(
+            "diagnostic_process_snapshot", "read_only_diagnostic_bash", "container",
+            "Автоматический снимок процессов (ps): " + (process_output[-3000:] or "(пустой вывод)"),
+            "Успешная read-only проверка списка процессов контейнера; не зависит от решения диагностической LLM вызывать отдельный инструмент.",
+            "Список относится ко всему контейнеру; принадлежность PID конкретной SWE-ReX operation не доказана.",
+        )
+    elif isinstance(process_snapshot, dict):
+        add(
+            "diagnostic_process_snapshot_unavailable", "read_only_diagnostic_bash", "container",
+            "Автоматический снимок процессов получить не удалось: " + str(process_snapshot.get("error") or process_snapshot.get("stderr") or "неизвестная ошибка")[:500],
+            "Проверка процессов не состоялась.",
+            "Нельзя делать вывод об отсутствии или завершении процесса.",
+        )
+
     # Container-wide process/resource metrics are deliberately summarized,
     # never presented as operation-specific process evidence.
     top = snapshot.get("container_top")
@@ -264,7 +285,11 @@ def authorize_recovery(action: str, proposal: dict[str, Any], evidence: list[dic
             and "operation_state" in kinds
         )
         def is_process_inspection(item):
-            if item.get("kind") != "diagnostic_terminal" or item.get("success") is not True:
+            if item.get("success") is not True:
+                return False
+            if item.get("kind") == "diagnostic_process_snapshot":
+                return item.get("source") == "read_only_diagnostic_bash"
+            if item.get("kind") != "diagnostic_terminal":
                 return False
             try:
                 executable = shlex.split(str(item.get("command") or ""))[0]
