@@ -40,6 +40,133 @@ form{display:flex;gap:10px;padding:16px;background:#fff;border-top:1px solid #dd
 .small{font-size:12px;color:#c3cad4}header button{white-space:nowrap}
 @media(max-width:700px){form#send{flex-wrap:wrap}#attachment-list{max-width:100%}.layout{grid-template-columns:150px 1fr}aside{padding:8px}#messages{padding:10px}form{padding:8px;flex-direction:column}#activity-panel{padding:7px 10px;flex-basis:48px;height:48px;min-height:48px;max-height:48px}#activity-panel.expanded{flex-basis:170px;height:170px;min-height:170px;max-height:170px}#activity-panel.collapsed{flex-basis:48px;height:48px;min-height:48px;max-height:48px}#tasks{flex-basis:105px;height:105px;min-height:105px;max-height:105px;padding:8px 10px}#activity-history{max-height:75px}#activity-report{max-height:60px}#activity-heading{font-size:12px}#activity-toggle{padding:5px 7px}}
 
+
+/* LocalAgent workspace refresh */
+:root{
+  color-scheme:light;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  color:#202735;background:#f3f5f8;
+  --accent:#6688d8;--accent-soft:#eaf0ff;--line:#e5e9f0;--muted:#8490a2;
+}
+body{background:#f3f5f8}
+.layout{grid-template-columns:258px minmax(0,1fr);gap:0}
+aside{
+  background:#171c27;color:#e8edf7;padding:22px 16px 18px;
+  border-right:1px solid #293244;display:flex;flex-direction:column;gap:5px;
+}
+aside h2{font-size:19px;letter-spacing:-.4px;margin:2px 8px 0}
+aside .small{color:#8f9bb0;line-height:1.5;margin:0 8px 14px}
+aside hr{border:0;border-top:1px solid #30394a;width:100%;margin:14px 0}
+aside button{
+  background:transparent;color:#cbd4e4;text-align:left;border-radius:9px;
+  padding:10px 11px;margin:1px 0;font-size:13px;transition:background .15s,color .15s;
+}
+aside button:hover{background:#283246;color:#fff}
+aside #new{background:#6b8ee0;color:#fff;font-weight:650;margin:10px 0 14px}
+aside #new:hover{background:#7b9bea}
+.conv-row{grid-template-columns:minmax(0,1fr) auto auto;gap:3px}
+.conv-row .conv{background:transparent;color:#c4cede;border-radius:8px;padding:9px 10px}
+.conv-row .conv:hover,.conv-row .conv.active{background:#2a3549;color:#fff}
+.conv-row button{background:transparent;color:#94a0b3}
+.main{background:#f7f8fb}
+header{
+  min-height:64px;padding:12px 24px;background:#fff;border-bottom:1px solid var(--line);
+  box-shadow:0 1px 3px #18243a08;
+}
+#title{font-size:15px;font-weight:650;color:#263248}
+#status{font-size:11px;color:#7d899c;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#proxy-status{font-size:12px;color:#728096;white-space:nowrap}
+#model-control{font-size:12px;color:#68758a;gap:6px}
+#model-select,#provider-select{border:1px solid #dfe4ed;border-radius:8px;background:#fbfcfe;color:#354158;padding:7px 9px}
+#model-refresh{background:#eef2f8;color:#58677f}
+#messages{padding:26px 28px 20px;scroll-behavior:smooth}
+.msg{max-width:920px;margin:0 auto 14px;padding:15px 18px;border:1px solid #e8ecf2;border-radius:14px;background:#fff;box-shadow:0 2px 8px #1b2b4507;line-height:1.55}
+.msg.user{background:#edf3ff;border-color:#dce7ff}
+.role{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#8a96a8;font-weight:700}
+form#send{padding:13px 22px;background:#fff;border-top:1px solid var(--line);gap:9px}
+textarea{border:1px solid #dce2eb;border-radius:12px;min-height:48px;padding:12px 14px;background:#fbfcfe;outline:none}
+textarea:focus{border-color:#91a9e8;box-shadow:0 0 0 3px #6688d81c}
+form#send>button[type=submit]{background:#6688d8;color:#fff;font-weight:650;padding:11px 18px;border-radius:10px}
+#attach-button{background:#eef2f8;color:#53627a}
+#activity-panel{
+  flex:0 0 48px;height:48px;min-height:48px;max-height:48px;
+  padding:7px 20px;background:#fff;border-top:1px solid var(--line);font-size:12px;
+}
+#activity-panel.expanded{flex-basis:340px;height:340px;min-height:340px;max-height:340px}
+#activity-toolbar{gap:12px}
+#activity-heading{font-size:12px;color:#29364b}
+#activity-current{color:#64738b}
+#activity-toggle{background:#eef2f8;color:#586985;border-radius:7px}
+#activity-resume{background:#e8efff;color:#4666b3}
+#generation-speed{font-size:12px!important;color:#5274bd!important}
+#activity-report{max-height:78px;overflow:auto;color:#8b5360;font-size:12px}
+#activity-plan{max-height:205px;overflow:auto;padding:0 2px}
+.plan-card{padding:10px 12px;border:1px solid #e6ebf3;border-radius:10px;background:#fbfcff}
+.plan-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.plan-title{font-weight:650;color:#35435a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plan-progress-text{font-size:11px;color:#71809a;white-space:nowrap}
+.plan-progress{height:5px;background:#e9edf4;border-radius:8px;overflow:hidden}
+.plan-progress-fill{height:100%;background:#7292df;border-radius:8px;transition:width .2s}
+.plan-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:3px 14px;margin-top:8px}
+.plan-step{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:7px;align-items:center;padding:4px 2px;font-size:11px;color:#66738a}
+.step-marker{font-weight:800;color:#a0aabd;text-align:center}
+.plan-step.completed .step-marker{color:#389b78}
+.plan-step.in_progress .step-marker{color:#6688d8}
+.plan-step.in_progress .step-description{color:#344d82;font-weight:650}
+.step-description{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.step-status{font-size:10px;color:#9aa4b3;white-space:nowrap}
+.plan-empty,.usage-strip{font-size:11px;color:#929daf;padding:7px 2px}
+.usage-strip{padding-top:5px}
+#activity-history-details{margin-top:6px}
+#activity-history-details summary{font-size:11px;color:#718099;padding:5px 2px}
+#activity-history{max-height:170px;border-top:1px solid #edf0f5;padding-top:6px}
+.tool-card{border:1px solid #e8ecf2;border-radius:9px;margin:5px 0;background:#fff;overflow:hidden}
+.tool-card>summary{list-style:none}
+.tool-card>summary::-webkit-details-marker{display:none}
+.tool-summary{display:flex;align-items:center;gap:9px;padding:8px 10px;cursor:pointer}
+.tool-summary:hover{background:#f8faff}
+.tool-status-icon{width:18px;height:18px;display:grid;place-items:center;border-radius:50%;background:#eef2f7;color:#7b8798;font-size:11px;font-weight:800}
+.tool-card.completed .tool-status-icon{background:#e7f6ef;color:#30966d}
+.tool-card.failed .tool-status-icon{background:#fff0ef;color:#d45c58}
+.tool-card.running .tool-status-icon{background:#fff6df;color:#b88a32}
+.tool-main{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+.tool-name{font-size:11px;font-weight:700;color:#39465b}
+.tool-activity{font-size:10px;color:#8995a7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-time{font-size:10px;color:#a0a9b7;white-space:nowrap}
+.tool-status-detail{padding:0 12px 7px 37px;font-size:10px;color:#8a96a7}
+.tool-detail{padding:8px 12px 12px;border-top:1px solid #edf0f5;background:#fafbfd}
+.tool-detail-section{position:relative;margin:5px 0 12px}
+.tool-detail-heading{font-size:10px;font-weight:750;color:#748198;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px}
+.tool-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;margin:0;padding:9px;border-radius:7px;background:#202938;color:#dce5f2;font:10px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+.copy-button{margin-top:5px;padding:4px 8px;background:#edf1f7;color:#5d6b82;font-size:10px}
+.timeline-event{padding:6px 10px;border-left:2px solid #d9e1ee;margin:4px 0 4px 8px;color:#68758a;font-size:10px}
+.timeline-event.failed{border-color:#e58c88}.timeline-event.completed{border-color:#77c3a2}
+.timeline-title{font-weight:650}.timeline-detail{margin-top:2px;color:#929daf}
+.timeline-empty{padding:12px;color:#929daf;font-size:11px}
+#tasks{flex:0 0 84px;height:84px;min-height:84px;max-height:84px;padding:7px 20px;background:#f7f8fb;border-top:1px solid var(--line);font-size:11px}
+#tasks>strong{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#8995a7}
+.task{padding:3px 0;border-color:#e8ecf2}
+.task button{padding:4px 7px;font-size:10px;background:#e9eef8;color:#5b6b86}
+@media(max-width:900px){
+  .layout{grid-template-columns:210px minmax(0,1fr)}
+  header{padding:10px 14px;flex-wrap:wrap}
+  #model-control{flex-wrap:wrap}
+  #activity-panel.expanded{flex-basis:300px;height:300px;min-height:300px;max-height:300px}
+}
+@media(max-width:700px){
+  .layout{grid-template-columns:135px minmax(0,1fr)}
+  aside{padding:12px 7px}
+  aside h2{font-size:15px}
+  header{padding:8px 10px}
+  #messages{padding:12px}
+  #activity-panel.expanded{flex-basis:250px;height:250px;min-height:250px;max-height:250px}
+  #activity-plan{max-height:115px}
+  #activity-history{max-height:100px}
+  .plan-steps{grid-template-columns:1fr}
+  .step-status{display:none}
+  #tasks{flex-basis:70px;height:70px;min-height:70px;max-height:70px;padding:5px 9px}
+  form#send{padding:8px;gap:6px}
+}
 </style></head>
 <body><div class="layout">
 <aside><h2>LocalAgent Autonomous</h2><div class="small">Автономный локальный агент · локальные LLM</div>
@@ -51,7 +178,7 @@ form{display:flex;gap:10px;padding:16px;background:#fff;border-top:1px solid #dd
 <div class="small">Трассировка выключена по умолчанию; секреты фильтруются перед записью.</div><div class="small">По умолчанию доступен только на этом компьютере.</div></aside>
 <section class="main"><header><strong id="title">Выберите диалог</strong><div style="display:flex;align-items:center;gap:12px;min-width:0"><span id="proxy-status" title="Состояние общего Xray/Privoxy">Интернет: —</span><div id="model-control"><span>Сервер</span><select id="provider-select" title="Основной LLM-сервер"><option value="ollama">Ollama</option><option value="llama_cpp">llama.cpp</option></select><span>Модель</span><select id="model-select" title="Модели активного LLM-провайдера"><option>Загрузка…</option></select><button id="model-refresh" type="button" title="Обновить список моделей">↻</button></div><span id="status"></span></div></header>
 <div id="messages"></div>
-<div id="activity-panel" class="collapsed" aria-live="polite"><div id="activity-toolbar"><div id="activity-heading">Работа агента</div><div id="activity-current">Нет активной задачи</div><button id="activity-resume" type="button" hidden>Возобновить</button><div id="generation-speed" style="font-weight:700;font-size:14px;color:#174b83;white-space:nowrap">Генерация: — tok/s</div><button id="activity-toggle" type="button" aria-expanded="false" aria-controls="activity-report activity-history-details">Развернуть</button></div><div id="activity-report"></div><details id="activity-history-details"><summary id="activity-history-summary">История вызовов инструментов</summary><div id="activity-history"><div class="operation">Нет вызовов инструментов для отображения.</div></div></details></div>
+<div id="activity-panel" class="collapsed" aria-live="polite"><div id="activity-toolbar"><div id="activity-heading">Работа агента</div><div id="activity-current">Нет активной задачи</div><button id="activity-resume" type="button" hidden>Возобновить</button><div id="generation-speed" style="font-weight:700;font-size:14px;color:#174b83;white-space:nowrap">Генерация: — tok/s</div><button id="activity-toggle" type="button" aria-expanded="false" aria-controls="activity-report activity-history-details">Развернуть</button></div><div id="activity-report"></div><div id="activity-plan"></div><details id="activity-history-details"><summary id="activity-history-summary">История вызовов инструментов</summary><div id="activity-history"><div class="operation">Нет вызовов инструментов для отображения.</div></div></details></div>
 <div id="tasks"><strong>Задачи и управление</strong><div id="tasklist"></div></div>
 <form id="send"><label style="display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:13px"><input id="reasoning" type="checkbox" checked> С рассуждением</label><textarea id="input" placeholder="Напиши сообщение..."></textarea><input id="attachment-input" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/quicktime,video/x-matroska,video/x-msvideo,video/webm,audio/wav,audio/x-wav,audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/flac,.wav,.mp3,.m4a,.aac,.ogg,.opus,.flac,.wma,.mp4,.m4v,.mov,.mkv,.avi,.webm,.flv,.wmv,.pdf,.docx,.xlsx,.txt,.md,.csv,.json,.py,.html,.xml,.yaml,.yml,.log"><button id="attach-button" type="button">📎 Файлы</button><span id="attachment-list"></span><button type="submit">Отправить</button></form>
 </section></div>
@@ -239,6 +366,7 @@ async function deleteConversation(c){
 async function selectConversation(id){current=id;await loadConversations();let c=(await api('/api/conversations')).find(x=>x.id===id);$('title').textContent=c?.title||'Диалог';let ms=await api('/api/conversations/'+id+'/messages');$('messages').replaceChildren();for(const m of ms)addMsg(m.role,m.content);$('messages').scrollTop=$('messages').scrollHeight;await loadTasks()}
 async function loadActivity(task){
     const report=$('activity-report');
+    const planPanel=$('activity-plan');
     const reportSig=JSON.stringify(task?{
         id:task.id,status:task.status,pause_report:task.pause_report,error:task.error,result:task.result
     }:null);
@@ -255,15 +383,14 @@ async function loadActivity(task){
             const body=document.createElement('span');body.textContent=task.result;fragment.append(body);
         }
         report.replaceChildren(fragment);
-        report.style.whiteSpace='';
-        report.style.maxHeight='';
         activityReportSignature=reportSig;
     }
-    const history=$('activity-history');
     if(!task){
-        const sig='no-task';
-        if(sig!==activityHistorySignature){history.textContent='Нет активной задачи';activityHistorySignature=sig}
+        report.textContent='Нет активной задачи';
+        planPanel.replaceChildren();
+        $('activity-history').textContent='Нет активной задачи';
         $('activity-history-summary').textContent='История вызовов инструментов';
+        activityHistorySignature='no-task';
         return;
     }
     try{
@@ -273,51 +400,105 @@ async function loadActivity(task){
             api('/api/tasks/'+encodeURIComponent(task.id)+'/usage')
         ]);
         const state=execution.task_state||{};
-        const counts=`Действия: ${state.actions_succeeded||0} успешно · ${state.actions_failed||0} ошибок`;
-        const contextSource = usageData?.context_confirmed ? 'сервер' : 'настройка';
-        const modelLimit = Number(usageData?.model_context_length)>0 ? ` · предел модели ${Number(usageData.model_context_length).toLocaleString('ru-RU')}` : '';
-        const tokenInfo = usageData ? ` · Рабочий контекст (${contextSource}): ${usageData.current_prompt_tokens||0}/${usageData.context_limit||0} (${usageData.current_context_percent||0}%) · пик запроса ${usageData.max_prompt_tokens||0} (${usageData.max_context_percent||0}%)${modelLimit} · токены всего: ${usageData.prompt_tokens_total||0} вход / ${usageData.generated_tokens_total||0} выход` : '';
-        $('activity-history-summary').textContent='Ход работы · '+counts+tokenInfo+' · операций в журнале: '+(data.total||0);
+        const counts=`${state.actions_succeeded||0} успешно · ${state.actions_failed||0} ошибок`;
+        const contextSource=usageData?.context_confirmed?'сервер':'настройка';
+        const contextPercent=Number(usageData?.current_context_percent)||0;
+        $('activity-history-summary').textContent='Инструменты · '+counts+' · '+(data.total||0)+' операций';
         const historySig=JSON.stringify({id:task.id,total:data.total,operations:data.operations?.map(op=>[
             op.operation_id,op.status,op.status_detail,op.activity,op.updated_at
-        ]),events:execution.events,task_state:state,plan:execution.plan});
+        ]),events:execution.events,task_state:state,plan:execution.plan,usage:usageData});
         if(historySig===activityHistorySignature)return;
-        const fragment=document.createDocumentFragment();
+
+        // Plan card with a visible progress bar and per-step states.
+        planPanel.replaceChildren();
         if(execution.plan){
-            const planRow=document.createElement('div');planRow.className='operation';
-            const planTitle=document.createElement('div');planTitle.textContent=`План: ${execution.plan.completed_steps}/${execution.plan.total_steps} этапов · ${execution.plan.status}`;planRow.append(planTitle);
-            if(execution.plan.remaining_steps?.length){const remaining=document.createElement('div');remaining.className='op-meta';remaining.textContent='Осталось: '+execution.plan.remaining_steps.slice(0,3).join('; ');planRow.append(remaining)}
-            fragment.append(planRow);
+            const plan=execution.plan;
+            const card=document.createElement('section');card.className='plan-card';
+            const head=document.createElement('div');head.className='plan-head';
+            const title=document.createElement('div');title.className='plan-title';title.textContent=plan.goal||'План выполнения';
+            const progressText=document.createElement('span');progressText.className='plan-progress-text';
+            progressText.textContent=`${plan.completed_steps||0}/${plan.total_steps||0}`;
+            head.append(title,progressText);card.append(head);
+            const track=document.createElement('div');track.className='plan-progress';
+            const fill=document.createElement('div');fill.className='plan-progress-fill';
+            const percent=plan.total_steps?Math.min(100,100*(plan.completed_steps||0)/plan.total_steps):0;
+            fill.style.width=percent+'%';track.append(fill);card.append(track);
+            const steps=document.createElement('div');steps.className='plan-steps';
+            const labels={completed:'Выполнено',in_progress:'Выполняется',pending:'Ожидает',skipped:'Пропущено',question:'Нужно уточнение'};
+            for(const step of (plan.steps||[])){
+                const row=document.createElement('div');row.className='plan-step '+(step.status||'pending');
+                const marker=document.createElement('span');marker.className='step-marker';
+                marker.textContent=step.status==='completed'?'✓':step.status==='in_progress'?'●':step.status==='skipped'?'—':step.status==='question'?'?':'○';
+                const text=document.createElement('span');text.className='step-description';text.textContent=step.description||step.id||'Этап';
+                const status=document.createElement('span');status.className='step-status';status.textContent=labels[step.status]||step.status||'Ожидает';
+                row.append(marker,text,status);steps.append(row);
+            }
+            card.append(steps);planPanel.append(card);
+        }else{
+            const emptyPlan=document.createElement('div');emptyPlan.className='plan-empty';emptyPlan.textContent='План пока не сформирован';
+            planPanel.append(emptyPlan);
         }
-        for(const event of (execution.events||[]).slice(-20).reverse()){
-            const row=document.createElement('div');row.className='operation '+(event.status==='failed'?'failed':event.status==='succeeded'?'completed':'');
-            const title=document.createElement('div');
+        if(usageData){
+            const usage=document.createElement('div');usage.className='usage-strip';
+            usage.textContent=`Контекст: ${Number(usageData.current_prompt_tokens||0).toLocaleString('ru-RU')} / ${Number(usageData.context_limit||0).toLocaleString('ru-RU')} токенов (${contextPercent}%, ${contextSource}) · Всего: ${Number(usageData.prompt_tokens_total||0).toLocaleString('ru-RU')} вход / ${Number(usageData.generated_tokens_total||0).toLocaleString('ru-RU')} выход`;
+            planPanel.append(usage);
+        }
+
+        const history=$('activity-history');
+        const fragment=document.createDocumentFragment();
+        for(const event of (execution.events||[]).slice(-8).reverse()){
+            const row=document.createElement('div');row.className='timeline-event '+(event.status==='failed'?'failed':event.status==='succeeded'?'completed':'');
+            const title=document.createElement('div');title.className='timeline-title';
             const when=event.at?new Date(event.at).toLocaleTimeString():'';
-            title.textContent=[when,event.tool||'Состояние задачи',event.type||'event'].filter(Boolean).join(' · ');row.append(title);
-            if(event.detail){const detail=document.createElement('div');detail.textContent=event.detail;row.append(detail)}
+            title.textContent=[when,event.tool||'Состояние задачи',event.type||''].filter(Boolean).join(' · ');
+            row.append(title);
+            if(event.detail){const detail=document.createElement('div');detail.className='timeline-detail';detail.textContent=event.detail;row.append(detail)}
             fragment.append(row);
         }
-        if(!data.operations?.length && !(execution.events||[]).length){
-            const empty=document.createElement('div');empty.className='operation';empty.textContent='В журнале пока нет действий.';fragment.append(empty);
-        }else{
-            for(const op of (data.operations||[]).slice(0,20)){
-                const row=document.createElement('div');row.className='operation '+(op.status||'');
-                const title=document.createElement('div');
-                const icon=op.status==='completed'?'✓':op.status==='failed'?'✕':op.status==='running'?'●':op.status==='unknown'?'?':'·';
-                title.textContent=icon+' '+(op.activity||op.tool_name||'Инструмент');row.append(title);
-                const meta=document.createElement('div');meta.className='op-meta';
-                const when=op.created_at?new Date(op.created_at).toLocaleTimeString():'';
-                meta.textContent=[when,op.status==='completed'?'завершён':op.status==='failed'?'ошибка':op.status==='unknown'?'не подтверждён':'выполняется'].filter(Boolean).join(' · ');row.append(meta);
-                if(op.status_detail){const detail=document.createElement('div');detail.textContent=op.status_detail;row.append(detail)}
-                fragment.append(row);
-            }
+        for(const op of (data.operations||[]).slice(0,30)){
+            const row=document.createElement('details');row.className='tool-card '+(op.status||'');
+            const summary=document.createElement('summary');summary.className='tool-summary';
+            const icon=document.createElement('span');icon.className='tool-status-icon';
+            icon.textContent=op.status==='completed'?'✓':op.status==='failed'?'✕':op.status==='running'?'●':'?';
+            const main=document.createElement('span');main.className='tool-main';
+            const name=document.createElement('span');name.className='tool-name';name.textContent=op.tool_name||'Инструмент';
+            const activity=document.createElement('span');activity.className='tool-activity';activity.textContent=op.activity||'Вызов инструмента';
+            main.append(name,activity);
+            const meta=document.createElement('span');meta.className='tool-time';meta.textContent=op.created_at?new Date(op.created_at).toLocaleTimeString():'';
+            summary.append(icon,main,meta);row.append(summary);
+            if(op.status_detail){const status=document.createElement('div');status.className='tool-status-detail';status.textContent=op.status_detail;row.append(status)}
+            const detail=document.createElement('div');detail.className='tool-detail';detail.textContent='Загружаю подробности…';row.append(detail);
+            row.addEventListener('toggle',async()=>{
+                if(!row.open||row.dataset.loaded==='1'||row.dataset.loading==='1')return;
+                row.dataset.loading='1';
+                try{
+                    const full=await api('/api/tasks/'+encodeURIComponent(task.id)+'/operations/'+encodeURIComponent(op.operation_id));
+                    detail.replaceChildren();
+                    const addSection=(label,value)=>{
+                        const section=document.createElement('section');section.className='tool-detail-section';
+                        const heading=document.createElement('div');heading.className='tool-detail-heading';heading.textContent=label;section.append(heading);
+                        const pre=document.createElement('pre');pre.textContent=value===null||value===undefined?'Нет данных':JSON.stringify(value,null,2);section.append(pre);
+                        const copy=document.createElement('button');copy.type='button';copy.className='copy-button';copy.textContent='Копировать';
+                        copy.onclick=async()=>{try{await navigator.clipboard.writeText(pre.textContent);copy.textContent='Скопировано'}catch(_){copy.textContent='Не удалось скопировать'}};
+                        section.append(copy);detail.append(section);
+                    };
+                    addSection('Аргументы',full.arguments);
+                    addSection('Результат',full.result);
+                    row.dataset.loaded='1';
+                }catch(error){detail.textContent='Не удалось загрузить подробности: '+error.message}
+                finally{row.dataset.loading='0'}
+            });
+            fragment.append(row);
+        }
+        if(!data.operations?.length&&!(execution.events||[]).length){
+            const empty=document.createElement('div');empty.className='timeline-empty';empty.textContent='Инструменты ещё не вызывались.';fragment.append(empty);
         }
         history.replaceChildren(fragment);
         activityHistorySignature=historySig;
-    }catch(e){
-        const sig='error:'+e.message;
-        if(sig!==activityHistorySignature){history.textContent='Не удалось загрузить журнал: '+e.message;activityHistorySignature=sig}
-        $('activity-history-summary').textContent='История вызовов инструментов';
+    }catch(error){
+        const message='Не удалось загрузить ход работы: '+error.message;
+        $('activity-history').textContent=message;
+        $('activity-history-summary').textContent='Ход работы';
     }
 }
 async function loadTasks(){

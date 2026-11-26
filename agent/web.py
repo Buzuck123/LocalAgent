@@ -306,6 +306,14 @@ def task_execution(tid: str):
             "completed_steps": sum(1 for step in steps if isinstance(step, dict) and step.get("status") == "completed"),
             "remaining_steps": [str(step.get("description") or step.get("id") or "этап")[:200]
                                  for step in steps if isinstance(step, dict) and step.get("status") != "completed"][:12],
+            "steps": [
+                {
+                    "id": str(step.get("id") or f"step-{index + 1}")[:80],
+                    "description": str(step.get("description") or step.get("id") or "Этап")[:300],
+                    "status": str(step.get("status") or "pending")[:40],
+                }
+                for index, step in enumerate(steps[:50]) if isinstance(step, dict)
+            ],
         }
     return {
         "task_id": tid,
@@ -349,6 +357,63 @@ def task_operations(tid: str, limit: int = 50, offset: int = 0):
     total = db.count_tool_operations(tid)
     return {"task_id": tid, "operations": items, "total": total, "offset": offset,
             "has_more": offset + len(items) < total, "note": "Tool results are summarized to keep the UI responsive."}
+
+
+@app.get("/api/tasks/{tid}/operations/{operation_id}")
+def task_operation_detail(tid: str, operation_id: str):
+    """Return bounded, redacted details for one operation belonging to this task."""
+    task = db.get_task(tid)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    operation = db.get_tool_operation(operation_id)
+    if not operation or operation.get("task_id") != tid:
+        raise HTTPException(404, "Operation not found")
+
+    def parse_bounded(raw, limit=12_000):
+        if not raw:
+            return None
+        raw = str(raw)
+        if len(raw) > 100_000:
+            return {"truncated": True, "preview": raw[:limit], "serialized_chars": len(raw)}
+        try:
+            value = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            value = {"unavailable": "Не удалось разобрать сохранённые данные"}
+
+        value = db._redact_trace_value(value)
+
+        def bound(item, depth=0):
+            if depth > 8:
+                return "[достигнута глубина отображения]"
+            if isinstance(item, str):
+                return item[:limit] + ("… [сокращено]" if len(item) > limit else "")
+            if isinstance(item, dict):
+                result = {}
+                for index, (key, child) in enumerate(item.items()):
+                    if index >= 100:
+                        result["_truncated"] = "Скрыты дополнительные поля"
+                        break
+                    result[str(key)[:120]] = bound(child, depth + 1)
+                return result
+            if isinstance(item, list):
+                return [bound(child, depth + 1) for child in item[:100]] + (
+                    [{"_truncated": f"Скрыто элементов: {len(item) - 100}"}] if len(item) > 100 else []
+                )
+            return item
+        return bound(value)
+
+    status, detail = _operation_status(operation)
+    return {
+        "operation_id": operation_id,
+        "task_id": tid,
+        "tool_name": str(operation.get("tool_name") or "Инструмент")[:120],
+        "status": status,
+        "status_detail": detail[:500],
+        "created_at": operation.get("created_at"),
+        "updated_at": operation.get("updated_at"),
+        "arguments": parse_bounded(operation.get("arguments_json")),
+        "result": parse_bounded(operation.get("result_json")),
+    }
 
 
 @app.get("/api/tasks")
