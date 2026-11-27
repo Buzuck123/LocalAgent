@@ -692,24 +692,18 @@ def _active_terminal_operation_blocker(conversation_id, *, terminal_command=None
     state = str(active.get("state") or "running")
     interrupt = terminal_command in {"\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}
     if terminal_command is not None:
-        # An empty command polls; Ctrl+C interrupts; ordinary text is input only
-        # after the runtime explicitly reports that the process awaits input.
-        if not str(terminal_command).strip() or interrupt or state == "waiting_input":
+        if state == "waiting_input" and str(terminal_command).strip() and not interrupt:
             return None
         error = (
-            "Новая shell-команда не запущена: фоновая операция всё ещё выполняется "
-            f"(состояние: {state}) и не ожидает ввода. Непустой command был бы отправлен "
-            "в stdin текущего процесса, а не запущен как новая команда. Вызови terminal "
-            "с пустой command для ожидания или отправь CTRL+C для прерывания. "
-            "Текстовый ввод разрешён только когда terminal явно сообщает waiting_input."
+            "Терминальная операция уже активна. Ожидание, опрос, прерывание и восстановление "
+            "выполняет диагностический контроллер; основной исполнитель не должен управлять средой. "
+            "Если Bash явно ожидает интерактивный ввод, передай только этот ввод через terminal."
         )
     else:
         error = (
-            f"Инструмент не запущен: Bash-сессия занята фоновой терминальной операцией "
-            f"(состояние: {state}). Пока она не завершена, другие инструменты "
-            "и команды запускать нельзя. Сначала вызови terminal с пустой command, чтобы "
-            "дождаться результата; если процесс требует ввода — передай его через terminal, "
-            "а если его нужно остановить — отправь CTRL+C. После завершения terminal можно продолжить."
+            f"Инструмент не запущен: Bash-сессия занята операцией (состояние: {state}). "
+            "Ожидание и восстановление выполняет диагностический контроллер. "
+            "Не запускай другие инструменты до возврата управления."
         )
     return {
         "ok": False,
