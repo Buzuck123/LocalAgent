@@ -40,6 +40,8 @@ def build_diagnostic_context(
             "exit_code": snapshot.get("operation_exit_code"),
             "last_output": output[-2500:] or "(вывода нет)",
             "runtime_error": str(snapshot.get("runtime_error") or snapshot.get("operation_poll_error") or "")[:500],
+            "monitor_reason": str(snapshot.get("diagnostic_reason") or ""),
+            "bash_continuation_pending": snapshot.get("bash_continuation_pending") is True,
         },
         "runtime": {
             "swerex_responsive": snapshot.get("runtime_responsive") is True,
@@ -50,6 +52,7 @@ def build_diagnostic_context(
             "Список процессов и ресурсы относятся ко всему контейнеру, а не обязательно к исходной операции.",
             "Проверка SWE-ReX подтверждает доступность API, но не полезный прогресс команды.",
             "Основную Bash-сессию нельзя безопасно проверять параллельно с выполняющейся в ней операцией.",
+            "Если bash_continuation_pending=true, PS2 был получен только для синтаксически незавершённой команды; восстановление разрешено лишь после подтверждённого отсутствия прогресса.",
         ],
     }
     return report, []
