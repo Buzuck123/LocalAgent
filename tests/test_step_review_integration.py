@@ -39,10 +39,10 @@ def test_model_reviews_step_result_before_task_completes(tmp_path, monkeypatch):
         "completion_mode": "response",
         "success_criteria": ["Итоговый вывод дан пользователю"],
     }]}
+    # The reviewer may omit the optional verification note.
     review_response = {
         "decision": "complete_step",
         "reason": "Результат соответствует критерию",
-        "verification": "В ответе сформулирован вывод по запросу",
         "final_answer": "Анализ подготовлен.",
     }
 
@@ -70,7 +70,10 @@ def test_model_reviews_step_result_before_task_completes(tmp_path, monkeypatch):
     assert saved_task["status"] == "completed", saved_task.get("error") or saved_task.get("result") or saved_task
     assert saved_task["result"] == "Анализ подготовлен."
     assert checkpoint["plan"]["status"] == "completed"
-    assert checkpoint["plan"]["steps"][0]["verification"] == review_response["verification"]
+    receipt = checkpoint["plan"]["steps"][0]["verification"]
+    assert "Ревьюер подтвердил завершение этапа" in receipt
+    assert "Результат соответствует критерию" in receipt
+    assert "Анализ подготовлен." in receipt
     assert checkpoint["last_step_decision"]["decision"] == "complete_step"
     review_calls = [
         index for index, (messages, _tools) in enumerate(fake_client.calls)
@@ -186,3 +189,15 @@ def test_plan_revision_preserves_completed_progress(tmp_path, monkeypatch):
     assert "completion_mode" not in plan["steps"][1]
     assert plan["status"] == "completed"
     assert checkpoint["last_plan_revision_reason"] == "Первоначальный подход не подходит"
+
+
+
+def test_parse_complete_step_accepts_missing_optional_verification():
+    decision = core._parse_step_decision(json.dumps({
+        "decision": "complete_step",
+        "reason": "Все критерии этапа выполнены",
+    }, ensure_ascii=False))
+
+    assert decision["decision"] == "complete_step"
+    assert decision["reason"] == "Все критерии этапа выполнены"
+    assert decision["verification"] is None
