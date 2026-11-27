@@ -143,7 +143,7 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
             # continuation detection. Keep the original user command as the
             # execution ledger used by FakeClient, while executing the exact
             # instrumented command received at the runtime boundary.
-            marker = "export PS2='__LOCALAGENT_BASH_CONTINUATION__'\\n"
+            marker = "export PS2='__LOCALAGENT_BASH_CONTINUATION__'\n"
             assert command.startswith(marker)
             self.commands.append(command[len(marker):])
             result = subprocess.run(
