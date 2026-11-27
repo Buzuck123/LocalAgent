@@ -1179,6 +1179,11 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
         snapshot.setdefault("elapsed_seconds", float(terminal_result.get("_elapsed_seconds") or 0))
         snapshot.setdefault("idle_seconds", float(terminal_result.get("_idle_seconds") or 0))
         snapshot.setdefault("terminal_output_tail", str(terminal_result.get("_terminal_output") or "")[-1500:])
+        snapshot.setdefault("diagnostic_reason", terminal_result.get("_diagnostic_reason"))
+        snapshot.setdefault(
+            "bash_continuation_pending",
+            terminal_result.get("_terminal_waiting_for_continuation") is True,
+        )
         snapshot.setdefault("operation_id", operation_id)
         return snapshot
 
