@@ -14,6 +14,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 import threading
 import base64
 import shlex
+import bashlex
 from pathlib import Path
 from typing import Any
 
@@ -389,13 +390,62 @@ print(json.dumps(result))
 
     @staticmethod
     def _command_requires_network(command: str) -> bool:
-        return bool(re.search(
-            r"(?i)(?:\bapt(?:-get)?\b|\bpip3?\b|\buv\s+pip\b|\bcurl\b|\bwget\b|"
-            r"\bgit\s+clone\b|\bnpm\b|\bpnpm\b|\byarn\b|\bcargo\s+(?:install|fetch)\b|"
-            r"\bgo\s+get\b|\bplaywright\s+install\b|\bchromium\s+install\b|"
-            r"\brequests\b|\burllib\b|\bhttpx\b|https?://)",
-            str(command or ""),
-        ))
+        """Inspect executable command AST nodes, never arbitrary script/file contents."""
+        try:
+            trees = bashlex.parse(str(command or ""))
+        except (bashlex.errors.ParsingError, NotImplementedError, ValueError):
+            # A parser limitation must not block local work. A genuinely networked
+            # command will fail naturally if the sandbox has no outbound access.
+            return False
+
+        network_subcommands = {
+            "apt": {"install", "reinstall", "update", "upgrade", "full-upgrade", "download", "source", "build-dep"},
+            "apt-get": {"install", "reinstall", "update", "upgrade", "dist-upgrade", "download", "source", "build-dep"},
+            "pip": {"install", "download"},
+            "pip3": {"install", "download"},
+            "uv": {"add", "sync", "lock", "tool"},
+            "npm": {"install", "i", "ci", "add", "update", "upgrade", "publish", "audit"},
+            "pnpm": {"install", "i", "add", "update", "up", "fetch", "publish", "audit"},
+            "yarn": {"install", "add", "upgrade", "up", "import"},
+            "cargo": {"install", "fetch", "update", "publish"},
+            "go": {"get", "install"},
+            "playwright": {"install"},
+            "chromium": {"install"},
+        }
+        always_network = {"curl", "wget"}
+
+        def walk(node):
+            if getattr(node, "kind", None) == "command":
+                words = [
+                    str(part.word)
+                    for part in (getattr(node, "parts", None) or [])
+                    if getattr(part, "kind", None) == "word" and isinstance(getattr(part, "word", None), str)
+                ]
+                # Skip shell assignments and common transparent wrappers.
+                words = [word for word in words if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", word)]
+                while words and words[0] in {"sudo", "command", "builtin", "env", "nohup"}:
+                    words.pop(0)
+                    while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+                        words.pop(0)
+                if words:
+                    executable = words[0].rsplit("/", 1)[-1].lower()
+                    if executable in always_network:
+                        return True
+                    if executable == "uv" and len(words) > 2 and words[1] == "pip":
+                        if words[2] in {"install", "download", "sync"}:
+                            return True
+                    elif executable in network_subcommands:
+                        if len(words) > 1 and words[1].lower() in network_subcommands[executable]:
+                            return True
+            for child in (getattr(node, "parts", None) or []):
+                if walk(child):
+                    return True
+            for child in (getattr(node, "list", None) or []):
+                if walk(child):
+                    return True
+            return False
+
+        return any(walk(tree) for tree in trees)
 
     def _ensure_network_proxy(self, runtime: SandboxRuntime, command: str) -> dict[str, Any] | None:
         if (not getattr(settings, "sandbox_proxy_required", True)
@@ -430,15 +480,19 @@ print(json.dumps(result))
         if timeout is not None and (not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 600):
             raise ValueError("timeout must be None or between 1 and 600 seconds")
         syntax = subprocess.run(["bash", "-n", "-c", command], capture_output=True, text=True, timeout=5, check=False)
-        if syntax.returncode:
-            syntax_error = str(syntax.stderr or "")
-            incomplete_input = any(marker in syntax_error for marker in (
-                "unexpected EOF while looking for matching",
-                "syntax error: unexpected end of file",
-            ))
-            if not incomplete_input:
-                return {"state": "failed", "exit_code": 2, "stdout": syntax.stdout or "",
-                        "stderr": (syntax_error or "Invalid Bash syntax")[:4000], "syntax_error": True}
+        syntax_error = str(syntax.stderr or "")
+        incomplete_input = any(marker in syntax_error for marker in (
+            "unexpected EOF while looking for matching",
+            "syntax error: unexpected end of file",
+            "here-document at line",
+        )) and (
+            "delimited by end-of-file" in syntax_error
+            or "unexpected EOF while looking for matching" in syntax_error
+            or "syntax error: unexpected end of file" in syntax_error
+        )
+        if syntax.returncode and not incomplete_input:
+            return {"state": "failed", "exit_code": 2, "stdout": syntax.stdout or "",
+                    "stderr": (syntax_error or "Invalid Bash syntax")[:4000], "syntax_error": True}
         with self._lock_for(conversation_id):
             self.ensure_session_idle(conversation_id)
             runtime = self.get_runtime(conversation_id)
@@ -446,10 +500,13 @@ print(json.dumps(result))
             starter = getattr(runtime, "start_operation", None)
             if not callable(starter):
                 raise SandboxError("Подключённый SandboxRuntime не поддерживает фоновые операции SWE-ReX.")
-            # Give Bash a recognizable secondary prompt. If a heredoc, quote,
-            # compound statement or line continuation is left open, Bash emits
-            # this marker instead of looking like a silently running command.
-            shell_command = "export PS2='__LOCALAGENT_BASH_CONTINUATION__'\n" + command
+            # Instrument only commands that bash -n identified as syntactically
+            # incomplete. Valid heredocs and multiline commands must not emit a
+            # PS2 marker that could be mistaken for a stuck shell.
+            shell_command = (
+                "export PS2='__LOCALAGENT_BASH_CONTINUATION__'\n" + command
+                if incomplete_input else command
+            )
             result = starter(shell_command, session="main", timeout=timeout, idempotency_key=idempotency_key)
             operation_id = str(result.get("operation_id") or "")
             if not operation_id:
@@ -457,7 +514,8 @@ print(json.dumps(result))
             with self._guard:
                 self._active_operations[conversation_id] = {"operation_id": operation_id, "session": "main"}
         return {"operation_id": operation_id, "session": "main", "state": result.get("state", "running"),
-                "created_at": result.get("created_at"), "command": command, "background": True}
+                "created_at": result.get("created_at"), "command": command, "timeout": timeout,
+                "expects_continuation": incomplete_input, "background": True}
 
     @staticmethod
     def _terminal_control_text(output: str, state: str, elapsed: float, idle_seconds: float,
@@ -539,6 +597,8 @@ print(json.dumps(result))
             active = {
                 "operation_id": operation_id, "session": "main", "cursor": 0,
                 "output": "", "command": command, "command_timeout": timeout,
+                "waiting_for_continuation": bool(started.get("expects_continuation")),
+                "continuation_prompt_seen_at": None,
                 "runtime_errors": [], "started_monotonic": started_now,
                 "last_output_monotonic": started_now,
                 "started_at_wall": time.time(), "last_output_at_wall": time.time(),
@@ -557,13 +617,13 @@ print(json.dumps(result))
                 active["output"] = str(active.get("output") or "").replace(
                     "__LOCALAGENT_BASH_CONTINUATION__", ""
                 )
-                active["waiting_for_continuation"] = False
+                if active.get("waiting_for_continuation"):
+                    active["continuation_prompt_seen_at"] = None
                 self.send_operation_input(conversation_id, operation_id, command, sendline=True)
 
         command_started_at = float(active.get("started_monotonic", time.monotonic()))
         call_started_at = time.monotonic()
         idle_limit = max(0.1, float(getattr(settings, "terminal_idle_timeout_seconds", 300)))
-        max_wait = max(1.0, float(getattr(settings, "terminal_max_wait_seconds", 300)))
         last_output_at = float(active.get("last_output_monotonic", call_started_at))
         state = "running"
         latest: dict[str, Any] = {}
@@ -575,16 +635,12 @@ print(json.dumps(result))
         while True:
             now = time.monotonic()
             elapsed = now - command_started_at
-            remaining = max_wait - (now - call_started_at)
-            if remaining <= 0:
-                diagnostic_reason = "max_wait"
-                break
             try:
                 latest = self.get_operation(
                     conversation_id, operation_id,
                     cursor=int(active.get("cursor", 0)),
                     max_output_chars=1_048_576,
-                    wait_timeout=min(poll_interval, max(0.1, remaining)),
+                    wait_timeout=poll_interval,
                 )
                 poll_count += 1
                 runtime_errors = 0
@@ -604,7 +660,7 @@ print(json.dumps(result))
                     diagnostic_reason = "runtime_unresponsive"
                     latest = {"state": state, "runtime_error": runtime_error_text}
                     break
-                time.sleep(min(1.0, max(0.1, remaining)))
+                time.sleep(1.0)
                 continue
             chunk = str(latest.get("stdout") or latest.get("output") or "")
             if chunk:
@@ -612,14 +668,13 @@ print(json.dumps(result))
                 last_output_at = time.monotonic()
                 active["last_output_monotonic"] = last_output_at
                 active["last_output_at_wall"] = time.time()
-            if "__LOCALAGENT_BASH_CONTINUATION__" in str(active.get("output") or ""):
-                # This is Bash's PS2 prompt: the submitted command is syntactically
-                # incomplete and Bash is waiting for more command text (e.g. heredoc EOF).
-                state = "waiting_input"
-                active["waiting_for_continuation"] = True
-                latest["state"] = "waiting_input"
-                latest["waiting_input"] = True
-                break
+            if (active.get("waiting_for_continuation")
+                    and "__LOCALAGENT_BASH_CONTINUATION__" in chunk):
+                # PS2 is only meaningful for commands that bash -n already
+                # identified as incomplete. Keep observing instead of returning
+                # control to the executor; if no further input/output arrives,
+                # hand the operation to the diagnostic controller.
+                active["continuation_prompt_seen_at"] = time.monotonic()
             active["output_truncated"] = bool(active.get("output_truncated")) or bool(
                 latest.get("stdout_truncated") or latest.get("output_truncated")
             )
@@ -627,11 +682,17 @@ print(json.dumps(result))
             state = str(latest.get("state") or "failed")
             if state in {"completed", "interrupted", "timed_out", "failed"}:
                 break
-            if state == "waiting_input":
+            if state == "waiting_input" and not active.get("waiting_for_continuation"):
                 break
-            # One quiet poll is not enough to distinguish a silent command from
-            # a transient gap. Require a second observation before handing off
-            # to diagnostics; waiting_input and terminal states were handled above.
+            # An incomplete Bash command stays under controller ownership. Do
+            # not return a fake waiting_input result to the main executor. Give
+            # Bash time to consume any already-buffered continuation, then hand
+            # it to diagnostics only after a full no-progress idle interval.
+            if (active.get("waiting_for_continuation")
+                    and active.get("continuation_prompt_seen_at") is not None
+                    and time.monotonic() - max(last_output_at, active["continuation_prompt_seen_at"]) >= idle_limit):
+                diagnostic_reason = "bash_continuation_stalled"
+                break
             if poll_count >= 2 and time.monotonic() - last_output_at >= idle_limit:
                 diagnostic_reason = "idle_timeout"
                 break
