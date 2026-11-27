@@ -676,13 +676,15 @@ print(json.dumps(result))
                 last_output_at = time.monotonic()
                 active["last_output_monotonic"] = last_output_at
                 active["last_output_at_wall"] = time.time()
-            if (active.get("waiting_for_continuation")
-                    and "__LOCALAGENT_BASH_CONTINUATION__" in chunk):
+            marker = "__LOCALAGENT_BASH_CONTINUATION__"
+            marker_probe = str(active.get("continuation_marker_tail") or "") + chunk
+            if active.get("waiting_for_continuation") and marker in marker_probe:
                 # PS2 is only meaningful for commands that bash -n already
                 # identified as incomplete. Keep observing instead of returning
                 # control to the executor; if no further input/output arrives,
                 # hand the operation to the diagnostic controller.
                 active["continuation_prompt_seen_at"] = time.monotonic()
+            active["continuation_marker_tail"] = marker_probe[-(len(marker) - 1):]
             active["output_truncated"] = bool(active.get("output_truncated")) or bool(
                 latest.get("stdout_truncated") or latest.get("output_truncated")
             )
