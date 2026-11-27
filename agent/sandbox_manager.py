@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import hashlib
 import json
 import os
@@ -415,6 +416,30 @@ print(json.dumps(result))
         }
         always_network = {"curl", "wget", "npx"}
 
+        def python_code_requires_network(code: str) -> bool:
+            try:
+                tree = ast.parse(code)
+            except (SyntaxError, ValueError, TypeError):
+                return False
+            network_roots = {"requests", "httpx", "aiohttp", "urllib3"}
+            network_methods = {
+                "get", "post", "put", "patch", "delete", "head", "options",
+                "urlopen", "urlretrieve", "request", "create_connection",
+            }
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    if node.func.attr.lower() not in network_methods:
+                        continue
+                    value = node.func.value
+                    if isinstance(value, ast.Name) and value.id in network_roots:
+                        return True
+                    if (isinstance(value, ast.Attribute)
+                            and isinstance(value.value, ast.Name)
+                            and value.value.id == "urllib"
+                            and value.attr == "request"):
+                        return True
+            return False
+
         def walk(node):
             if getattr(node, "kind", None) == "command":
                 words = [
@@ -432,6 +457,15 @@ print(json.dumps(result))
                     executable = words[0].rsplit("/", 1)[-1].lower()
                     if executable in always_network:
                         return True
+                    if executable in {"python", "python3", "pypy", "pypy3"}:
+                        try:
+                            argv = shlex.split(str(command), posix=True)
+                        except ValueError:
+                            argv = []
+                        if "-c" in argv:
+                            code_index = argv.index("-c") + 1
+                            if code_index < len(argv) and python_code_requires_network(argv[code_index]):
+                                return True
                     if executable == "git" and len(words) > 2 and words[1] == "submodule":
                         if words[2] in {"add", "init", "update"}:
                             return True
@@ -706,7 +740,12 @@ print(json.dumps(result))
                     and time.monotonic() - max(last_output_at, active["continuation_prompt_seen_at"]) >= idle_limit):
                 diagnostic_reason = "bash_continuation_stalled"
                 break
-            if poll_count >= 2 and time.monotonic() - last_output_at >= idle_limit:
+            if (poll_count >= 2
+                    and time.monotonic() - last_output_at >= idle_limit
+                    and not (
+                        active.get("waiting_for_continuation")
+                        and active.get("continuation_prompt_seen_at") is not None
+                    )):
                 diagnostic_reason = "idle_timeout"
                 break
 
