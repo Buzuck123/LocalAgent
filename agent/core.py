@@ -2479,7 +2479,7 @@ Return only JSON, without Markdown: {"task_prompt":"Concrete work and checks for
 """
 
 STEP_REVIEW_SYSTEM_PROMPT = """Review the current LocalAgent plan step and the WHOLE task plan. Consider the original goal, completed work, remaining stages, latest observations and previous attempts. Return one compact JSON object, without Markdown:
-{"decision":"complete_step | retry_step | continue_step | revise_plan | question","reason":"what was tried and why it cannot proceed","question":"specific question for the user, only for question","verification":"evidence, only for complete_step","reconciled_steps":[{"step_id":"existing later step id","verification":"concrete observed result"}],"task_prompt":"next instruction, only for retry_step/continue_step","plan_update":{"steps":["remaining stage 1","remaining stage 2"]}}
+{"decision":"complete_step | retry_step | continue_step | revise_plan | question","reason":"what was tried and why it cannot proceed","question":"specific question for the user, only for question","verification":"optional concise evidence note for complete_step","reconciled_steps":[{"step_id":"existing later step id","verification":"concrete observed result"}],"task_prompt":"next instruction, only for retry_step/continue_step","plan_update":{"steps":["remaining stage 1","remaining stage 2"]}}
 Rules:
 - complete_step only when the current stage is actually complete and evidence supports it.
 - Evaluate completion against the current stage only, not the whole project. Work performed for later stages does not by itself satisfy the current stage.
@@ -2741,11 +2741,15 @@ def _parse_step_decision(content):
         raise ValueError(f"Недопустимое решение этапа: {decision}")
     if not isinstance(data.get("reason"), str) or not data["reason"].strip():
         raise ValueError("В решении этапа отсутствует reason")
-    if decision == "complete_step" and (
-        not isinstance(data.get("verification"), str)
-        or not data["verification"].strip()
-    ):
-        raise ValueError("Для complete_step требуется verification")
+    # verification is a descriptive receipt, not a decision prerequisite.
+    # Some models correctly return the decision and reason but omit this
+    # optional field; the controller supplies a concise fallback below.
+    verification = data.get("verification")
+    data["verification"] = (
+        verification.strip()
+        if isinstance(verification, str) and verification.strip()
+        else None
+    )
     if decision in {"retry_step", "continue_step"} and (
         not isinstance(data.get("task_prompt"), str)
         or not data["task_prompt"].strip()
@@ -3396,6 +3400,18 @@ def _review_step(
             )
             content = response.get("message", {}).get("content", "")
             decision = _parse_step_decision(content)
+            if decision.get("decision") == "complete_step" and not decision.get("verification"):
+                # Keep the persisted step receipt useful without forcing the
+                # model to emit a redundant field. The reviewer's reason and
+                # executor's actual result remain visible in the audit trail.
+                review_reason = str(decision.get("reason") or "").strip()
+                observed_result = str(result_text or "").strip()
+                receipt = "Ревьюер подтвердил завершение этапа."
+                if review_reason:
+                    receipt += f" Основание: {review_reason[:700]}"
+                if observed_result:
+                    receipt += f" Результат исполнителя: {observed_result[:1200]}"
+                decision["verification"] = receipt[:2000]
             _validate_revision_size_for_plan(plan, decision)
             if revision_required and decision.get("decision") != "revise_plan":
                 raise ValueError(
