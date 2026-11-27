@@ -664,7 +664,7 @@ def _tool_operation_error_record(error_text, exception_type):
 
 _TERMINAL_CONTROL_TOOLS = {
     "terminal", "terminal_start", "terminal_poll", "terminal_input",
-    "terminal_interrupt", "terminal_resize",
+    "terminal_resize",
 }
 
 
@@ -1878,8 +1878,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
     started = time.monotonic()
     try:
         if name in {"terminal", "terminal_start", "terminal_poll", "terminal_input",
-                    "terminal_interrupt", "terminal_resize",
-                    "load_file_for_model", "publish_file"}:
+                    "terminal_resize", "load_file_for_model", "publish_file"}:
             task = db.get_task(task_id) if task_id else None
             if not task:
                 raise RuntimeError("Не удалось определить диалог для sandbox-инструмента")
