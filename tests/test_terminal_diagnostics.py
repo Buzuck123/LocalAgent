@@ -477,6 +477,68 @@ def test_terminal_diagnostic_keeps_primary_agent_blocked_until_recovery(monkeypa
     assert "Диагностика приостановлена после 3 циклов" not in result["_terminal_output"]
 
 
+def test_internal_terminal_poll_error_stays_inside_controller(monkeypatch):
+    from agent import db
+    from agent import sandbox_manager as sandbox_module
+
+    class Manager:
+        def is_runtime_responsive(self, conversation_id):
+            return True
+
+        def get_operation(self, conversation_id, operation_id, **kwargs):
+            return {
+                "state": "completed",
+                "stdout": "final command output",
+                "stderr": "",
+                "cursor": 42,
+                "exit_code": 0,
+                "timed_out": False,
+                "interrupted": False,
+            }
+
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", Manager())
+    monkeypatch.setattr(core, "_verify_or_recover_terminal_session", lambda *args, **kwargs: {"verified": True})
+    monkeypatch.setattr(
+        db, "get_task",
+        lambda task_id: {"id": task_id, "conversation_id": "conversation-1"},
+    )
+    monkeypatch.setattr(core, "_record_tool_debug_trace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
+    calls = []
+
+    def fake_dispatch(name, arguments, **kwargs):
+        calls.append((name, arguments))
+        if len(calls) == 1:
+            return {
+                "_terminal_text": "",
+                "_terminal_output": "",
+                "_terminal_command": "sleep 30",
+                "state": "running",
+                "operation_id": "terminal-op",
+                "cursor": 0,
+                "_diagnostic_due": True,
+            }
+        raise core.SandboxError("temporary proxy JSONDecodeError")
+
+    monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(
+        core, "_run_terminal_diagnostic",
+        lambda *args, **kwargs: ("continue_waiting", "Still active.", "diag-1", [], [], None),
+    )
+
+    result = core._dispatch_tool_for_task(
+        "terminal", {"command": "sleep 30"}, "task-1"
+    )
+
+    assert len(calls) == 2  # initial command plus one internal poll
+    assert result["state"] == "completed"
+    assert result["_terminal_text"] == "final command output"
+    assert "JSONDecodeError" not in result["_terminal_text"]
+    assert "_runtime_error" not in result
+    assert "_diagnostic_due" not in result
+    assert "operation_id" not in result
+
+
 def test_terminal_diagnostic_llm_failure_is_preserved_for_task_pause(monkeypatch):
     from agent import db
     from agent import sandbox_manager as sandbox_module
