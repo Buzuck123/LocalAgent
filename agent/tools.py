@@ -553,9 +553,10 @@ TOOL_DEFINITIONS.insert(1, {"type": "function", "function": {
     "name": "terminal",
     "description": (
         "The only interface to this conversation's persistent Linux computer and Bash terminal. "
-        "When idle, send an ordinary Bash command. LocalAgent waits internally for up to the configured terminal checkpoint "
-        "(300 seconds by default); it does not require repeated empty-command polling during this interval. "
-        "If the operation remains active or the shell appears stuck, a separate diagnostic agent takes over automatically; "
+        "When idle, send an ordinary Bash command. LocalAgent polls internally while the operation is making progress; "
+        "it does not require repeated empty-command polling. Commands have no controller-imposed maximum lifetime. "
+        "If output stops beyond the configured idle threshold, or an incomplete Bash continuation is confirmed stalled, "
+        "a separate diagnostic agent takes over automatically; "
         "the main executor must not diagnose, interrupt, reset, or recover the environment. "
         "Normal long-running commands return only their terminal output unless the diagnostic agent intervenes. "
         "Use text in command only to answer a genuine interactive prompt reported by the terminal. "
