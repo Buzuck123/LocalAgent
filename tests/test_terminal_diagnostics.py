@@ -856,10 +856,14 @@ def test_diagnostic_summary_does_not_require_process_evidence():
         "idle_seconds": 1200,
         "operation_state": "running",
         "runtime_responsive": True,
+        "diagnostic_reason": "bash_continuation_stalled",
+        "bash_continuation_pending": True,
         "process_snapshot": {"ok": False, "error": "diagnostic session unavailable"},
     }
     report, observations = build_diagnostic_context(snapshot)
     assert report["operation"]["state"] == "running"
+    assert report["operation"]["monitor_reason"] == "bash_continuation_stalled"
+    assert report["operation"]["bash_continuation_pending"] is True
     assert "processes" not in report["runtime"]
     assert observations == []
 
