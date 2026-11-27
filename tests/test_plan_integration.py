@@ -139,7 +139,13 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
         def start_operation(self, command, *, session="main", timeout=None,
                             idempotency_key=None):
             operation_id = str(uuid.uuid4())
-            self.commands.append(command)
+            # SandboxManager prepends a PS2 prompt marker for interactive
+            # continuation detection. Keep the original user command as the
+            # execution ledger used by FakeClient, while executing the exact
+            # instrumented command received at the runtime boundary.
+            marker = "export PS2='__LOCALAGENT_BASH_CONTINUATION__'\\n"
+            assert command.startswith(marker)
+            self.commands.append(command[len(marker):])
             result = subprocess.run(
                 ["bash", "-c", command], cwd=workspace,
                 capture_output=True, text=True, check=False,
