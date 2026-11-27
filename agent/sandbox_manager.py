@@ -629,6 +629,7 @@ print(json.dumps(result))
                 )
                 if active.get("waiting_for_continuation"):
                     active["continuation_prompt_seen_at"] = None
+                    active["continuation_marker_tail"] = ""
                 self.send_operation_input(conversation_id, operation_id, command, sendline=True)
 
         command_started_at = float(active.get("started_monotonic", time.monotonic()))
