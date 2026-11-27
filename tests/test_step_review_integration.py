@@ -73,7 +73,8 @@ def test_model_reviews_step_result_before_task_completes(tmp_path, monkeypatch):
     receipt = checkpoint["plan"]["steps"][0]["verification"]
     assert "Ревьюер подтвердил завершение этапа" in receipt
     assert "Результат соответствует критерию" in receipt
-    assert "Анализ подготовлен." in receipt
+    assert "Вывод: задача решается таким способом." in receipt
+    assert "Анализ подготовлен." not in receipt  # final_answer is separate from step execution evidence
     assert checkpoint["last_step_decision"]["decision"] == "complete_step"
     review_calls = [
         index for index, (messages, _tools) in enumerate(fake_client.calls)
