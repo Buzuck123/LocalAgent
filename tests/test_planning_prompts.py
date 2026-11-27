@@ -84,12 +84,13 @@ def test_planner_retries_after_invalid_plan(monkeypatch):
     assert validate_plan(plan)
 
 
-def test_step_decision_requires_verification_for_completion():
-    with pytest.raises(ValueError, match="verification"):
-        core._parse_step_decision(json.dumps({
-            "decision": "complete_step",
-            "reason": "Похоже, готово",
-        }))
+def test_step_decision_accepts_completion_without_optional_verification():
+    decision = core._parse_step_decision(json.dumps({
+        "decision": "complete_step",
+        "reason": "Похоже, готово",
+    }))
+    assert decision["decision"] == "complete_step"
+    assert decision["verification"] is None
 
 
 def test_step_decision_accepts_complete_with_verification():
