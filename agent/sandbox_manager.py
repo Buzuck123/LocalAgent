@@ -409,10 +409,11 @@ print(json.dumps(result))
             "yarn": {"install", "add", "upgrade", "up", "import"},
             "cargo": {"install", "fetch", "update", "publish"},
             "go": {"get", "install"},
+            "git": {"clone", "fetch", "pull", "push", "submodule"},
             "playwright": {"install"},
             "chromium": {"install"},
         }
-        always_network = {"curl", "wget"}
+        always_network = {"curl", "wget", "npx"}
 
         def walk(node):
             if getattr(node, "kind", None) == "command":
@@ -431,9 +432,14 @@ print(json.dumps(result))
                     executable = words[0].rsplit("/", 1)[-1].lower()
                     if executable in always_network:
                         return True
+                    if executable in {"python", "python3", "pypy", "pypy3"} and len(words) > 3 and words[1:3] == ["-m", "pip"]:
+                        if words[3] in {"install", "download"}:
+                            return True
                     if executable == "uv" and len(words) > 2 and words[1] == "pip":
                         if words[2] in {"install", "download", "sync"}:
                             return True
+                    elif executable == "uv" and len(words) > 3 and words[1:3] == ["tool", "install"]:
+                        return True
                     elif executable in network_subcommands:
                         if len(words) > 1 and words[1].lower() in network_subcommands[executable]:
                             return True
