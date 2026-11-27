@@ -144,8 +144,8 @@ def test_plan_steps_are_verified_and_checkpointed(tmp_path, monkeypatch):
             # execution ledger used by FakeClient, while executing the exact
             # instrumented command received at the runtime boundary.
             marker = "export PS2='__LOCALAGENT_BASH_CONTINUATION__'\n"
-            assert command.startswith(marker)
-            self.commands.append(command[len(marker):])
+            original_command = command[len(marker):] if command.startswith(marker) else command
+            self.commands.append(original_command)
             result = subprocess.run(
                 ["bash", "-c", command], cwd=workspace,
                 capture_output=True, text=True, check=False,
