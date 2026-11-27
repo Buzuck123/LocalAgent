@@ -652,6 +652,8 @@ def _dispatch_tool_impl(name: str, arguments: dict[str, Any], *, task_id: str | 
         from .sandbox_manager import sandbox_manager
         if not conversation_id:
             raise ValueError("Terminal requires a conversation-scoped sandbox")
+        if str(arguments.get("command") or "") in {"\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}:
+            raise ValueError("Прерывание зависшей операции выполняет только диагностический контроллер.")
         return sandbox_manager.terminal_command(
             conversation_id, arguments.get("command", ""),
             timeout=arguments.get("timeout"), idempotency_key=idempotency_key,
