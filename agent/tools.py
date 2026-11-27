@@ -566,7 +566,7 @@ TOOL_DEFINITIONS.insert(1, {"type": "function", "function": {
         "command": {"type": "string", "maxLength": 100000,
                     "description": "Bash command to execute. Omit or use an empty string to wait for an active command; send text only when the terminal reports a genuine interactive input prompt."},
         "timeout": {"type": ["integer", "null"], "minimum": 1, "maximum": 600, "default": None,
-                    "description": "Optional hard execution limit in seconds for a new command."}},
+                    "description": "Optional timeout value forwarded to the runtime and stored in operation metadata. The controller does not impose a separate maximum command lifetime."}},
         "additionalProperties": False}}})
 
 TOOL_DEFINITIONS.insert(3, {"type": "function", "function": {
