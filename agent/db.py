@@ -504,13 +504,8 @@ def _tool_arguments_summary(arguments: dict[str, Any] | None) -> str:
         else:
             summary[key] = value
     encoded = json.dumps(summary, ensure_ascii=False, default=str, separators=(",", ":"))
-    if len(encoded) > 12000:
-        return json.dumps({
-            "truncated": True,
-            "preview": encoded[:10000],
-            "serialized_chars": len(encoded),
-            "sha256": hashlib.sha256(encoded.encode("utf-8", errors="replace")).hexdigest(),
-        }, ensure_ascii=False, separators=(",", ":"))
+    # Keep the complete operation arguments in SQLite. In particular, terminal
+    # commands must remain inspectable when diagnosing transport/runtime failures.
     return encoded
 
 
