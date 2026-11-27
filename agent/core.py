@@ -62,11 +62,10 @@ LANGUAGE
 
 COMPUTER
 - `terminal` is the computer interface: a persistent Linux container with Bash, a writable filesystem, Python and ordinary command-line programs. Use it for file editing, scripts, data processing, package installation, HTTP requests, web search and browser automation. `load_file_for_model` is only for direct model inspection, and `publish_file` only delivers a finished file.
-- `reset_terminal_session` recreates only the Bash session inside the existing container. Use it only after polling and CTRL+C fail or the runtime reports an unrecoverable operation-ID mismatch (for example, Unknown operation while LocalAgent still says running). Set confirm_reset=true and explain the reason. It terminates the old shell session and its attached command; do not use it merely because a command is taking time. The container and workspace files remain.
+- Never diagnose, interrupt, reset, or recover the terminal environment. If a command appears stuck, wait for the controller's diagnostic agent; it owns all environment diagnosis and recovery.
 - A completed terminal call returns its available output, not a separate exit code. Judge success from the output and subsequent observations.
-- If a command is still running, send an empty command to wait, text through `command` for interactive input, or `CTRL+C` to interrupt it.
-- This is mandatory: while terminal reports `running` or `waiting_input`, do not call any other tool or start another command. Use `terminal` to wait, provide required input, or interrupt; continue only after terminal reports a finished state. The sole recovery exception is `reset_terminal_session` after the unrecoverable operation-ID mismatch described below.
-- If repeated terminal polling or CTRL+C returns an unrecoverable runtime error such as `Unknown operation` while LocalAgent still reports the operation as running, call `reset_terminal_session` with confirm_reset=true and a concise reason. Then verify the fresh shell and file access before resuming work. Do not repeatedly retry the stale operation ID.
+- If a command is still running, the controller waits internally. Provide text through `command` only when the terminal reports a genuine interactive input prompt.
+- This is mandatory: while terminal reports `running` or `waiting_input`, do not start another command or call unrelated tools. The controller owns waiting, interruption, diagnosis, and all recovery actions; never attempt to repair the environment yourself.
 - The shell state and container filesystem persist between calls in this conversation. The working directory starts at `/workspace`.
 - The container is already prepared. You run as root INSIDE the container: install additional OS/Python packages with `apt`/`pip` when genuinely needed. This is not host root access; do not try to control Podman or inspect the host.
 - `/workspace` is the container's writable working area. `/host-workspace` is a read-write mount of the host's shared workspace; changes there persist outside the container. Do not assume the whole host filesystem is mounted.
@@ -522,7 +521,7 @@ def _messages_with_tool_scope(messages: list[dict], tool_definitions: list[dict]
     ]
     if names:
         groups = {
-            "Computer": [n for n in names if n in {"terminal", "reset_terminal_session", "publish_file", "get_tool_result"}],
+            "Computer": [n for n in names if n in {"terminal", "publish_file", "get_tool_result"}],
             "Other": [n for n in names if n not in {"terminal", "reset_terminal_session", "publish_file", "get_tool_result"}],
         }
         sections = [f"{label}: {', '.join(items)}" for label, items in groups.items() if items]
@@ -665,7 +664,7 @@ def _tool_operation_error_record(error_text, exception_type):
 
 _TERMINAL_CONTROL_TOOLS = {
     "terminal", "terminal_start", "terminal_poll", "terminal_input",
-    "terminal_interrupt", "terminal_resize", "reset_terminal_session",
+    "terminal_interrupt", "terminal_resize",
 }
 
 
@@ -673,20 +672,13 @@ def _is_safe_terminal_recovery_call(tool_name, arguments, conversation_id):
     """Polling, interrupting and recovering a stuck terminal must survive repeat guards."""
     if not isinstance(arguments, dict):
         return False
-    if tool_name == "reset_terminal_session":
-        if arguments.get("confirm_reset") is not True:
-            return False
-        from .sandbox_manager import sandbox_manager
-        return sandbox_manager.get_active_operation(conversation_id) is not None
     if tool_name != "terminal":
         return False
     command = str(arguments.get("command") or "")
     if not command.strip():
         # Empty terminal calls only poll; repeating a poll is safe and necessary.
         return True
-    if command in {"\x03", "CTRL+C", "ctrl+c", "Ctrl+C"}:
-        from .sandbox_manager import sandbox_manager
-        return sandbox_manager.get_active_operation(conversation_id) is not None
+    # Interrupts are diagnostic-controller actions, never executor tool calls.
     return False
 
 
@@ -1892,7 +1884,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
     started = time.monotonic()
     try:
         if name in {"terminal", "terminal_start", "terminal_poll", "terminal_input",
-                    "terminal_interrupt", "terminal_resize", "reset_terminal_session",
+                    "terminal_interrupt", "terminal_resize",
                     "load_file_for_model", "publish_file"}:
             task = db.get_task(task_id) if task_id else None
             if not task:
