@@ -1,5 +1,7 @@
 import threading
 
+import pytest
+
 from agent import core
 from agent.sandbox_manager import SandboxManager
 
@@ -82,7 +84,7 @@ def test_unclosed_quote_is_sent_to_interactive_bash_for_ps2_detection(monkeypatc
     assert "echo 'unfinished" in started["command"]
 
 
-def test_ps2_marker_returns_control_for_incomplete_bash_input(monkeypatch):
+def test_ps2_marker_waits_for_no_progress_then_hands_off_to_diagnostics(monkeypatch):
     import agent.sandbox_manager as sandbox_module
 
     manager = object.__new__(SandboxManager)
@@ -91,18 +93,32 @@ def test_ps2_marker_returns_control_for_incomplete_bash_input(monkeypatch):
         "conversation-1": {
             "operation_id": "op-heredoc", "session": "main",
             "cursor": 0, "output": "", "command": "cat <<EOF",
-            "started_monotonic": __import__("time").monotonic(),
-            "last_output_monotonic": __import__("time").monotonic(),
+            "command_timeout": None, "waiting_for_continuation": True,
+            "continuation_prompt_seen_at": None,
+            "started_monotonic": 0.0, "last_output_monotonic": 0.0,
             "started_at_wall": 1000, "last_output_at_wall": 1000,
         }
     }
     manager._new_sessions = set()
     manager._runtimes = {}
-    manager.get_operation = lambda *args, **kwargs: {
-        "state": "running",
-        "stdout": "__LOCALAGENT_BASH_CONTINUATION__",
-        "next_cursor": 1,
-    }
+    polls = []
+
+    def get_operation(*args, **kwargs):
+        polls.append(kwargs)
+        return {
+            "state": "running",
+            "stdout": "__LOCALAGENT_BASH_CONTINUATION__" if len(polls) == 1 else "",
+            "next_cursor": 1,
+        }
+
+    manager.get_operation = get_operation
+    ticks = {"value": 0.0}
+
+    def monotonic():
+        ticks["value"] += 0.6
+        return ticks["value"]
+
+    monkeypatch.setattr(sandbox_module.time, "monotonic", monotonic)
     monkeypatch.setattr(
         sandbox_module, "settings",
         type("Settings", (), {
@@ -114,12 +130,42 @@ def test_ps2_marker_returns_control_for_incomplete_bash_input(monkeypatch):
 
     result = manager.terminal_command("conversation-1", "")
 
-    assert result["state"] == "waiting_input"
-    assert result["_diagnostic_due"] is False
+    assert len(polls) >= 2
+    assert result["state"] == "running"
+    assert result["_diagnostic_due"] is True
+    assert result["_diagnostic_reason"] == "bash_continuation_stalled"
     assert result["operation_id"] == "op-heredoc"
-    assert result["input_wait_reason"] == "bash_continuation"
-    assert "Bash ожидает продолжения незавершённой команды" in result["_terminal_text"]
     assert "LOCALAGENT_BASH_CONTINUATION" not in result["_terminal_text"]
+
+
+def test_valid_multiline_command_is_not_instrumented_with_ps2(monkeypatch):
+    from types import SimpleNamespace
+
+    manager = object.__new__(SandboxManager)
+    manager._guard = threading.RLock()
+    manager._lock_for = lambda conversation_id: threading.RLock()
+    manager.ensure_session_idle = lambda conversation_id: None
+    manager._ensure_network_proxy = lambda runtime, command: None
+    started = {}
+
+    class Runtime:
+        def start_operation(self, command, *, session, timeout, idempotency_key):
+            started["command"] = command
+            started["timeout"] = timeout
+            return {"operation_id": "op-valid", "state": "running"}
+
+    manager.get_runtime = lambda conversation_id: Runtime()
+    monkeypatch.setattr(
+        "agent.sandbox_manager.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    result = manager.start_operation("conversation-1", "cat <<'EOF'\nhello\nEOF", timeout=77)
+
+    assert started["command"] == "cat <<'EOF'\nhello\nEOF"
+    assert started["timeout"] == 77
+    assert result["expects_continuation"] is False
+    assert result["timeout"] == 77
 
 
 def test_diagnostic_recovery_tools_are_exposed_in_order():
@@ -816,3 +862,73 @@ def test_diagnostic_summary_does_not_require_process_evidence():
     assert "processes" not in report["runtime"]
     assert observations == []
 
+@pytest.mark.parametrize(("command", "expected"), [
+    ("pip list", False),
+    ("pip show vite", False),
+    ("pip install vite", True),
+    ("python -m pip install vite", True),
+    ("npm run build", False),
+    ("npm install", True),
+    ("pnpm test", False),
+    ("pnpm add vite", True),
+    ("git status", False),
+    ("git clone https://example.invalid/repo.git", True),
+    ("cat > package.json <<'EOF'\\n{\\n  \"script\": \"npm run build\"\\n}\\nEOF", False),
+    ("echo 'curl https://example.invalid' > notes.txt", False),
+    ("curl https://example.invalid", True),
+])
+def test_network_requirement_uses_executable_commands_not_arbitrary_text(command, expected):
+    assert SandboxManager._command_requires_network(command) is expected
+
+
+def test_executor_cannot_interrupt_or_recreate_terminal_environment():
+    names = {
+        item["function"]["name"]
+        for item in core.TOOL_DEFINITIONS
+    }
+    assert "reset_terminal_session" not in names
+    assert "reset_terminal_session" not in core.SYSTEM_PROMPT
+    assert core._is_safe_terminal_recovery_call(
+        "terminal", {"command": "CTRL+C"}, "conversation-1"
+    ) is False
+    assert core._is_safe_terminal_recovery_call(
+        "reset_terminal_session", {"confirm_reset": True}, "conversation-1"
+    ) is False
+
+
+def test_terminal_timeout_is_retained_as_operation_metadata(monkeypatch):
+    import agent.sandbox_manager as sandbox_module
+    from types import SimpleNamespace
+
+    manager = object.__new__(SandboxManager)
+    manager._guard = threading.RLock()
+    manager._active_operations = {}
+    manager._new_sessions = set()
+    manager._runtimes = {}
+    manager._lock_for = lambda conversation_id: threading.RLock()
+    captured = {}
+
+    def start_operation(conversation_id, command, timeout=None, **kwargs):
+        captured["timeout"] = timeout
+        return {"operation_id": "op-timeout", "state": "running",
+                "expects_continuation": False, "timeout": timeout}
+
+    manager.start_operation = start_operation
+    manager.get_operation = lambda *args, **kwargs: {
+        "state": "completed", "stdout": "done", "next_cursor": 1, "exit_code": 0,
+    }
+    manager.get_runtime = lambda *args, **kwargs: SimpleNamespace(
+        run=lambda *a, **k: {"exit_code": 0, "stdout": "__LOCALAGENT_TERMINAL_READY__"}
+    )
+    monkeypatch.setattr(
+        sandbox_module, "settings",
+        SimpleNamespace(
+            terminal_idle_timeout_seconds=1,
+            terminal_poll_interval_seconds=0.25,
+        ),
+    )
+
+    result = manager.terminal_command("conversation-1", "echo done", timeout=73)
+
+    assert captured["timeout"] == 73
+    assert result["_terminal_hard_timeout"] == 73
