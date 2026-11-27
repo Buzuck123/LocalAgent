@@ -68,6 +68,7 @@ class SandboxManager:
         self._active_operations: dict[str, dict[str, Any]] = {}
         self._diagnostic_operation_samples: dict[tuple[str, str], dict[str, Any]] = {}
         self._new_sessions: set[str] = set()
+        self._recreated_containers: set[str] = set()
 
     def _lock_for(self, conversation_id: str):
         with self._guard:
@@ -251,7 +252,18 @@ class SandboxManager:
                 if found_id and found_id != container_id:
                     raise SandboxError("ID контейнера в БД не совпадает с контейнером по label.")
                 if not found_id:
-                    raise SandboxError("Контейнер диалога отсутствует. Автоматическое пересоздание запрещено, чтобы не потерять данные.")
+                    # The workspace is a host bind mount, so it survives container
+                    # replacement. Recreate the missing container with its persisted
+                    # runtime token and report the new shell to the caller.
+                    container_id, port = self._create_container(conversation_id, record["auth_token"])
+                    db.upsert_sandbox(
+                        conversation_id, container_id, self._container_name(conversation_id),
+                        port, record["auth_token"], "main", "running",
+                    )
+                    found_id = container_id
+                    session_may_be_missing = True
+                    with self._guard:
+                        self._recreated_containers.add(conversation_id)
                 inspect_data = self._inspect(found_id)
                 if not (inspect_data.get("State") or {}).get("Running"):
                     self._podman("start", found_id)
@@ -419,8 +431,14 @@ print(json.dumps(result))
             raise ValueError("timeout must be None or between 1 and 600 seconds")
         syntax = subprocess.run(["bash", "-n", "-c", command], capture_output=True, text=True, timeout=5, check=False)
         if syntax.returncode:
-            return {"state": "failed", "exit_code": 2, "stdout": syntax.stdout or "",
-                    "stderr": (syntax.stderr or "Invalid Bash syntax")[:4000], "syntax_error": True}
+            syntax_error = str(syntax.stderr or "")
+            incomplete_input = any(marker in syntax_error for marker in (
+                "unexpected EOF while looking for matching",
+                "syntax error: unexpected end of file",
+            ))
+            if not incomplete_input:
+                return {"state": "failed", "exit_code": 2, "stdout": syntax.stdout or "",
+                        "stderr": (syntax_error or "Invalid Bash syntax")[:4000], "syntax_error": True}
         with self._lock_for(conversation_id):
             self.ensure_session_idle(conversation_id)
             runtime = self.get_runtime(conversation_id)
@@ -428,7 +446,11 @@ print(json.dumps(result))
             starter = getattr(runtime, "start_operation", None)
             if not callable(starter):
                 raise SandboxError("Подключённый SandboxRuntime не поддерживает фоновые операции SWE-ReX.")
-            result = starter(command, session="main", timeout=timeout, idempotency_key=idempotency_key)
+            # Give Bash a recognizable secondary prompt. If a heredoc, quote,
+            # compound statement or line continuation is left open, Bash emits
+            # this marker instead of looking like a silently running command.
+            shell_command = "export PS2='__LOCALAGENT_BASH_CONTINUATION__'\n" + command
+            result = starter(shell_command, session="main", timeout=timeout, idempotency_key=idempotency_key)
             operation_id = str(result.get("operation_id") or "")
             if not operation_id:
                 raise SandboxError("SWE-ReX не вернул operation_id для фоновой операции.")
@@ -439,9 +461,12 @@ print(json.dumps(result))
 
     @staticmethod
     def _terminal_control_text(output: str, state: str, elapsed: float, idle_seconds: float,
-                               *, waiting_input: bool = False) -> str:
+                               *, waiting_input: bool = False,
+                               continuation_input: bool = False) -> str:
         text = output or ""
-        if waiting_input:
+        if continuation_input:
+            notice = "[Bash ожидает продолжения незавершённой команды (например, закрывающий EOF heredoc или кавычку). Передай недостающий текст через terminal.]"
+        elif waiting_input:
             notice = "[Терминал ожидает ввода. Передай ответ следующей командой terminal.]"
         elif state in {"running", "waiting_input"}:
             if idle_seconds >= 0:
@@ -527,6 +552,12 @@ print(json.dumps(result))
                 active["interrupt_requested"] = True
                 active["interrupt_result"] = interrupted
             elif command:
+                # A previous PS2 marker is historical once more input is sent;
+                # only a newly emitted marker can indicate that Bash still waits.
+                active["output"] = str(active.get("output") or "").replace(
+                    "__LOCALAGENT_BASH_CONTINUATION__", ""
+                )
+                active["waiting_for_continuation"] = False
                 self.send_operation_input(conversation_id, operation_id, command, sendline=True)
 
         command_started_at = float(active.get("started_monotonic", time.monotonic()))
@@ -581,6 +612,14 @@ print(json.dumps(result))
                 last_output_at = time.monotonic()
                 active["last_output_monotonic"] = last_output_at
                 active["last_output_at_wall"] = time.time()
+            if "__LOCALAGENT_BASH_CONTINUATION__" in str(active.get("output") or ""):
+                # This is Bash's PS2 prompt: the submitted command is syntactically
+                # incomplete and Bash is waiting for more command text (e.g. heredoc EOF).
+                state = "waiting_input"
+                active["waiting_for_continuation"] = True
+                latest["state"] = "waiting_input"
+                latest["waiting_input"] = True
+                break
             active["output_truncated"] = bool(active.get("output_truncated")) or bool(
                 latest.get("stdout_truncated") or latest.get("output_truncated")
             )
@@ -599,10 +638,11 @@ print(json.dumps(result))
 
         elapsed = max(0.0, time.monotonic() - command_started_at)
         output = str(active.get("output") or "")
+        output = output.replace("__LOCALAGENT_BASH_CONTINUATION__", "")
         waiting = state == "waiting_input"
         still_running = state not in {"completed", "interrupted", "timed_out", "failed"}
-        if state == "failed" and latest.get("stderr"):
-            diagnostic = str(latest.get("stderr"))
+        if state == "failed" and (latest.get("stderr") or latest.get("failure_reason")):
+            diagnostic = str(latest.get("stderr") or latest.get("failure_reason"))
             if diagnostic and diagnostic not in output:
                 output = (output.rstrip() + "\n" + diagnostic).lstrip("\n")
         if state == "timed_out":
@@ -658,11 +698,16 @@ print(json.dumps(result))
             output, "running" if still_running else state, elapsed,
             max(0.0, time.monotonic() - last_output_at),
             waiting_input=waiting,
+            continuation_input=bool(active.get("waiting_for_continuation")),
         )
         if active.get("output_truncated"):
             text = (text.rstrip() + "\n" +
                     "[Внимание: SWE-ReX сообщил об ограничении объёма одного фрагмента вывода; "
                     "экранный вывод может быть неполным.]").lstrip("\n")
+        if latest.get("container_recreated"):
+            text = (text.rstrip() + "\n" +
+                    "[Контейнер отсутствовал и был автоматически пересоздан. Общая рабочая папка сохранена; "
+                    "результат прежней терминальной операции недоступен.]").lstrip("\n")
         if still_running:
             active["state"] = "waiting_input" if waiting else state
         idle_seconds = max(0.0, time.monotonic() - last_output_at)
@@ -677,12 +722,18 @@ print(json.dumps(result))
             "state": state if not still_running else ("waiting_input" if waiting else state),
             "operation_id": operation_id if still_running else None,
             "cursor": active.get("cursor", 0),
+            "container_recreated": bool(latest.get("container_recreated")),
+            "shell_recreated": bool(latest.get("shell_recreated")),
             "exit_code": latest.get("exit_code"),
             "timed_out": latest.get("timed_out", state == "timed_out"),
             "interrupted": latest.get("interrupted", state == "interrupted"),
             "duration_seconds": latest.get("duration_seconds", elapsed),
             "output_truncated": bool(active.get("output_truncated")),
             "shell_state": shell_state,
+            "input_wait_reason": (
+                "bash_continuation" if waiting and active.get("waiting_for_continuation")
+                else "interactive_program" if waiting else None
+            ),
             "_diagnostic_due": bool(still_running and not waiting and diagnostic_reason),
             "_diagnostic_reason": diagnostic_reason,
             "_monitor_state": (
@@ -746,9 +797,6 @@ print(json.dumps(result))
             "runtime_error": str(runtime_error or "")[:500],
             "container_id": container_id or None,
             "operation_state": "unknown",
-            "process_scope_note": (
-                "container_top относится ко всему контейнеру; он не доказывает принадлежность процесса operation."
-            ),
         }
         runtime = self._runtimes.get(conversation_id)
         if runtime is None and record:
@@ -780,6 +828,18 @@ print(json.dumps(result))
                         snapshot["terminal_output_tail"] = delta[-3000:]
                         sample_state["last_output_at"] = time.time()
                         snapshot["idle_seconds"] = 0.0
+                        # Keep the normal terminal monitor's cursor and idle clock
+                        # synchronized with this diagnostic-side observation.
+                        with self._guard:
+                            active = self._active_operations.get(conversation_id)
+                            if active and active.get("operation_id") == operation_id:
+                                active["output"] = str(active.get("output") or "") + delta
+                                active["cursor"] = max(
+                                    int(active.get("cursor") or 0),
+                                    int(next_cursor or sample_state.get("cursor") or 0),
+                                )
+                                active["last_output_monotonic"] = time.monotonic()
+                                active["last_output_at_wall"] = time.time()
                     else:
                         snapshot["idle_seconds"] = round(
                             age_from(sample_state.get("last_output_at"), idle_seconds), 1
@@ -787,55 +847,21 @@ print(json.dumps(result))
                     snapshot["diagnostic_cursor"] = sample_state.get("cursor")
                 except Exception as exc:
                     snapshot["operation_poll_error"] = type(exc).__name__
-        # Always collect a read-only process snapshot in the isolated diagnostic
-        # session. The diagnostic LLM must not be able to omit this evidence merely
-        # by choosing not to call diagnostic_terminal itself. This is container-wide
-        # evidence only; it does not by itself identify or prove the lifetime of the
-        # process belonging to a particular SWE-ReX operation.
-        try:
-            process_snapshot = self.run_diagnostic_terminal(
-                conversation_id, "ps -eo pid,ppid,stat,etime,comm", timeout=10,
-            )
-            snapshot["process_snapshot"] = {
-                "ok": process_snapshot.get("ok") is True,
-                "exit_code": process_snapshot.get("exit_code"),
-                "stdout": str(process_snapshot.get("stdout") or "")[-12000:],
-                "stderr": str(process_snapshot.get("stderr") or "")[-1500:],
-                "scope": "container-wide; process-to-operation ownership is not established",
-            }
-        except Exception as exc:
-            snapshot["process_snapshot"] = {
-                "ok": False,
-                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
-                "scope": "unavailable; no conclusion about operation process liveness",
-            }
         if container_id:
-            for key, args in (
-                ("container_inspect", ("inspect", container_id)),
-                ("container_top", ("top", container_id)),
-                ("container_stats", ("stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.PIDs}}", container_id)),
-            ):
-                try:
-                    proc = subprocess.run([settings.podman_path, *args], capture_output=True,
-                                          text=True, timeout=8, check=False)
-                    output_text = str(proc.stdout or proc.stderr or "")
-                    secret = str(record.get("auth_token") or "")
-                    if secret:
-                        output_text = output_text.replace(secret, "[REDACTED]")
-                    snapshot[key] = {"returncode": int(proc.returncode), "output": output_text[:5000]}
-                except Exception as exc:
-                    snapshot[key] = {"error": type(exc).__name__}
-        for key, args in (
-            ("host_memory", ["free", "-h"]),
-            ("host_disk", ["df", "-P", "-h", str(settings.workspace_path)]),
-            ("host_load", ["uptime"]),
-        ):
             try:
-                proc = subprocess.run(args, capture_output=True, text=True, timeout=5, check=False)
-                snapshot[key] = {"returncode": int(proc.returncode),
-                                 "output": str(proc.stdout or proc.stderr or "")[:1200]}
+                proc = subprocess.run(
+                    [settings.podman_path, "inspect", container_id],
+                    capture_output=True, text=True, timeout=8, check=False,
+                )
+                output_text = str(proc.stdout or proc.stderr or "")
+                secret = str(record.get("auth_token") or "")
+                if secret:
+                    output_text = output_text.replace(secret, "[REDACTED]")
+                snapshot["container_inspect"] = {
+                    "returncode": int(proc.returncode), "output": output_text[:3000],
+                }
             except Exception as exc:
-                snapshot[key] = {"error": type(exc).__name__}
+                snapshot["container_inspect"] = {"error": type(exc).__name__}
         return snapshot
 
     def run_diagnostic_terminal(self, conversation_id: str, command: str, *, timeout: int = 10) -> dict[str, Any]:
@@ -849,11 +875,26 @@ print(json.dumps(result))
             "ps", "ls", "stat", "file", "head", "tail", "cat", "df", "free",
             "uptime", "ss", "lsof", "du", "wc", "readlink", "realpath",
             "id", "whoami", "uname", "date", "mount", "namei",
+            "pip", "pip3", "dpkg-query", "dpkg", "npm", "git", "test",
         }
         executable = os.path.basename(argv[0]) if argv else ""
         if not argv or executable not in allowed:
-            raise ValueError("Разрешены только команды чтения: ps, ls, stat, file, head, tail, cat, df, free, uptime, ss, lsof, du, wc, readlink, realpath, id, whoami, uname, date, mount, namei.")
-        forbidden = {"-exec", "-execdir", "-delete", "-fprint", "-fls", "--pre", "--post", "--output"}
+            raise ValueError("Разрешены read-only проверки: ps, ls, stat, file, head, tail, cat, df, free, uptime, ss, lsof, du, wc, readlink, realpath, id, whoami, uname, date, mount, namei, pip show, dpkg-query -W, dpkg -s, npm list, git status/diff/log/show, test -e/-f/-d.")
+        read_only_subcommands = {
+            "pip": {"show"}, "pip3": {"show"},
+            "dpkg-query": {"-W", "--show"}, "dpkg": {"-s"},
+            "npm": {"list", "ls"},
+            "git": {"status", "diff", "log", "show", "rev-parse"},
+            "test": {"-e", "-f", "-d", "-s"},
+        }
+        if executable in read_only_subcommands and (
+            len(argv) < 2 or argv[1] not in read_only_subcommands[executable]
+        ):
+            raise ValueError(f"Для {executable} разрешены только read-only подкоманды: "
+                             + ", ".join(sorted(read_only_subcommands[executable])))
+        forbidden = {"-exec", "-execdir", "-delete", "-fprint", "-fls", "--pre", "--post", "--output",
+                     "--force", "--hard", "install", "uninstall", "remove", "upgrade", "update",
+                     "checkout", "reset", "clean", "commit", "merge", "rebase", "push", "pull"}
         if any(arg in forbidden or arg.startswith("--pre=") or arg.startswith("--post=") for arg in argv[1:]):
             raise ValueError("Команда содержит аргумент, несовместимый с режимом только чтения.")
         runtime = self._runtimes.get(conversation_id)
@@ -866,7 +907,9 @@ print(json.dumps(result))
         if not runtime.is_alive():
             raise SandboxError("SWE-ReX не отвечает; диагностическая Bash-сессия не запускается.")
         runtime.ensure_session("diagnostic")
-        argv[0] = "/usr/bin/" + executable
+        # Use only the allow-listed basename, but let the container PATH locate
+        # tools such as pip3/npm which may live outside /usr/bin.
+        argv[0] = executable
         command_line = "exec /usr/bin/setpriv --no-new-privs --bounding-set=-all --inh-caps=-all --ambient-caps=-all --reset-env --reuid=localagent-diagnostic --regid=localagent-diagnostic --clear-groups -- " + shlex.join(argv)
         result = runtime.run(command_line, session="diagnostic", timeout=timeout)
         output = str(result.get("stdout") or "")
@@ -923,6 +966,7 @@ print(json.dumps(result))
                 "verified": bool(verified),
                 "exit_code": probe.get("exit_code"),
                 "timed_out": bool(probe.get("timed_out")),
+                "shell_recreated": bool(probe.get("shell_recovered") or probe.get("shell_state_reset")),
                 "error": None if verified else str(
                     probe.get("stderr") or probe.get("failure_reason") or "Bash probe returned no confirmation"
                 )[:500],
@@ -968,6 +1012,51 @@ print(json.dumps(result))
             return {"state": "restarted", "container_recreated": False, "container_id": container_id,
                     "workspace_preserved": True, "verified": True, "reason": reason.strip()}
 
+    def recreate_container(self, conversation_id: str, *, reason: str) -> dict[str, Any]:
+        """Replace an unusable sandbox container while preserving the host workspace."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("A non-empty recreation reason is required")
+        with self._lock_for(conversation_id):
+            record = db.get_sandbox(conversation_id)
+            if not record:
+                raise SandboxError("Не найдена запись sandbox; токен для восстановления отсутствует.")
+            old_id = str(record.get("container_id") or "")
+            if old_id:
+                self._podman("rm", "-f", old_id, check=False)
+            stale = self._runtimes.pop(conversation_id, None)
+            detach = getattr(stale, "detach", None)
+            if callable(detach):
+                detach()
+            container_id, port = self._create_container(conversation_id, str(record["auth_token"]))
+            db.upsert_sandbox(
+                conversation_id, container_id, self._container_name(conversation_id),
+                port, str(record["auth_token"]), "main", "running",
+            )
+            runtime = self._runtime_factory(port=port, token=str(record["auth_token"]))
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not runtime.is_alive():
+                time.sleep(1)
+            if not runtime.is_alive():
+                raise SandboxError("Новый контейнер создан, но SWE-ReX не отвечает.")
+            runtime.ensure_session("main")
+            probe = runtime.run(
+                "unset SWEREX_AUTH_TOKEN; printf '__LOCALAGENT_CONTAINER_RECREATED_READY__'",
+                session="main", timeout=10,
+            )
+            if (probe.get("exit_code") != 0 or probe.get("timed_out")
+                    or "__LOCALAGENT_CONTAINER_RECREATED_READY__" not in str(probe.get("stdout") or "")):
+                raise SandboxError("Новый контейнер запущен, но проверка Bash-сессии не прошла.")
+            with self._guard:
+                self._active_operations.pop(conversation_id, None)
+                self._new_sessions.discard(conversation_id)
+                self._runtimes[conversation_id] = runtime
+            return {
+                "state": "recreated", "container_recreated": True,
+                "previous_container_id": old_id or None, "container_id": container_id,
+                "workspace_preserved": True, "verified": True, "reason": reason.strip(),
+                "message": "Контейнер пересоздан; общая рабочая папка сохранена, внутреннее состояние старого контейнера утрачено.",
+            }
+
     def _recover_proxy_after_network_error(self, runtime: SandboxRuntime, result: dict[str, Any]) -> dict[str, Any] | None:
         if not getattr(settings, "sandbox_proxy_required", True) or not self._uses_default_runner:
             return None
@@ -1001,11 +1090,65 @@ print(json.dumps(result))
     def get_operation(self, conversation_id: str, operation_id: str, *, cursor: int = 0,
                       max_output_chars: int = 65536, wait_timeout: float = 0.0) -> dict[str, Any]:
         runtime = self.get_runtime(conversation_id)
-        getter = getattr(runtime, "get_operation", None)
-        if not callable(getter):
-            raise SandboxError("Подключённый SandboxRuntime не поддерживает polling фоновых операций.")
-        result = getter(operation_id, session="main", cursor=cursor,
-                        max_output_chars=max_output_chars, wait_timeout=wait_timeout)
+        with self._guard:
+            recreated_containers = getattr(self, "_recreated_containers", set())
+            container_recreated = conversation_id in recreated_containers
+            if container_recreated:
+                recreated_containers.discard(conversation_id)
+        if container_recreated:
+            result = {
+                "state": "failed", "output": "",
+                "failure_reason": "Контейнер отсутствовал и был автоматически пересоздан; результат прежней операции недоступен.",
+                "exit_code": 1, "container_recreated": True,
+            }
+        else:
+            getter = getattr(runtime, "get_operation", None)
+            if not callable(getter):
+                raise SandboxError("Подключённый SandboxRuntime не поддерживает polling фоновых операций.")
+            try:
+                result = getter(operation_id, session="main", cursor=cursor,
+                                max_output_chars=max_output_chars, wait_timeout=wait_timeout)
+            except Exception as exc:
+                checker = getattr(runtime, "_has_exception_named", None)
+                def has_error(*names):
+                    if type(exc).__name__ in names:
+                        return True
+                    return bool(checker(exc, *names)) if callable(checker) else False
+
+                missing_session = has_error("SessionDoesNotExistError")
+                missing_operation = has_error("OperationDoesNotExistError", "OperationNotFoundError")
+                if missing_session:
+                    creator = getattr(runtime, "ensure_session", None)
+                    created = bool(creator("main")) if callable(creator) else False
+                    if not created:
+                        raise SandboxError("Основная Bash-сессия отсутствует и не была пересоздана.") from exc
+                    probe = runtime.run(
+                        "unset SWEREX_AUTH_TOKEN; printf '__LOCALAGENT_MISSING_SESSION_RECOVERED__'",
+                        session="main", timeout=10,
+                    )
+                    if (probe.get("exit_code") != 0 or probe.get("timed_out")
+                            or "__LOCALAGENT_MISSING_SESSION_RECOVERED__" not in str(probe.get("stdout") or "")):
+                        raise SandboxError("Bash-сессия пересоздана, но проверочная команда не прошла.") from exc
+                    with self._guard:
+                        self._new_sessions.add(conversation_id)
+                    result = {
+                        "state": "failed", "output": "",
+                        "failure_reason": "Основная Bash-сессия отсутствовала и была автоматически пересоздана; результат прежней операции недоступен.",
+                        "exit_code": 1, "shell_recreated": True,
+                    }
+                elif missing_operation:
+                    with self._guard:
+                        shell_was_recreated = conversation_id in self._new_sessions
+                    if shell_was_recreated:
+                        result = {
+                            "state": "failed", "output": "",
+                            "failure_reason": "После автоматического запуска контейнера или пересоздания Bash-сессии исходная операция больше недоступна; её результат не был восстановлен.",
+                            "exit_code": 1, "shell_recreated": True,
+                        }
+                    else:
+                        raise
+                else:
+                    raise
         result = dict(result)
         state = str(result.get("state") or "failed")
         output = str(result.get("output") or "")

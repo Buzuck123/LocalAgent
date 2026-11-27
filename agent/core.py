@@ -34,7 +34,7 @@ from .orchestration import (
 from .context import (compact_messages, CONTEXT_SUMMARY_MARKER,
                       retrieve_tool_result_fragment, ensure_event_ids,
                       deduplicate_event_ids, context_growth_forecast, estimate_tokens)
-from .terminal_diagnostics import build_diagnostic_context, authorize_recovery
+from .terminal_diagnostics import build_diagnostic_context
 from .planning import (
     create_plan,
     validate_plan,
@@ -1052,39 +1052,57 @@ def _tool_activity_summary(tool_name, arguments, payload):
     return (label + " → " + detail)[:320]
 
 
-TERMINAL_DIAGNOSTIC_SYSTEM_PROMPT = """Ты — отдельный диагностический агент LocalAgent. Ты НЕ выполняешь пользовательскую задачу и НЕ получаешь её исходный запрос. Ты анализируешь только одну конкретную terminal operation.
+TERMINAL_DIAGNOSTIC_SYSTEM_PROMPT = """Ты — диагностический агент LocalAgent. Ты не выполняешь исходную задачу и не получаешь пользовательский запрос. Твоя задача — определить состояние одной конкретной команды в основной Bash-сессии и выбрать следующий шаг.
 
-Тебе передаётся компактная диагностическая картина, исходная команда и идентификаторы фактов. Факты собраны программой; не придумывай новые факты и не выдавай предположения за наблюдения. Метрики контейнера относятся ко всему контейнеру, а не к отдельной команде.
+Получаешь исходный текст команды без служебной оболочки, компактное состояние операции, runtime, контейнера и последние строки вывода. Команду не повторяй и не изменяй.
 
-Тишина в терминале, низкая загрузка CPU или наличие процесса сами по себе не доказывают зависание. SWE-ReX health check подтверждает доступность API, но не прогресс команды.
+У тебя есть два инструмента наблюдения:
+- get_additional_terminal_diagnostics — подождать и получить свежий снимок;
+- diagnostic_terminal — проверить ожидаемый результат исходной команды в отдельной Bash-сессии (например, наличие созданного файла или установленного пакета). Используй только безопасные read-only проверки. Никогда не запускай исходную команду повторно.
 
-Каждый диагностический снимок уже содержит автоматическую read-only проверку процессов командой ps в отдельной Bash-сессии от непривилегированного пользователя. Используй её evidence_id из observations; не жди, пока сам решишь вызвать diagnostic_terminal. Список процессов относится ко всему контейнеру и не доказывает принадлежность PID конкретной operation.
+Восстановление доступно поэтапно. Контроллер показывает только следующий допустимый шаг:
+1. interrupt_terminal_operation — прервать зависшую операцию;
+2. reset_bash_session — пересоздать основную Bash-сессию, если прерывание не помогло;
+3. restart_sandbox_container — перезапустить контейнер, а если он не запускается или SWE-ReX не отвечает, контроллер автоматически пересоздаст контейнер.
 
-При необходимости:
-- get_additional_terminal_diagnostics получает новый снимок через интервал, включая новую автоматическую проверку процессов;
-- diagnostic_terminal выполняет дополнительную read-only команду в отдельной Bash-сессии от непривилегированного пользователя;
-- propose_terminal_recovery предлагает контроллеру прерывание и обязан перечислить evidence_ids из отчёта.
-
-Ты НЕ можешь самостоятельно прерывать операцию, сбрасывать Bash или перезапускать контейнер. Для предложения прерывания без hard timeout дождись не менее 15 минут тишины, получи повторный снимок минимум через 15 секунд и выполни успешную read-only проверку процессов через ps или lsof. Контроллер независимо проверит доказательства и может отклонить предложение. Если данных недостаточно, продолжай ожидание или запроси проверку. Не повторяй исходную команду."""
+После каждого действия контроллер проверит результат. Если операция завершилась сама во время диагностики, не предлагай восстановление: дождись свежего результата и верни его основному агенту. Тишина сама по себе не означает, что команда зависла."""
 
 
-TERMINAL_DIAGNOSTIC_TOOLS = [
-    {"type": "function", "function": {"name": "get_additional_terminal_diagnostics",
-     "description": "Получить новый снимок состояния операции, runtime и контейнера для сравнения.",
-     "parameters": {"type": "object", "properties": {"reason": {"type": "string", "maxLength": 500}},
-                    "required": ["reason"], "additionalProperties": False}}},
-    {"type": "function", "function": {"name": "diagnostic_terminal",
-     "description": "Выполнить одну разрешённую read-only команду в отдельной Bash-сессии от непривилегированного пользователя.",
-     "parameters": {"type": "object", "properties": {"command": {"type": "string", "minLength": 1, "maxLength": 2000}},
-                    "required": ["command"], "additionalProperties": False}}},
-    {"type": "function", "function": {"name": "propose_terminal_recovery",
-     "description": "Предложить контроллеру прерывание основной terminal operation. Это только предложение.",
-     "parameters": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["interrupt_terminal_operation"]},
-         "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
-         "evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 12}},
-         "required": ["action", "reason", "evidence_ids"], "additionalProperties": False}}},
-]
+def _terminal_diagnostic_tools(actions):
+    """Expose recovery actions one stage at a time; observations stay available."""
+    tools = [
+        {"type": "function", "function": {"name": "get_additional_terminal_diagnostics",
+         "description": "Подождать и получить свежий снимок состояния операции, runtime и контейнера.",
+         "parameters": {"type": "object", "properties": {"reason": {"type": "string", "maxLength": 500}},
+                        "required": ["reason"], "additionalProperties": False}}},
+        {"type": "function", "function": {"name": "diagnostic_terminal",
+         "description": "Проверить результат исходной команды в отдельной Bash-сессии безопасной read-only командой.",
+         "parameters": {"type": "object", "properties": {"command": {"type": "string", "minLength": 1, "maxLength": 2000}},
+                        "required": ["command"], "additionalProperties": False}}},
+    ]
+    attempted = {
+        str(item.get("action") or "") for item in actions
+        if isinstance(item, dict) and item.get("action")
+    }
+    recovery = None
+    if "interrupt_operation" not in attempted:
+        recovery = ("interrupt_terminal_operation", "Прервать зависшую операцию")
+    elif "reset_bash_session" not in attempted:
+        recovery = ("reset_bash_session", "Пересоздать основную Bash-сессию")
+    elif "restart_container" not in attempted:
+        recovery = ("restart_sandbox_container", "Перезапустить sandbox-контейнер")
+    if recovery:
+        name, description = recovery
+        tools.append({"type": "function", "function": {"name": name,
+            "description": description + ". Контроллер проверит результат действия.",
+            "parameters": {"type": "object", "properties": {"reason": {"type": "string", "minLength": 1, "maxLength": 1000}},
+                           "required": ["reason"], "additionalProperties": False}}})
+    return tools
+
+
+# Stable initial-stage catalog for integrations that inspect available tools.
+TERMINAL_DIAGNOSTIC_TOOLS = _terminal_diagnostic_tools([])
+
 
 class TerminalDiagnosticLLMUnavailable(RuntimeError):
     """The diagnostic model is unavailable; preserve the live terminal operation for resume."""
@@ -1150,6 +1168,7 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                              diagnostic_messages=None, diagnostic_actions=None):
     from .sandbox_manager import sandbox_manager
 
+    resuming_diagnostic = bool(diagnostic_id or diagnostic_messages or diagnostic_actions)
     diagnostic_id = diagnostic_id or str(uuid.uuid4())
     messages = list(diagnostic_messages or [])
     actions = list(diagnostic_actions or [])
@@ -1178,25 +1197,79 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
         return snapshot
 
     snapshot = collect_snapshot()
-    snapshot["command_hard_timeout_seconds"] = terminal_result.get("_terminal_hard_timeout")
-    snapshot["runtime_poll_errors"] = terminal_result.get("_terminal_runtime_errors") or []
-    evidence_history = [
-        item for entry in actions if isinstance(entry, dict)
-        for item in (entry.get("evidence") or []) if isinstance(item, dict)
-    ]
-    report, new_evidence = build_diagnostic_context(snapshot, evidence_history)
-    evidence_history.extend(new_evidence)
-    actions.append({"type": "evidence", "evidence": new_evidence, "report": report})
+    observed_state = str(snapshot.get("operation_state") or "")
+    recovery_stages = ("interrupt_operation", "reset_bash_session", "restart_container")
+    attempted_stages = {
+        str(item.get("action") or "") for item in actions if isinstance(item, dict)
+    }
+    last_recovery = next(
+        (item for item in reversed(actions)
+         if isinstance(item, dict) and item.get("action") in recovery_stages),
+        None,
+    )
+    last_recovery_result = last_recovery.get("result") if isinstance(last_recovery, dict) else None
+    recovery_needs_next_stage = (
+        isinstance(last_recovery_result, dict)
+        and last_recovery_result.get("verified") is not True
+        and last_recovery_result.get("state") not in {"completed", "timed_out", "failed"}
+    )
+    next_recovery_stage = next(
+        (stage for stage in recovery_stages if stage not in attempted_stages), None
+    )
+    if snapshot.get("new_output_since_cursor"):
+        return (
+            "continue_waiting",
+            "В основной Bash-сессии появился новый вывод; продолжаем обычное ожидание без диагностики.",
+            diagnostic_id if resuming_diagnostic else None,
+            messages if resuming_diagnostic else [],
+            actions if resuming_diagnostic else [],
+            None,
+        )
+    if recovery_needs_next_stage and next_recovery_stage is None:
+        return (
+            "recovery_exhausted",
+            "Все ступени восстановления исчерпаны; основная Bash-сессия не отвечает.",
+            diagnostic_id, messages, actions, last_recovery_result,
+        )
+    if observed_state in {"completed", "interrupted", "timed_out", "failed", "waiting_input"}:
+        if observed_state == "waiting_input" or not recovery_needs_next_stage:
+            # The command resolved itself or is explicitly waiting for input.
+            return (
+                "continue_waiting",
+                "Исходная операция завершилась или ожидает ввода; возвращаем её обычный результат агенту.",
+                diagnostic_id if resuming_diagnostic else None,
+                messages if resuming_diagnostic else [],
+                actions if resuming_diagnostic else [],
+                None,
+            )
+        if next_recovery_stage is None:
+            return (
+                "recovery_exhausted",
+                "Все ступени восстановления исчерпаны; основная Bash-сессия не прошла проверку.",
+                diagnostic_id, messages, actions, last_recovery_result,
+            )
+    report, _ = build_diagnostic_context(snapshot)
+    actions.append({"type": "snapshot", "report": report})
     if not messages:
         messages = [{"role": "system", "content": TERMINAL_DIAGNOSTIC_SYSTEM_PROMPT}]
         db.create_terminal_diagnostic(diagnostic_id, task_id, conversation_id, operation_id, messages)
+    relevant_history = [
+        item for item in actions if isinstance(item, dict) and (
+            item.get("action") or item.get("type") == "verification"
+        )
+    ]
     history_summary = [
-        {"action": item.get("action"), "reason": item.get("reason"),
-         "result": (
-             {key: item["result"].get(key) for key in ("state", "verified", "error", "workspace_preserved", "container_recreated")}
-             if isinstance(item.get("result"), dict) else None
-         )}
-        for item in actions[-12:] if isinstance(item, dict) and item.get("type") != "evidence"
+        {
+            "action": item.get("action"),
+            "reason": item.get("reason"),
+            "command": item.get("command"),
+            "ok": item.get("ok"),
+            "result": (
+                {key: item["result"].get(key) for key in ("state", "verified", "error", "workspace_preserved", "container_recreated")}
+                if isinstance(item.get("result"), dict) else None
+            ),
+        }
+        for item in relevant_history[-12:]
     ]
     messages = [messages[0], {
         "role": "user",
@@ -1204,14 +1277,13 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                    + json.dumps(history_summary, ensure_ascii=False, default=str)[:5000],
     }]
     model_report = dict(report)
-    model_operation = dict(model_report.get("operation") or {})
-    model_operation.pop("command", None)
-    model_report["operation"] = model_operation
+    # The exact command is sent once in its own message, separate from the state report.
+    model_report.pop("command", None)
     full_command = str(snapshot.get("command") or "")
     messages.append({"role": "user", "content":
         "Исходная команда (полностью, без сокращения):\n" + full_command
         + "\n\nКомпактная диагностическая картина. Исходная пользовательская задача намеренно не передаётся. "
-        "Сохраняй evidence_ids для предложений контроллеру.\n"
+        "Определи, что происходит, и выбери наблюдение или доступное на текущем этапе восстановление.\n"
         + json.dumps(model_report, ensure_ascii=False, default=str)[:18000]})
     db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
 
@@ -1219,7 +1291,7 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
     try:
         for _ in range(7):
             try:
-                response = _client_chat(messages, tools=TERMINAL_DIAGNOSTIC_TOOLS, reasoning=False)
+                response = _client_chat(messages, tools=_terminal_diagnostic_tools(actions), reasoning=False)
             except Exception as exc:
                 db.update_terminal_diagnostic(diagnostic_id, status="paused", messages=messages, actions=actions)
                 raise TerminalDiagnosticLLMUnavailable(
@@ -1236,6 +1308,9 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                     messages=messages, actions=actions,
                 )
             calls = message.get("tool_calls")
+            available_tool_names = {
+                item["function"]["name"] for item in _terminal_diagnostic_tools(actions)
+            }
             if not isinstance(calls, list) or not calls:
                 assistant_text = str(message.get("content") or "")
                 messages.append({"role": "assistant", "content": assistant_text[:6000]})
@@ -1260,73 +1335,196 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
                 why = str(args.get("reason") or "Диагностическое действие")[:1000]
 
                 if tool_name == "get_additional_terminal_diagnostics":
-                    time.sleep(15)
+                    time.sleep(max(0.25, float(getattr(settings, "terminal_poll_interval_seconds", 2))))
                     snapshot = collect_snapshot()
-                    snapshot["command_hard_timeout_seconds"] = terminal_result.get("_terminal_hard_timeout")
-                    snapshot["runtime_poll_errors"] = terminal_result.get("_terminal_runtime_errors") or []
-                    report, new_evidence = build_diagnostic_context(snapshot, evidence_history)
-                    evidence_history.extend(new_evidence)
-                    actions.append({"type": "evidence", "evidence": new_evidence, "report": report})
+                    report, _ = build_diagnostic_context(snapshot)
+                    actions.append({"type": "snapshot", "report": report})
                     additional_report = dict(report)
-                    additional_operation = dict(additional_report.get("operation") or {})
-                    additional_operation.pop("command", None)
-                    additional_report["operation"] = additional_operation
-                    tool_result = {"ok": True, "diagnostics": additional_report}
+                    additional_report.pop("command", None)
+                    additional_state = str(snapshot.get("operation_state") or "")
+                    if snapshot.get("new_output_since_cursor"):
+                        tool_result = {
+                            "ok": True,
+                            "new_terminal_output": snapshot.get("new_output_since_cursor"),
+                            "message": "Команда снова выдаёт результат; диагностика остановлена, продолжается обычное ожидание.",
+                        }
+                        messages.append({
+                            "role": "tool", "tool_name": tool_name,
+                            "content": json.dumps(tool_result, ensure_ascii=False, default=str)[:10000],
+                        })
+                        db.update_terminal_diagnostic(
+                            diagnostic_id, status="completed", messages=messages, actions=actions
+                        )
+                        return (
+                            "continue_waiting",
+                            "В основной Bash-сессии появился новый вывод; продолжаем обычное ожидание без диагностики.",
+                            diagnostic_id, messages, actions, None,
+                        )
+                    attempted_stages = {
+                        str(item.get("action") or "") for item in actions if isinstance(item, dict)
+                    }
+                    last_recovery = next(
+                        (item for item in reversed(actions)
+                         if isinstance(item, dict) and item.get("action") in {
+                             "interrupt_operation", "reset_bash_session", "restart_container",
+                         }),
+                        None,
+                    )
+                    last_result = last_recovery.get("result") if isinstance(last_recovery, dict) else None
+                    needs_next_stage = (
+                        isinstance(last_result, dict)
+                        and last_result.get("verified") is not True
+                        and last_result.get("state") not in {"completed", "timed_out", "failed"}
+                    )
+                    next_stage = next(
+                        (stage for stage in ("interrupt_operation", "reset_bash_session", "restart_container")
+                         if stage not in attempted_stages),
+                        None,
+                    )
+                    if needs_next_stage and next_stage is None:
+                        tool_result = {"ok": True, "diagnostics": additional_report,
+                                       "recovery_exhausted": True}
+                        messages.append({
+                            "role": "tool", "tool_name": tool_name,
+                            "content": json.dumps(tool_result, ensure_ascii=False, default=str)[:10000],
+                        })
+                        db.update_terminal_diagnostic(
+                            diagnostic_id, status="paused", messages=messages, actions=actions
+                        )
+                        return (
+                            "recovery_exhausted",
+                            "Все ступени восстановления исчерпаны; основная Bash-сессия не отвечает.",
+                            diagnostic_id, messages, actions, last_result,
+                        )
+                    if additional_state in {"completed", "interrupted", "timed_out", "failed", "waiting_input"}:
+                        if additional_state == "waiting_input" or not needs_next_stage:
+                            tool_result = {"ok": True, "diagnostics": additional_report,
+                                           "operation_resolved": True}
+                            messages.append({
+                                "role": "tool", "tool_name": tool_name,
+                                "content": json.dumps(tool_result, ensure_ascii=False, default=str)[:10000],
+                            })
+                            db.update_terminal_diagnostic(
+                                diagnostic_id, status="completed", messages=messages, actions=actions
+                            )
+                            return (
+                                "continue_waiting",
+                                "Исходная операция завершилась или перешла в ожидание ввода во время диагностики.",
+                                diagnostic_id, messages, actions, None,
+                            )
+                        if next_stage is None:
+                            tool_result = {"ok": True, "diagnostics": additional_report,
+                                           "operation_resolved": True, "recovery_exhausted": True}
+                            messages.append({
+                                "role": "tool", "tool_name": tool_name,
+                                "content": json.dumps(tool_result, ensure_ascii=False, default=str)[:10000],
+                            })
+                            db.update_terminal_diagnostic(
+                                diagnostic_id, status="paused", messages=messages, actions=actions
+                            )
+                            return (
+                                "recovery_exhausted",
+                                "Все ступени восстановления исчерпаны; основная Bash-сессия не отвечает.",
+                                diagnostic_id, messages, actions, last_result,
+                            )
+                    tool_result = {"ok": True, "diagnostics": additional_report,
+                                   "operation_resolved": additional_state in {
+                                       "completed", "interrupted", "timed_out", "failed", "waiting_input",
+                                   }}
                 elif tool_name == "diagnostic_terminal":
-                    from datetime import datetime, timezone
+                    check_command = str(args.get("command") or "")
                     try:
                         tool_result = sandbox_manager.run_diagnostic_terminal(
-                            conversation_id, str(args.get("command") or ""), timeout=10,
+                            conversation_id, check_command, timeout=10,
                         )
                     except Exception as exc:
                         tool_result = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
                     for output_key in ("stdout", "stderr"):
                         if output_key in tool_result:
                             tool_result[output_key] = _redact_diagnostic_output(tool_result[output_key])
-                    evidence_item = {
-                        "id": "ev_" + uuid.uuid4().hex[:12],
-                        "kind": "diagnostic_terminal",
-                        "source": "read_only_diagnostic_bash",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "scope": "container",
-                        "operation_id": operation_id,
-                        "command": str(args.get("command") or "")[:300],
-                        "success": tool_result.get("ok") is True,
-                        "observation": (
-                            f"Команда {str(args.get('command') or '')[:300]!r}; "
-                            f"exit_code={tool_result.get('exit_code')}; "
-                            f"stdout={str(tool_result.get('stdout') or '')[-2500:]}"
-                        ),
-                        "meaning": "Результат read-only проверки из отдельной непривилегированной Bash-сессии.",
-                        "limitation": "Команда выполняется от пользователя localagent-diagnostic; доступ ограничен правами файловой системы.",
+                    actions.append({
+                        "type": "verification", "command": check_command[:300],
+                        "ok": tool_result.get("ok") is True,
+                    })
+                elif tool_name in {
+                    "interrupt_terminal_operation", "reset_bash_session",
+                    "restart_sandbox_container",
+                } and tool_name in available_tool_names:
+                    reason = str(args.get("reason") or "Диагностическое восстановление")[:1000]
+                    recovery_attempted = True
+                    action_map = {
+                        "interrupt_terminal_operation": "interrupt_operation",
+                        "reset_bash_session": "reset_bash_session",
+                        "restart_sandbox_container": "restart_container",
                     }
-                    evidence_history.append(evidence_item)
-                    tool_result["evidence_id"] = evidence_item["id"]
-                    actions.append({"type": "evidence", "evidence": [evidence_item]})
-                elif tool_name == "propose_terminal_recovery":
-                    proposed = str(args.get("action") or "")
-                    proposal = {
-                        "reason": str(args.get("reason") or "")[:1000],
-                        "evidence_ids": args.get("evidence_ids"),
-                    }
-                    allowed, gate_reason = authorize_recovery(proposed, proposal, evidence_history, snapshot)
-                    if not allowed:
-                        tool_result = {"approved": False, "decision": "insufficient_evidence", "reason": gate_reason}
-                    else:
-                        action = "interrupt_operation"
-                        reason = proposal["reason"] or gate_reason
-                        recovery_attempted = True
-                        try:
+                    action = action_map[tool_name]
+                    try:
+                        if action == "interrupt_operation":
                             recovery = sandbox_manager.interrupt_operation(conversation_id, operation_id)
-                            tool_result = {"approved": True, "recovery": recovery}
-                        except Exception as exc:
-                            recovery = {
-                                "state": "recovery_failed", "action_attempted": action,
-                                "error": f"{type(exc).__name__}: {str(exc)[:1000]}", "verified": False,
-                            }
-                            tool_result = {"approved": True, "recovery": recovery}
-                        actions.append({"action": action, "reason": reason, "result": recovery,
-                                        "evidence_ids": proposal["evidence_ids"]})
+                            state = str(recovery.get("state") or "")
+                            if state == "interrupted" or recovery.get("interrupted") is True:
+                                verification = sandbox_manager.verify_terminal_session(conversation_id)
+                                recovery["main_session"] = verification
+                                recovery["verified"] = verification.get("verified") is True
+                                if not recovery["verified"]:
+                                    recovery["error"] = verification.get("error") or "main Bash session did not answer the health probe"
+                                    action = "recovery_failed"
+                            elif state in {"completed", "timed_out", "failed"}:
+                                # The command won the race with Ctrl+C. Let the outer
+                                # controller fetch its final output without reporting an intervention.
+                                recovery["verified"] = False
+                            else:
+                                action = "recovery_failed"
+                        elif action == "reset_bash_session":
+                            recovery = sandbox_manager.reset_terminal_session(
+                                conversation_id, confirm_reset=True, reason=reason
+                            )
+                            if recovery.get("verified") is True:
+                                verification = sandbox_manager.verify_terminal_session(conversation_id)
+                                recovery["main_session"] = verification
+                                recovery["verified"] = verification.get("verified") is True
+                                if not recovery["verified"]:
+                                    recovery["error"] = verification.get("error") or "main Bash session did not answer the health probe"
+                            if recovery.get("verified") is not True:
+                                action = "recovery_failed"
+                        else:
+                            try:
+                                recovery = sandbox_manager.restart_container(conversation_id, reason=reason)
+                            except Exception as restart_exc:
+                                recovery = {
+                                    "state": "restart_failed", "verified": False,
+                                    "error": f"{type(restart_exc).__name__}: {str(restart_exc)[:500]}",
+                                }
+                            if recovery.get("verified") is True:
+                                verification = sandbox_manager.verify_terminal_session(conversation_id)
+                                recovery["main_session"] = verification
+                                recovery["verified"] = verification.get("verified") is True
+                                if not recovery["verified"]:
+                                    recovery["error"] = verification.get("error") or "main Bash session did not answer the health probe"
+                            if recovery.get("verified") is not True:
+                                # Restart and recreation are one recovery stage:
+                                # if the existing container cannot come back, replace it.
+                                try:
+                                    recreated = sandbox_manager.recreate_container(
+                                        conversation_id, reason=(reason + "; container restart failed")[:1000]
+                                    )
+                                except Exception as recreate_exc:
+                                    recreated = {
+                                        "state": "recreation_failed", "verified": False,
+                                        "error": f"{type(recreate_exc).__name__}: {str(recreate_exc)[:500]}",
+                                    }
+                                recreated["restart_error"] = recovery.get("error") or recovery.get("state")
+                                recovery = recreated
+                            if recovery.get("verified") is not True:
+                                action = "recovery_failed"
+                    except Exception as exc:
+                        recovery = {
+                            "state": "recovery_failed", "action_attempted": action,
+                            "error": f"{type(exc).__name__}: {str(exc)[:1000]}", "verified": False,
+                        }
+                        action = "recovery_failed"
+                    tool_result = {"action": action, "recovery": recovery}
+                    actions.append({"action": action_map[tool_name], "reason": reason, "result": recovery})
                 else:
                     tool_result = {"ok": False, "error": "Недоступный диагностический инструмент."}
 
@@ -1345,6 +1543,9 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
         )
         messages.append({"role": "assistant", "content": json.dumps({"action": action, "reason": reason}, ensure_ascii=False)})
 
+    if action == "continue_waiting" and recovery_needs_next_stage:
+        action = "recovery_failed"
+        reason = "Предыдущий этап не восстановил основную Bash-сессию; продолжится следующий этап восстановления."
     if not actions or actions[-1].get("action") != action or "result" not in actions[-1]:
         actions.append({"action": action, "reason": reason, "snapshot": report})
     db.update_terminal_diagnostic(diagnostic_id, messages=messages, actions=actions)
@@ -1353,9 +1554,18 @@ def _run_terminal_diagnostic(task_id, conversation_id, terminal_result, diagnost
 
 def _terminal_recovery_report(action, reason, result):
     if action == "interrupt_operation":
-        consequence = "Команда прервана диагностом; её выполнение не подтверждено, возможны частичные изменения файлов и окружения."
+        recovery = result.get("recovery")
+        main_session = recovery.get("main_session") if isinstance(recovery, dict) else None
+        if isinstance(main_session, dict) and main_session.get("shell_recreated"):
+            consequence = "Команда прервана диагностом; проверка обнаружила отсутствующую main-сессию, она автоматически пересоздана и проверена. Возможны частичные изменения файлов и окружения."
+        else:
+            consequence = "Команда прервана диагностом; её выполнение не подтверждено, возможны частичные изменения файлов и окружения."
     elif action == "reset_bash_session":
         consequence = "Bash-сессия пересоздана в прежнем контейнере; команда не считается выполненной, возможны частичные изменения файлов и окружения."
+    elif action == "recreate_container":
+        consequence = "Контейнер пересоздан; общая рабочая папка сохранена, но внутреннее состояние старого контейнера утрачено. Команда не считается выполненной."
+    elif action == "restart_container" and isinstance(result.get("recovery"), dict) and result["recovery"].get("state") == "recreated":
+        consequence = "Перезапуск не восстановил контейнер, поэтому он был пересоздан; общая рабочая папка сохранена, внутреннее состояние старого контейнера утрачено. Команда не считается выполненной."
     else:
         consequence = "Существующий контейнер перезапущен; команда не считается выполненной, необходимо проверить файлы и окружение."
     recovery = result.get("recovery")
@@ -1391,6 +1601,13 @@ def _verify_or_recover_terminal_session(conversation_id, command):
 
     verification = sandbox_manager.verify_terminal_session(conversation_id)
     if verification.get("verified"):
+        if verification.get("shell_recreated"):
+            return {
+                "verified": True, "action": "reset_bash_session",
+                "recovery": {"state": "reset", "verified": True, "automatic": True},
+                "verification": verification,
+                "reason": "Проверка обнаружила отсутствующую main-сессию и автоматически пересоздала её.",
+            }
         return {"verified": True, "action": None, "verification": verification}
     reason = (
         "Bash-сессия не прошла проверочную команду после выполнения "
@@ -1414,12 +1631,21 @@ def _verify_or_recover_terminal_session(conversation_id, command):
     if isinstance(recovery, dict) and recovery.get("verified") is True:
         return {"verified": True, "action": "restart_container", "recovery": recovery,
                 "reason": reason + "; Bash reset did not restore the session"}
+    try:
+        recreated = sandbox_manager.recreate_container(
+            conversation_id, reason=(reason + "; restart did not restore SWE-ReX")[:1000]
+        )
+    except Exception as exc:
+        recreated = {"verified": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+    if isinstance(recreated, dict) and recreated.get("verified") is True:
+        return {"verified": True, "action": "recreate_container", "recovery": recreated,
+                "reason": reason + "; existing container could not be recovered"}
     return {
         "verified": False,
-        "action": "restart_container",
+        "action": "recreate_container",
         "reason": reason,
-        "recovery": recovery,
-        "error": str(recovery.get("error") or recovery.get("state") or "неизвестная ошибка"),
+        "recovery": recreated,
+        "error": str(recreated.get("error") or recreated.get("state") or "неизвестная ошибка"),
     }
 
 
@@ -1448,16 +1674,29 @@ def _resume_pending_terminal_diagnostic(task_id, conversation_id, pending):
             diagnostic_messages=messages,
             diagnostic_actions=actions,
         )
+        if action == "recovery_failed":
+            continue
+        if action == "recovery_exhausted":
+            raise TerminalRecoveryPending(
+                "Все диагностические способы восстановления исчерпаны; основная Bash-сессия не отвечает.",
+                pending={
+                    "terminal_result": result,
+                    "diagnostic_id": diagnostic_id,
+                    "messages": messages or [],
+                    "actions": actions or [],
+                },
+            )
         if action in {"interrupt_operation", "reset_bash_session", "restart_container"}:
             confirmed = (
                 isinstance(recovery, dict)
                 and (
                     (action == "interrupt_operation" and (
-                        recovery.get("state") == "interrupted" or recovery.get("interrupted") is True
+                        (recovery.get("state") == "interrupted" or recovery.get("interrupted") is True)
+                        and recovery.get("verified") is True
                     ))
                     or (action == "reset_bash_session" and recovery.get("state") == "reset"
                         and recovery.get("verified") is True)
-                    or (action == "restart_container" and recovery.get("state") == "restarted"
+                    or (action == "restart_container" and recovery.get("state") in {"restarted", "recreated"}
                         and recovery.get("verified") is True)
                 )
             )
@@ -1468,7 +1707,9 @@ def _resume_pending_terminal_diagnostic(task_id, conversation_id, pending):
                 else:
                     result["state"] = (
                         "interrupted" if action == "interrupt_operation"
-                        else "reset" if action == "reset_bash_session" else "restarted"
+                        else "reset" if action == "reset_bash_session"
+                        else "recreated" if action == "restart_container" and recovery.get("state") == "recreated"
+                        else "restarted"
                     )
                     final_recovery_action = action
                     final_recovery_reason = reason
@@ -1517,12 +1758,17 @@ def _resume_pending_terminal_diagnostic(task_id, conversation_id, pending):
                 "exit_code": poll.get("exit_code"),
                 "timed_out": poll.get("timed_out", state == "timed_out"),
                 "interrupted": poll.get("interrupted", state == "interrupted"),
+                "container_recreated": bool(poll.get("container_recreated")),
+                "shell_recreated": bool(poll.get("shell_recreated")),
                 "_elapsed_seconds": max(
                     float(result.get("_elapsed_seconds") or 0),
                     float(poll.get("duration_seconds") or 0),
                 ),
             })
             result["_runtime_error"] = None
+            if result.get("container_recreated") or result.get("shell_recreated"):
+                with sandbox_manager._guard:
+                    sandbox_manager._new_sessions.discard(conversation_id)
             if state in terminal_states or state == "waiting_input":
                 break
         if result.get("state") in terminal_states or result.get("state") == "waiting_input":
@@ -1573,32 +1819,38 @@ def _resume_pending_terminal_diagnostic(task_id, conversation_id, pending):
             final_recovery_action = session_recovery["action"]
             final_recovery_reason = session_recovery["reason"]
             recovery = session_recovery["recovery"]
-            result["state"] = "reset" if final_recovery_action == "reset_bash_session" else "restarted"
+            result["state"] = (
+                "reset" if final_recovery_action == "reset_bash_session"
+                else "recreated" if final_recovery_action == "recreate_container"
+                else "restarted"
+            )
 
     if final_recovery_action:
         result["diagnostic_report"] = _terminal_recovery_report(
             final_recovery_action, final_recovery_reason, {"recovery": recovery}
         )
-    warning = (
-        "Диагностика была приостановлена из-за недоступности LLM. После возобновления исходная операция "
-        "проверена; Bash-сессия прошла проверочную команду и доступна основному агенту. "
-        + _terminal_command_impact_note(result.get("_terminal_command"))
-    )
-    if result.get("state") == "waiting_input":
-        warning = (
-            "Диагностика была приостановлена из-за недоступности LLM. После возобновления SWE-ReX "
-            "подтвердил состояние waiting_input; терминал доступен для интерактивного ввода. "
-            + _terminal_command_impact_note(result.get("_terminal_command"))
-        )
-    if result.get("diagnostic_report"):
-        warning += "\n" + str(result["diagnostic_report"])
+    # A naturally completed command is returned without a diagnostic notice.
+    # Only an actual recovery intervention is surfaced to the primary agent.
     visible = str(result.get("_terminal_output") or result.get("_terminal_text") or "")
-    visible = (visible.rstrip() + "\n\n" + warning).strip()
+    if final_recovery_action:
+        warning = _terminal_recovery_report(
+            final_recovery_action, final_recovery_reason, {"recovery": recovery}
+        )
+        warning += "\n" + _terminal_command_impact_note(result.get("_terminal_command"))
+        visible = (visible.rstrip() + "\n\n" + warning).strip()
+        result["diagnostic_report"] = warning
+    elif result.get("container_recreated"):
+        visible = (visible.rstrip() + "\n\n" +
+                   "[Контейнер отсутствовал и был автоматически пересоздан. Общая рабочая папка сохранена; "
+                   "результат прежней операции недоступен.]").strip()
+    elif result.get("shell_recreated"):
+        visible = (visible.rstrip() + "\n\n" +
+                   "[Основная Bash-сессия отсутствовала и была автоматически пересоздана; "
+                   "результат прежней операции недоступен.]").strip()
     result.update({
         "_terminal_text": visible,
         "_terminal_output": visible,
-        "shell_state": "available" if result.get("state") != "waiting_input" else "waiting_input",
-        "diagnostic_report": warning,
+        "shell_state": "waiting_input" if result.get("state") == "waiting_input" else "available",
     })
     if diagnostic_id:
         db.update_terminal_diagnostic(
@@ -1659,6 +1911,23 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                         diagnostic_messages=diagnostic_messages,
                         diagnostic_actions=diagnostic_actions,
                     )
+                    if action == "recovery_failed":
+                        # The attempted stage did not restore a verified shell.
+                        # Keep control inside diagnostics; the next recovery stage
+                        # becomes available on the next model turn.
+                        result = dict(result)
+                        result["_diagnostic_due"] = True
+                        continue
+                    if action == "recovery_exhausted":
+                        raise TerminalRecoveryPending(
+                            "Все диагностические способы восстановления исчерпаны; основная Bash-сессия не отвечает.",
+                            pending={
+                                "terminal_result": result,
+                                "diagnostic_id": diagnostic_id,
+                                "messages": diagnostic_messages or [],
+                                "actions": diagnostic_actions or [],
+                            },
+                        )
                     if action == "continue_waiting":
                         if result.get("state") == "runtime_unresponsive":
                             from .sandbox_manager import sandbox_manager
@@ -1813,12 +2082,13 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                             result["_terminal_text"] = str(result.get("_terminal_text") or "") + notice
                             result["_terminal_output"] = str(result.get("_terminal_output") or "") + notice
                             continue
-                    if action in {"interrupt_operation", "reset_bash_session", "restart_container"}:
+                    if action in {"interrupt_operation", "reset_bash_session", "restart_container", "recreate_container"}:
                         if action == "interrupt_operation":
                             recovery_confirmed = (
                                 isinstance(recovery, dict)
                                 and (recovery.get("state") == "interrupted"
                                      or recovery.get("interrupted") is True)
+                                and recovery.get("verified") is True
                             )
                         elif action == "reset_bash_session":
                             recovery_confirmed = (
@@ -1829,7 +2099,7 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                         else:
                             recovery_confirmed = (
                                 isinstance(recovery, dict)
-                                and recovery.get("state") == "restarted"
+                                and recovery.get("state") in {"restarted", "recreated"}
                                 and recovery.get("verified") is True
                             )
                         if not recovery_confirmed:
@@ -1841,32 +2111,36 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                         else:
                             diagnostic_intervened = True
                             result = dict(result)
+                            if action == "interrupt_operation":
+                                try:
+                                    from .sandbox_manager import sandbox_manager
+                                    final_poll = sandbox_manager.get_operation(
+                                        task["conversation_id"], str(result.get("operation_id") or ""),
+                                        cursor=int(result.get("cursor") or 0),
+                                        max_output_chars=1_048_576, wait_timeout=0,
+                                    )
+                                    final_chunk = str(final_poll.get("stdout") or "")
+                                    final_stderr = str(final_poll.get("stderr") or "")
+                                    if final_stderr and final_stderr not in final_chunk:
+                                        final_chunk = (final_chunk.rstrip() + "\\n" + final_stderr).lstrip("\\n")
+                                    if final_chunk:
+                                        result["_terminal_output"] = str(result.get("_terminal_output") or "") + final_chunk
+                                        result["_terminal_text"] = str(result.get("_terminal_text") or "") + final_chunk
+                                    result["cursor"] = final_poll.get("cursor", result.get("cursor", 0))
+                                except Exception:
+                                    logger.debug("Could not fetch terminal tail after diagnostic interrupt", exc_info=True)
                             result["state"] = (
                                 "interrupted" if action == "interrupt_operation"
                                 else "reset" if action == "reset_bash_session"
+                                else "recreated" if action == "restart_container" and recovery.get("state") == "recreated"
                                 else "restarted"
                             )
                             result["diagnostic_report"] = _terminal_recovery_report(action, reason, {"recovery": recovery})
-                            session_recovery = _verify_or_recover_terminal_session(
-                                task["conversation_id"], result.get("_terminal_command")
-                            )
-                            if not session_recovery.get("verified"):
-                                raise TerminalRecoveryPending(
-                                    "Действие диагностики выполнено, но работоспособность Bash-сессии не подтверждена: "
-                                    + str(session_recovery.get("error") or "неизвестная ошибка"),
-                                    pending={
-                                        "terminal_result": result,
-                                        "diagnostic_id": diagnostic_id,
-                                        "messages": diagnostic_messages or [],
-                                        "actions": diagnostic_actions or [],
-                                    },
-                                )
+                            # Every successful recovery action has already been
+                            # followed by a harmless main-session probe inside
+                            # the diagnostic controller. Do not silently skip a
+                            # recovery stage with a second automatic reset here.
                             result["shell_state"] = "available"
-                            if session_recovery.get("action"):
-                                result["diagnostic_report"] += "\n" + _terminal_recovery_report(
-                                    session_recovery["action"], session_recovery["reason"],
-                                    {"recovery": session_recovery["recovery"]},
-                                )
                             break
                 if diagnostic_id:
                     db.update_terminal_diagnostic(

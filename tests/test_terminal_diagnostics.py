@@ -51,6 +51,101 @@ def test_terminal_waits_through_silence_until_internal_checkpoint(monkeypatch):
     assert result["state"] == "running"
 
 
+def test_unclosed_quote_is_sent_to_interactive_bash_for_ps2_detection(monkeypatch):
+    from types import SimpleNamespace
+
+    manager = object.__new__(SandboxManager)
+    manager._guard = threading.RLock()
+    manager._active_operations = {}
+    manager._lock_for = lambda conversation_id: threading.RLock()
+    manager.ensure_session_idle = lambda conversation_id: None
+    manager._ensure_network_proxy = lambda runtime, command: None
+    started = {}
+
+    class Runtime:
+        def start_operation(self, command, *, session, timeout, idempotency_key):
+            started["command"] = command
+            return {"operation_id": "op-incomplete", "state": "running"}
+
+    manager.get_runtime = lambda conversation_id: Runtime()
+    monkeypatch.setattr(
+        "agent.sandbox_manager.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=2, stdout="", stderr="bash: -c: unexpected EOF while looking for matching quote",
+        ),
+    )
+
+    result = manager.start_operation("conversation-1", "echo 'unfinished")
+
+    assert result["operation_id"] == "op-incomplete"
+    assert started["command"].startswith("export PS2='__LOCALAGENT_BASH_CONTINUATION__'\n")
+    assert "echo 'unfinished" in started["command"]
+
+
+def test_ps2_marker_returns_control_for_incomplete_bash_input(monkeypatch):
+    import agent.sandbox_manager as sandbox_module
+
+    manager = object.__new__(SandboxManager)
+    manager._guard = threading.RLock()
+    manager._active_operations = {
+        "conversation-1": {
+            "operation_id": "op-heredoc", "session": "main",
+            "cursor": 0, "output": "", "command": "cat <<EOF",
+            "started_monotonic": __import__("time").monotonic(),
+            "last_output_monotonic": __import__("time").monotonic(),
+            "started_at_wall": 1000, "last_output_at_wall": 1000,
+        }
+    }
+    manager._new_sessions = set()
+    manager._runtimes = {}
+    manager.get_operation = lambda *args, **kwargs: {
+        "state": "running",
+        "stdout": "__LOCALAGENT_BASH_CONTINUATION__",
+        "next_cursor": 1,
+    }
+    monkeypatch.setattr(
+        sandbox_module, "settings",
+        type("Settings", (), {
+            "terminal_idle_timeout_seconds": 1,
+            "terminal_max_wait_seconds": 30,
+            "terminal_poll_interval_seconds": 0.25,
+        })(),
+    )
+
+    result = manager.terminal_command("conversation-1", "")
+
+    assert result["state"] == "waiting_input"
+    assert result["_diagnostic_due"] is False
+    assert result["operation_id"] == "op-heredoc"
+    assert result["input_wait_reason"] == "bash_continuation"
+    assert "Bash ожидает продолжения незавершённой команды" in result["_terminal_text"]
+    assert "LOCALAGENT_BASH_CONTINUATION" not in result["_terminal_text"]
+
+
+def test_diagnostic_recovery_tools_are_exposed_in_order():
+    initial = {item["function"]["name"] for item in core._terminal_diagnostic_tools([])}
+    after_interrupt = {item["function"]["name"] for item in core._terminal_diagnostic_tools([
+        {"action": "interrupt_operation", "result": {"state": "failed"}}
+    ])}
+    after_reset = {item["function"]["name"] for item in core._terminal_diagnostic_tools([
+        {"action": "interrupt_operation"},
+        {"action": "reset_bash_session"},
+    ])}
+    after_restart = {item["function"]["name"] for item in core._terminal_diagnostic_tools([
+        {"action": "interrupt_operation"},
+        {"action": "reset_bash_session"},
+        {"action": "restart_container"},
+    ])}
+
+    assert "interrupt_terminal_operation" in initial
+    assert "reset_bash_session" not in initial
+    assert "reset_bash_session" in after_interrupt
+    assert "restart_sandbox_container" not in after_interrupt
+    assert "restart_sandbox_container" in after_reset
+    assert "recreate_sandbox_container" not in after_reset
+    assert "recreate_sandbox_container" not in after_restart
+
+
 def test_terminal_diagnostic_isolated_from_user_task_and_uses_only_diagnostic_tools(monkeypatch):
     from agent import db
     from agent import sandbox_manager as sandbox_module
@@ -87,16 +182,122 @@ def test_terminal_diagnostic_isolated_from_user_task_and_uses_only_diagnostic_to
     assert action == "continue_waiting"
     assert recovery is None
     assert diagnostic_id
-    assert "НЕ получаешь её исходный запрос" in messages[0]["content"]
+    assert "не получаешь пользовательский запрос" in messages[0]["content"]
     assert all("private user goal" not in str(item) for item in messages)
     assert {item["function"]["name"] for item in captured["tools"]} == {
         "get_additional_terminal_diagnostics",
         "diagnostic_terminal",
-        "propose_terminal_recovery",
+        "interrupt_terminal_operation",
     }
     assert "pip install package" in str(captured["messages"])
-    assert actions[0]["type"] == "evidence"
-    assert actions[0]["evidence"]
+    assert actions[0]["type"] == "snapshot"
+    assert actions[0]["report"]["operation"]["state"] == "unknown"
+
+
+def test_failed_main_probe_after_interrupt_exposes_session_reset_next(monkeypatch):
+    from agent import db
+    from agent import sandbox_manager as sandbox_module
+
+    class Manager:
+        snapshots = 0
+
+        def collect_terminal_diagnostics(self, conversation_id, operation_id, **kwargs):
+            self.snapshots += 1
+            state = "running" if self.snapshots == 1 else "interrupted"
+            return {"runtime_responsive": True, "operation_state": state}
+
+        def interrupt_operation(self, conversation_id, operation_id):
+            return {"state": "interrupted", "interrupted": True}
+
+        def verify_terminal_session(self, conversation_id):
+            return {"verified": False, "error": "main PTY did not answer"}
+
+    manager = Manager()
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", manager)
+    monkeypatch.setattr(db, "create_terminal_diagnostic", lambda *args, **kwargs: {})
+    monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
+    calls = []
+
+    def fake_chat(messages, tools=None, reasoning=True, model=None):
+        calls.append(tools)
+        if len(calls) == 1:
+            return {"message": {"tool_calls": [{
+                "id": "interrupt",
+                "function": {
+                    "name": "interrupt_terminal_operation",
+                    "arguments": {"reason": "No terminal progress"},
+                },
+            }]}}
+        return {"message": {"content": '{"action":"continue_waiting","reason":"Need the next recovery stage."}'}}
+
+    monkeypatch.setattr(core, "_client_chat", fake_chat)
+    result = core._run_terminal_diagnostic(
+        "task-1", "conversation-1",
+        {"operation_id": "terminal-op", "_terminal_command": "cat > file",
+         "_terminal_output": "", "_elapsed_seconds": 900, "_idle_seconds": 900},
+    )
+    assert result[0] == "recovery_failed"
+
+    core._run_terminal_diagnostic(
+        "task-1", "conversation-1",
+        {"operation_id": "terminal-op", "_terminal_command": "cat > file",
+         "_terminal_output": "", "_elapsed_seconds": 901, "_idle_seconds": 901},
+        diagnostic_id=result[2], diagnostic_messages=result[3], diagnostic_actions=result[4],
+    )
+    next_tools = {item["function"]["name"] for item in calls[1]}
+    assert "reset_bash_session" in next_tools
+    assert "restart_sandbox_container" not in next_tools
+
+
+def test_container_restart_automatically_recreates_when_restart_fails(monkeypatch):
+    from agent import db
+    from agent import sandbox_manager as sandbox_module
+
+    class Manager:
+        recreated = False
+
+        def collect_terminal_diagnostics(self, conversation_id, operation_id, **kwargs):
+            return {"runtime_responsive": False, "operation_state": "interrupted"}
+
+        def restart_container(self, conversation_id, *, reason):
+            raise RuntimeError("container could not restart")
+
+        def recreate_container(self, conversation_id, *, reason):
+            self.recreated = True
+            return {"state": "recreated", "verified": True, "workspace_preserved": True}
+
+    manager = Manager()
+    monkeypatch.setattr(sandbox_module, "sandbox_manager", manager)
+    monkeypatch.setattr(db, "update_terminal_diagnostic", lambda *args, **kwargs: {})
+    calls = []
+
+    def fake_chat(messages, tools=None, reasoning=True, model=None):
+        calls.append(tools)
+        return {"message": {"tool_calls": [{
+            "id": "restart",
+            "function": {
+                "name": "restart_sandbox_container",
+                "arguments": {"reason": "SWE-ReX is not responding"},
+            },
+        }]}}
+
+    monkeypatch.setattr(core, "_client_chat", fake_chat)
+    action, reason, diagnostic_id, messages, actions, recovery = core._run_terminal_diagnostic(
+        "task-1", "conversation-1",
+        {"operation_id": "terminal-op", "_terminal_command": "sleep 999",
+         "_terminal_output": "", "_elapsed_seconds": 900, "_idle_seconds": 900},
+        diagnostic_id="diag-1",
+        diagnostic_messages=[{"role": "system", "content": core.TERMINAL_DIAGNOSTIC_SYSTEM_PROMPT}],
+        diagnostic_actions=[
+            {"action": "interrupt_operation", "result": {"state": "interrupted", "verified": False}},
+            {"action": "reset_bash_session", "result": {"state": "reset", "verified": False}},
+        ],
+    )
+
+    assert action == "restart_container"
+    assert recovery["state"] == "recreated"
+    assert recovery["verified"] is True
+    assert manager.recreated is True
 
 
 def test_diagnostic_agent_cannot_reset_bash_directly(monkeypatch):
@@ -183,7 +384,7 @@ def test_terminal_recovery_report_is_separate_from_normal_output():
     assert "Bash-сессия пересоздана" in report
     assert "команда не считается выполненной" in report
 
-def test_controller_rejects_recovery_without_real_evidence(monkeypatch):
+def test_legacy_evidence_proposal_is_not_exposed_or_executed(monkeypatch):
     from agent import db
     from agent import sandbox_manager as sandbox_module
 
@@ -224,7 +425,7 @@ def test_controller_rejects_recovery_without_real_evidence(monkeypatch):
     assert action == "continue_waiting"
     assert recovery is None
     assert manager.interrupt_called is False
-    assert "отсутствующие доказательства" in str(messages)
+    assert "propose_terminal_recovery" not in {item["function"]["name"] for item in core.TERMINAL_DIAGNOSTIC_TOOLS}
 
 
 def test_terminal_diagnostic_keeps_primary_agent_blocked_until_recovery(monkeypatch):
@@ -262,7 +463,7 @@ def test_terminal_diagnostic_keeps_primary_agent_blocked_until_recovery(monkeypa
         if len(reviews) < 5:
             return "continue_waiting", "Still active.", "diag-1", [], [], None
         return "interrupt_operation", "Operation is stuck.", "diag-1", [], [], {
-            "state": "interrupted", "interrupted": True,
+            "state": "interrupted", "interrupted": True, "verified": True,
         }
 
     monkeypatch.setattr(core, "_run_terminal_diagnostic", fake_diagnostic)
@@ -315,7 +516,7 @@ def test_terminal_diagnostic_llm_failure_is_preserved_for_task_pause(monkeypatch
     assert updates[-1][1]["status"] == "paused"
 
 
-def test_resume_pending_terminal_diagnostic_polls_original_operation_and_verifies_bash(monkeypatch):
+def test_resume_pending_diagnostic_returns_natural_completion_silently(monkeypatch):
     from agent import sandbox_manager as sandbox_module
 
     class Manager:
@@ -354,8 +555,9 @@ def test_resume_pending_terminal_diagnostic_polls_original_operation_and_verifie
 
     assert result["state"] == "completed"
     assert result["shell_state"] == "available"
-    assert "Bash-сессия прошла проверочную команду" in result["_terminal_output"]
-    assert "Проверь установленные/обновлённые пакеты" in result["_terminal_output"]
+    assert result["_terminal_output"] == "install finished"
+    assert "Диагностика была приостановлена" not in result["_terminal_output"]
+    assert "Проверь установленные/обновлённые пакеты" not in result["_terminal_output"]
 
 def test_interrupt_race_polls_original_operation_instead_of_starting_new_command(monkeypatch):
     from agent import db
@@ -418,63 +620,29 @@ def test_interrupt_race_polls_original_operation_instead_of_starting_new_command
 
 
 
-def test_diagnostic_report_is_compact_and_explains_metric_limits():
+def test_diagnostic_report_is_compact_without_evidence_gate():
     from agent.terminal_diagnostics import build_diagnostic_context
 
     snapshot = {
-        "sampled_at": "2026-11-19T12:00:00+00:00",
         "operation_id": "op-1",
         "command": "python3 worker.py --input data.csv",
         "elapsed_seconds": 1000,
         "idle_seconds": 1000,
         "operation_state": "running",
         "runtime_responsive": True,
-        "container_top": {"returncode": 0, "output": "PID COMMAND\n1 server"},
         "container_stats": {"returncode": 0, "output": "0.00%|50MiB / 4GiB|1.2%|4"},
     }
     report, evidence = build_diagnostic_context(snapshot)
 
-    assert report["operation"]["command"] == snapshot["command"]
-    assert "не доказывает зависание" in " ".join(report["important_limits"])
-    assert any("всего контейнера" in item["meaning"] for item in evidence)
+    assert report["command"] == snapshot["command"]
+    assert report["operation"]["state"] == "running"
+    assert report["operation"]["silent_seconds"] == 1000
+    assert report["runtime"]["swerex_responsive"] is True
+    assert evidence == []
+    assert "не доказывает зависание" in " ".join(report["important_notes"])
+    assert "evidence_ids" not in str(report)
     assert len(str(report)) < 12000
 
-
-def test_repeated_silence_requires_spaced_samples_and_read_only_inspection():
-    from agent.terminal_diagnostics import build_diagnostic_context, authorize_recovery
-
-    first = {
-        "sampled_at": "2026-11-19T12:00:00+00:00", "operation_id": "op-1",
-        "command": "python3 worker.py", "elapsed_seconds": 1000, "idle_seconds": 1000,
-        "operation_state": "running", "runtime_responsive": True,
-    }
-    _, evidence1 = build_diagnostic_context(first)
-    second = dict(first, sampled_at="2026-11-19T12:00:20+00:00",
-                  elapsed_seconds=1020, idle_seconds=1020)
-    _, evidence2 = build_diagnostic_context(second, evidence1)
-    diagnostic = {
-        "id": "ev_readonly_1", "kind": "diagnostic_terminal",
-        "operation_id": "op-1", "timestamp": "2026-11-19T12:00:21+00:00",
-        "command": "ps -eo pid,stat,args", "success": True,
-    }
-    evidence = evidence1 + evidence2 + [diagnostic]
-    selected = [
-        next(item["id"] for item in evidence if item["kind"] == "operation_state"),
-        next(item["id"] for item in evidence if item["kind"] == "no_terminal_output"),
-        next(item["id"] for item in evidence if item["kind"] == "repeated_no_progress"),
-        diagnostic["id"],
-    ]
-    allowed, reason = authorize_recovery(
-        "interrupt_terminal_operation",
-        {"evidence_ids": selected}, evidence, second,
-    )
-    assert allowed is True
-
-    invented, _ = authorize_recovery(
-        "interrupt_terminal_operation",
-        {"evidence_ids": ["ev_not_real"]}, evidence, second,
-    )
-    assert invented is False
 
 
 def test_diagnostic_terminal_only_allows_read_commands_and_uses_separate_session():
@@ -517,6 +685,34 @@ def test_diagnostic_terminal_only_allows_read_commands_and_uses_separate_session
 
 
 
+def test_diagnostic_terminal_allows_package_presence_checks_but_not_mutations():
+    import pytest
+
+    manager = object.__new__(SandboxManager)
+
+    class Runtime:
+        def is_alive(self):
+            return True
+
+        def ensure_session(self, session):
+            return True
+
+        def run(self, command, *, session, timeout):
+            assert session == "diagnostic"
+            assert "pip show requests" in command
+            return {"stdout": "Name: requests", "stderr": "", "exit_code": 0, "timed_out": False}
+
+    manager._runtimes = {"conversation-1": Runtime()}
+    result = manager.run_diagnostic_terminal("conversation-1", "pip show requests")
+    assert result["ok"] is True
+    assert "Name: requests" in result["stdout"]
+
+    with pytest.raises(ValueError):
+        manager.run_diagnostic_terminal("conversation-1", "pip install requests")
+    with pytest.raises(ValueError):
+        manager.run_diagnostic_terminal("conversation-1", "git reset --hard")
+
+
 def test_diagnostic_terminal_does_not_create_session_when_swerex_is_unresponsive():
     import pytest
     from agent.sandbox_manager import SandboxError
@@ -541,60 +737,20 @@ def test_diagnostic_terminal_does_not_create_session_when_swerex_is_unresponsive
     assert runtime.created is False
 
 
-def test_automatic_process_snapshot_satisfies_read_only_recovery_evidence():
-    from agent.terminal_diagnostics import build_diagnostic_context, authorize_recovery
-
-    first = {
-        "sampled_at": "2026-11-19T12:00:00+00:00", "operation_id": "op-auto",
-        "command": "cat > /tmp/result.json", "elapsed_seconds": 900, "idle_seconds": 900,
-        "operation_state": "running", "runtime_responsive": True,
-    }
-    _, evidence1 = build_diagnostic_context(first)
-    second = {
-        **first,
-        "sampled_at": "2026-11-19T12:00:20+00:00",
-        "elapsed_seconds": 920,
-        "idle_seconds": 920,
-        "process_snapshot": {
-            "ok": True,
-            "exit_code": 0,
-            "stdout": "PID PPID STAT ELAPSED COMM\\n1 0 Ssl 01:00 python3\\n",
-        },
-    }
-    _, evidence2 = build_diagnostic_context(second, evidence1)
-    evidence = evidence1 + evidence2
-    selected = [
-        next(item["id"] for item in evidence if item["kind"] == "operation_state" and item["timestamp"] == second["sampled_at"]),
-        next(item["id"] for item in evidence if item["kind"] == "no_terminal_output" and item["timestamp"] == second["sampled_at"]),
-        next(item["id"] for item in evidence if item["kind"] == "repeated_no_progress"),
-        next(item["id"] for item in evidence if item["kind"] == "diagnostic_process_snapshot"),
-    ]
-
-    allowed, reason = authorize_recovery(
-        "interrupt_terminal_operation",
-        {"evidence_ids": selected}, evidence, second,
-    )
-    assert allowed is True
-    assert "повторных снимках" in reason
-
-
-def test_failed_automatic_process_snapshot_cannot_authorize_recovery():
-    from agent.terminal_diagnostics import build_diagnostic_context, authorize_recovery
+def test_diagnostic_summary_does_not_require_process_evidence():
+    from agent.terminal_diagnostics import build_diagnostic_context
 
     snapshot = {
-        "sampled_at": "2026-11-19T12:00:20+00:00", "operation_id": "op-no-ps",
-        "command": "sleep 999", "elapsed_seconds": 1000, "idle_seconds": 1000,
-        "operation_state": "running", "runtime_responsive": True,
+        "operation_id": "op-2",
+        "command": "cat > result.json",
+        "elapsed_seconds": 1200,
+        "idle_seconds": 1200,
+        "operation_state": "running",
+        "runtime_responsive": True,
         "process_snapshot": {"ok": False, "error": "diagnostic session unavailable"},
     }
-    _, evidence = build_diagnostic_context(snapshot)
-    selected = [
-        next(item["id"] for item in evidence if item["kind"] == "operation_state"),
-        next(item["id"] for item in evidence if item["kind"] == "no_terminal_output"),
-        next(item["id"] for item in evidence if item["kind"] == "diagnostic_process_snapshot_unavailable"),
-    ]
-    allowed, _ = authorize_recovery(
-        "interrupt_terminal_operation",
-        {"evidence_ids": selected}, evidence, snapshot,
-    )
-    assert allowed is False
+    report, observations = build_diagnostic_context(snapshot)
+    assert report["operation"]["state"] == "running"
+    assert "processes" not in report["runtime"]
+    assert observations == []
+
