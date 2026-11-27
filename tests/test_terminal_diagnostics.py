@@ -143,6 +143,7 @@ def test_valid_multiline_command_is_not_instrumented_with_ps2(monkeypatch):
 
     manager = object.__new__(SandboxManager)
     manager._guard = threading.RLock()
+    manager._active_operations = {}
     manager._lock_for = lambda conversation_id: threading.RLock()
     manager.ensure_session_idle = lambda conversation_id: None
     manager._ensure_network_proxy = lambda runtime, command: None
