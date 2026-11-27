@@ -904,6 +904,9 @@ def test_executor_cannot_interrupt_or_recreate_terminal_environment():
         "terminal", {"command": "CTRL+C"}, "conversation-1"
     ) is False
     assert core._is_safe_terminal_recovery_call(
+        "terminal", {"command": ""}, "conversation-1"
+    ) is False
+    assert core._is_safe_terminal_recovery_call(
         "reset_terminal_session", {"confirm_reset": True}, "conversation-1"
     ) is False
 
