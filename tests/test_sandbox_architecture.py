@@ -205,7 +205,7 @@ def test_missing_container_is_recreated_with_persisted_token_and_workspace(monke
     assert runtimes[0].sessions == ["main"]
     assert "conversation-3" in manager._recreated_containers
     assert workspace_root.is_dir()
-    assert f"{(workspace_root / 'conversation-3' / 'work').resolve()}:/host-workspace:rw" in run_calls[0]
+    assert f"{(workspace_root / 'work').resolve()}:/host-workspace:rw" in run_calls[0]
 
 
 def test_delete_closes_only_main_session_and_removes_one_container(monkeypatch):
