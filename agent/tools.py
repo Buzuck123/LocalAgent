@@ -555,35 +555,19 @@ TOOL_DEFINITIONS.insert(1, {"type": "function", "function": {
         "The only interface to this conversation's persistent Linux computer and Bash terminal. "
         "When idle, send an ordinary Bash command. LocalAgent waits internally for up to the configured terminal checkpoint "
         "(300 seconds by default); it does not require repeated empty-command polling during this interval. "
-        "If the operation remains active, a separate diagnostic agent checks it while the main executor is paused. "
-        "Normal long-running commands, including commands that later fail without diagnostic intervention, return only their terminal output. "
-        "A diagnostic report is added only if the diagnostic agent actually interrupts the command, recreates Bash, or restarts the container. "
-        "Use text in command for interactive input only when the process is waiting for input, or CTRL+C to interrupt. "
+        "If the operation remains active or the shell appears stuck, a separate diagnostic agent takes over automatically; "
+        "the main executor must not diagnose, interrupt, reset, or recover the environment. "
+        "Normal long-running commands return only their terminal output unless the diagnostic agent intervenes. "
+        "Use text in command only to answer a genuine interactive prompt reported by the terminal. "
         "While a command is active, non-empty command is input to that process, not a new shell command. "
         "A completed call returns terminal output without a separate exit code. Bash state and files persist between calls."
     ),
     "parameters": {"type": "object", "properties": {
         "command": {"type": "string", "maxLength": 100000,
-                    "description": "Bash command to execute. Omit or use an empty string to wait for an active command; while it is active, send interactive input or CTRL+C here."},
+                    "description": "Bash command to execute. Omit or use an empty string to wait for an active command; send text only when the terminal reports a genuine interactive input prompt."},
         "timeout": {"type": ["integer", "null"], "minimum": 1, "maximum": 600, "default": None,
                     "description": "Optional hard execution limit in seconds for a new command."}},
         "additionalProperties": False}}})
-
-TOOL_DEFINITIONS.insert(2, {"type": "function", "function": {
-    "name": "reset_terminal_session",
-    "description": (
-        "Recreate this conversation's persistent Bash session inside the EXISTING container. "
-        "Use only when terminal polling/CTRL+C cannot recover the shell, for example when LocalAgent "
-        "reports an active operation but SWE-ReX returns Unknown operation. This terminates the old "
-        "shell session and any command attached to it; shell variables/functions are lost. "
-        "The container, /workspace, /host-workspace mount and their files are preserved. "
-        "Must explicitly set confirm_reset=true and provide a concise reason. The tool verifies the new shell."
-    ),
-    "parameters": {"type": "object", "properties": {
-        "confirm_reset": {"type": "boolean", "description": "Must be true: authorize replacing the old Bash session."},
-        "reason": {"type": "string", "minLength": 1, "maxLength": 1000,
-                   "description": "Why normal terminal polling and interruption were insufficient."}},
-        "required": ["confirm_reset", "reason"], "additionalProperties": False}}})
 
 TOOL_DEFINITIONS.insert(3, {"type": "function", "function": {
     "name": "publish_file",
@@ -671,15 +655,6 @@ def _dispatch_tool_impl(name: str, arguments: dict[str, Any], *, task_id: str | 
         return sandbox_manager.terminal_command(
             conversation_id, arguments.get("command", ""),
             timeout=arguments.get("timeout"), idempotency_key=idempotency_key,
-        )
-    if name == "reset_terminal_session":
-        from .sandbox_manager import sandbox_manager
-        if not conversation_id:
-            raise ValueError("Terminal reset requires a conversation-scoped sandbox")
-        return sandbox_manager.reset_terminal_session(
-            conversation_id,
-            confirm_reset=arguments.get("confirm_reset"),
-            reason=arguments.get("reason", ""),
         )
     if name == "publish_file":
         if not conversation_id:
