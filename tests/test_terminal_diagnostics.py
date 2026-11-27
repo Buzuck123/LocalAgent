@@ -892,6 +892,7 @@ def test_executor_cannot_interrupt_or_recreate_terminal_environment():
         for item in core.TOOL_DEFINITIONS
     }
     assert "reset_terminal_session" not in names
+    assert "terminal_interrupt" not in names
     assert "reset_terminal_session" not in core.SYSTEM_PROMPT
     from agent import tools as tools_module
     assert "terminal_interrupt" not in tools_module._LEGACY_CHECKPOINT_TOOL_NAMES
@@ -939,3 +940,46 @@ def test_terminal_timeout_is_retained_as_operation_metadata(monkeypatch):
 
     assert captured["timeout"] == 73
     assert result["_terminal_hard_timeout"] == 73
+
+def test_progressing_command_is_not_diagnosed_by_legacy_max_wait(monkeypatch):
+    import agent.sandbox_manager as sandbox_module
+    from types import SimpleNamespace
+
+    manager = object.__new__(SandboxManager)
+    manager._guard = threading.RLock()
+    manager._active_operations = {}
+    manager._new_sessions = set()
+    manager._runtimes = {}
+    manager._lock_for = lambda conversation_id: threading.RLock()
+    manager.start_operation = lambda *args, **kwargs: {
+        "operation_id": "op-progress", "state": "running", "expects_continuation": False,
+    }
+    polls = []
+
+    def get_operation(*args, **kwargs):
+        polls.append(kwargs)
+        return {
+            "state": "completed" if len(polls) == 4 else "running",
+            "stdout": f"progress-{len(polls)}\\n",
+            "next_cursor": len(polls),
+            "exit_code": 0 if len(polls) == 4 else None,
+        }
+
+    manager.get_operation = get_operation
+    manager.get_runtime = lambda *args, **kwargs: SimpleNamespace(
+        run=lambda *a, **k: {"exit_code": 0, "stdout": "__LOCALAGENT_TERMINAL_READY__"}
+    )
+    monkeypatch.setattr(
+        sandbox_module, "settings",
+        SimpleNamespace(
+            terminal_idle_timeout_seconds=10,
+            terminal_max_wait_seconds=0.01,
+            terminal_poll_interval_seconds=0.25,
+        ),
+    )
+
+    result = manager.terminal_command("conversation-1", "long-running-command")
+
+    assert len(polls) == 4
+    assert result["state"] == "completed"
+    assert result["_diagnostic_due"] is False
