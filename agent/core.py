@@ -669,16 +669,7 @@ _TERMINAL_CONTROL_TOOLS = {
 
 
 def _is_safe_terminal_recovery_call(tool_name, arguments, conversation_id):
-    """Allow only safe terminal waits to survive repeat guards; recovery is diagnostic-owned."""
-    if not isinstance(arguments, dict):
-        return False
-    if tool_name != "terminal":
-        return False
-    command = str(arguments.get("command") or "")
-    if not command.strip():
-        # Empty terminal calls only poll; repeating a poll is safe and necessary.
-        return True
-    # Interrupts are diagnostic-controller actions, never executor tool calls.
+    """The executor has no polling, interruption, or recovery bypass; diagnostics own them."""
     return False
 
 
