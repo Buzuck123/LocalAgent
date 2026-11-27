@@ -105,10 +105,12 @@ def test_ps2_marker_waits_for_no_progress_then_hands_off_to_diagnostics(monkeypa
 
     def get_operation(*args, **kwargs):
         polls.append(kwargs)
+        marker = "__LOCALAGENT_BASH_CONTINUATION__"
+        chunks = [marker[:12], marker[12:], ""]
         return {
             "state": "running",
-            "stdout": "__LOCALAGENT_BASH_CONTINUATION__" if len(polls) == 1 else "",
-            "next_cursor": 1,
+            "stdout": chunks[min(len(polls) - 1, len(chunks) - 1)],
+            "next_cursor": len(polls),
         }
 
     manager.get_operation = get_operation
