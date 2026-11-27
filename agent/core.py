@@ -669,7 +669,7 @@ _TERMINAL_CONTROL_TOOLS = {
 
 
 def _is_safe_terminal_recovery_call(tool_name, arguments, conversation_id):
-    """Polling, interrupting and recovering a stuck terminal must survive repeat guards."""
+    """Allow only safe terminal waits to survive repeat guards; recovery is diagnostic-owned."""
     if not isinstance(arguments, dict):
         return False
     if tool_name != "terminal":
