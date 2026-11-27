@@ -2008,8 +2008,23 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                                 result["_runtime_error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
                                 result["_elapsed_seconds"] = float(result.get("_elapsed_seconds") or 0) + 2
                                 continue
-                        result = dispatch_tool("terminal", {"command": ""},
-                                               conversation_id=task["conversation_id"])
+                        try:
+                            result = dispatch_tool(
+                                "terminal", {"command": ""},
+                                conversation_id=task["conversation_id"],
+                            )
+                        except Exception as exc:
+                            # This is an internal controller poll, not a model tool
+                            # result. Keep the primary executor blocked and let the
+                            # diagnostic loop inspect/recover the original operation.
+                            result = dict(result)
+                            result.update({
+                                "state": "runtime_unresponsive",
+                                "_terminal_recover_original_operation": True,
+                                "_diagnostic_due": True,
+                                "_runtime_error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                                "_elapsed_seconds": float(result.get("_elapsed_seconds") or 0) + 2,
+                            })
                         continue
                     if action == "interrupt_operation" and isinstance(recovery, dict) and recovery.get("state") in {"completed", "timed_out", "failed"}:
                         # The command may have finished while the interrupt request
@@ -2105,8 +2120,22 @@ def _dispatch_tool_for_task(name, arguments, task_id, idempotency_key=None,
                         if not recovery_confirmed:
                             # Failed/unconfirmed recovery must not be reported as an
                             # intervention. Re-poll the same operation before another review.
-                            result = dispatch_tool("terminal", {"command": ""},
-                                                   conversation_id=task["conversation_id"])
+                            try:
+                                result = dispatch_tool(
+                                    "terminal", {"command": ""},
+                                    conversation_id=task["conversation_id"],
+                                )
+                            except Exception as exc:
+                                # Never turn a failed internal poll into a tool
+                                # message for the primary executor.
+                                result = dict(result)
+                                result.update({
+                                    "state": "runtime_unresponsive",
+                                    "_terminal_recover_original_operation": True,
+                                    "_diagnostic_due": True,
+                                    "_runtime_error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                                    "_elapsed_seconds": float(result.get("_elapsed_seconds") or 0) + 2,
+                                })
                             continue
                         else:
                             diagnostic_intervened = True
