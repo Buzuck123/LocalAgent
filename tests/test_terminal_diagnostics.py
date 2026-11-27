@@ -518,7 +518,7 @@ def test_internal_terminal_poll_error_stays_inside_controller(monkeypatch):
                 "cursor": 0,
                 "_diagnostic_due": True,
             }
-        raise core.SandboxError("temporary proxy JSONDecodeError")
+        raise RuntimeError("temporary proxy JSONDecodeError")
 
     monkeypatch.setattr(core, "dispatch_tool", fake_dispatch)
     monkeypatch.setattr(
