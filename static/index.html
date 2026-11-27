@@ -504,7 +504,10 @@ async function loadActivity(task){
 
         const history=$('activity-history');
         const fragment=document.createDocumentFragment();
-        for(const event of (execution.events||[]).slice(-8).reverse()){
+        const visibleEvents=(execution.events||[]).filter(event=>!(
+            event.tool==='terminal' && event.type==='tool_started'
+        ));
+        for(const event of visibleEvents.slice(-8).reverse()){
             const row=document.createElement('div');row.className='timeline-event '+(event.status==='failed'?'failed':event.status==='succeeded'?'completed':'');
             const title=document.createElement('div');title.className='timeline-title';
             const when=event.at?new Date(event.at).toLocaleTimeString():'';
@@ -513,7 +516,10 @@ async function loadActivity(task){
             if(event.detail){const detail=document.createElement('div');detail.className='timeline-detail';detail.textContent=event.detail;row.append(detail)}
             fragment.append(row);
         }
-        for(const op of (data.operations||[])){
+        const visibleOperations=(data.operations||[]).filter(op=>!(
+            op.tool_name==='terminal' && op.status==='running'
+        ));
+        for(const op of visibleOperations){
             const row=document.createElement('details');row.className='tool-card '+(op.status||'');
             const summary=document.createElement('summary');summary.className='tool-summary';
             const icon=document.createElement('span');icon.className='tool-status-icon';
@@ -562,7 +568,7 @@ async function loadActivity(task){
             });
             fragment.append(row);
         }
-        if(!data.operations?.length&&!(execution.events||[]).length){
+        if(!visibleOperations.length&&!visibleEvents.length){
             const empty=document.createElement('div');empty.className='timeline-empty';empty.textContent='Инструменты ещё не вызывались.';fragment.append(empty);
         }
         history.replaceChildren(fragment);
