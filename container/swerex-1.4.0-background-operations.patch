@@ -537,7 +537,7 @@
 +        self.shell.logfile_read = operation.capture
 +        try:
 +            await asyncio.to_thread(_check_bash_command, action.command)
-+            self.shell.sendline(action.command)
++            await asyncio.to_thread(self.shell.sendline, action.command)
 +            operation.started_event.set()
 +
 +            async def execute_until_prompt() -> None:
