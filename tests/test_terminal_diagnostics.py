@@ -888,6 +888,8 @@ def test_executor_cannot_interrupt_or_recreate_terminal_environment():
     }
     assert "reset_terminal_session" not in names
     assert "reset_terminal_session" not in core.SYSTEM_PROMPT
+    from agent import tools as tools_module
+    assert "terminal_interrupt" not in tools_module._LEGACY_CHECKPOINT_TOOL_NAMES
     assert core._is_safe_terminal_recovery_call(
         "terminal", {"command": "CTRL+C"}, "conversation-1"
     ) is False
