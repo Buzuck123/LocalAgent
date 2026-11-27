@@ -393,7 +393,7 @@ print(json.dumps(result))
         """Inspect executable command AST nodes, never arbitrary script/file contents."""
         try:
             trees = bashlex.parse(str(command or ""))
-        except (bashlex.errors.ParsingError, NotImplementedError, ValueError):
+        except Exception:
             # A parser limitation must not block local work. A genuinely networked
             # command will fail naturally if the sandbox has no outbound access.
             return False
@@ -403,13 +403,13 @@ print(json.dumps(result))
             "apt-get": {"install", "reinstall", "update", "upgrade", "dist-upgrade", "download", "source", "build-dep"},
             "pip": {"install", "download"},
             "pip3": {"install", "download"},
-            "uv": {"add", "sync", "lock", "tool"},
+            "uv": {"add", "sync", "lock"},
             "npm": {"install", "i", "ci", "add", "update", "upgrade", "publish", "audit"},
             "pnpm": {"install", "i", "add", "update", "up", "fetch", "publish", "audit"},
-            "yarn": {"install", "add", "upgrade", "up", "import"},
+            "yarn": {"install", "add", "upgrade", "up"},
             "cargo": {"install", "fetch", "update", "publish"},
             "go": {"get", "install"},
-            "git": {"clone", "fetch", "pull", "push", "submodule"},
+            "git": {"clone", "fetch", "pull", "push"},
             "playwright": {"install"},
             "chromium": {"install"},
         }
@@ -432,6 +432,9 @@ print(json.dumps(result))
                     executable = words[0].rsplit("/", 1)[-1].lower()
                     if executable in always_network:
                         return True
+                    if executable == "git" and len(words) > 2 and words[1] == "submodule":
+                        if words[2] in {"add", "init", "update"}:
+                            return True
                     if executable in {"python", "python3", "pypy", "pypy3"} and len(words) > 3 and words[1:3] == ["-m", "pip"]:
                         if words[3] in {"install", "download"}:
                             return True
