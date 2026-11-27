@@ -34,8 +34,7 @@ def test_controller_returns_explicit_blocker_for_non_terminal_tools(monkeypatch)
     assert blocker["active_operation"] == {"state": "running"}
     assert "remote-op-1" not in blocker["error"]
     assert blocker["required_tool"] == "terminal"
-    assert "пустой command" in blocker["error"]
-    assert "CTRL+C" in blocker["error"]
+    assert "диагностический контроллер" in blocker["error"]
 
 
 def test_controller_allows_only_terminal_control_tools_during_active_operation():
@@ -91,7 +90,7 @@ def test_download_file_checks_busy_guard_before_using_runtime(tmp_path, monkeypa
 
 
 
-def test_controller_allows_poll_and_interrupt_but_blocks_new_shell_command(monkeypatch):
+def test_controller_blocks_executor_poll_and_interrupt_but_allows_real_interactive_input(monkeypatch):
     class Manager:
         def get_active_operation(self, conversation_id):
             return {"operation_id": "remote-op", "state": "running"}
@@ -100,17 +99,16 @@ def test_controller_allows_poll_and_interrupt_but_blocks_new_shell_command(monke
 
     assert core._active_terminal_operation_blocker(
         "conversation-1", terminal_command=""
-    ) is None
+    ) is not None
     assert core._active_terminal_operation_blocker(
         "conversation-1", terminal_command="CTRL+C"
-    ) is None
+    ) is not None
 
     blocker = core._active_terminal_operation_blocker(
         "conversation-1", terminal_command="ls -la"
     )
     assert blocker["blocked_by_active_terminal_operation"] is True
-    assert "не запущена" in blocker["error"]
-    assert "stdin" in blocker["error"]
+    assert "диагностический контроллер" in blocker["error"]
 
 
 def test_controller_allows_interactive_input_only_when_terminal_waits_for_input(monkeypatch):
@@ -168,13 +166,13 @@ def test_shell_execution_entry_points_refuse_a_busy_session(invoke):
 
 
 
-def test_empty_terminal_poll_bypasses_exact_repeat_guard():
-    assert core._is_safe_terminal_recovery_call(
+def test_executor_terminal_poll_does_not_bypass_repeat_guard():
+    assert not core._is_safe_terminal_recovery_call(
         "terminal", {"command": ""}, "conversation-1"
     )
 
 
-def test_terminal_interrupt_bypasses_repeat_guard_only_for_active_operation(monkeypatch):
+def test_executor_terminal_interrupt_never_bypasses_repeat_guard(monkeypatch):
     class Manager:
         def __init__(self, active):
             self.active = active
@@ -186,7 +184,7 @@ def test_terminal_interrupt_bypasses_repeat_guard_only_for_active_operation(monk
         "agent.sandbox_manager.sandbox_manager",
         Manager({"operation_id": "op-1", "state": "running"}),
     )
-    assert core._is_safe_terminal_recovery_call(
+    assert not core._is_safe_terminal_recovery_call(
         "terminal", {"command": "CTRL+C"}, "conversation-1"
     )
 
@@ -291,36 +289,11 @@ def test_reset_terminal_session_does_not_clear_active_state_if_new_shell_fails()
     assert manager.get_active_operation("conversation-1")["operation_id"] == "stale-operation"
 
 
-def test_controller_allows_explicit_terminal_reset_during_active_operation():
-    assert "reset_terminal_session" in core._TERMINAL_CONTROL_TOOLS
+def test_controller_does_not_expose_terminal_reset_to_executor():
+    assert "reset_terminal_session" not in core._TERMINAL_CONTROL_TOOLS
 
 
-def test_persisted_reset_receipt_clears_old_running_operation(monkeypatch):
-    import json
-
-    class Rows:
-        def fetchall(self):
-            return [(json.dumps({"state": "reset", "shell_state": "recreated"}),)]
-
-    class Connection:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def execute(self, query, params):
-            assert "reset_terminal_session" in query
-            assert params == ("conversation-1",)
-            return Rows()
-
-    monkeypatch.setattr("agent.sandbox_manager.db.connect", lambda: Connection())
-    manager = object.__new__(SandboxManager)
-
-    assert manager._find_persisted_active_operation_details("conversation-1") is None
-
-
-def test_confirmed_terminal_reset_bypasses_repeat_guard_only_while_operation_is_active(monkeypatch):
+def test_executor_terminal_reset_never_bypasses_repeat_guard(monkeypatch):
     class Manager:
         def __init__(self, active):
             self.active = active
@@ -333,7 +306,7 @@ def test_confirmed_terminal_reset_bypasses_repeat_guard_only_while_operation_is_
         "agent.sandbox_manager.sandbox_manager",
         Manager({"operation_id": "stale-op", "state": "running"}),
     )
-    assert core._is_safe_terminal_recovery_call(
+    assert not core._is_safe_terminal_recovery_call(
         "reset_terminal_session", args, "conversation-1"
     )
 
