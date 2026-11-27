@@ -674,7 +674,7 @@ _LEGACY_CHECKPOINT_TOOL_NAMES = {
     "calculate", "list_files", "read_file", "copy_file",
     "create_directory", "write_file", "edit_file", "move_file",
     "delete_file", "delete_directory", "publish_workspace_file",
-    "terminal_start", "terminal_poll", "terminal_input", "terminal_interrupt", "terminal_resize",
+    "terminal_start", "terminal_poll", "terminal_input", "terminal_resize",
     "run_python", "read_output_file", "open_web_page", "web_search", "open_browser_page",
 }
 
