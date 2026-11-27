@@ -174,16 +174,38 @@ def test_stopped_container_is_started_and_session_is_recreated(monkeypatch):
     assert runtimes[0].sessions == ["main"]
 
 
-def test_missing_container_is_not_silently_recreated(monkeypatch):
+def test_missing_container_is_recreated_with_persisted_token_and_workspace(monkeypatch, tmp_path):
     record = {"conversation_id": "conversation-3", "container_id": "missing",
               "container_name": "missing", "host_port": 12345, "auth_token": "secret",
               "session_name": "main", "status": "running"}
-    _fake_db(monkeypatch, record)
+    state = _fake_db(monkeypatch, record)
+    workspace_root = tmp_path / "workspace"
+    monkeypatch.setattr(
+        sandbox_manager_module,
+        "settings",
+        SimpleNamespace(**{**settings.__dict__, "workspace_path": workspace_root}),
+    )
     podman = FakePodman(existing=None)
-    manager = SandboxManager(runtime_factory=lambda **kw: FakeRuntime(**kw), command_runner=podman)
-    with pytest.raises(SandboxError, match="отсутствует"):
-        manager.get_runtime("conversation-3")
-    assert not any(args[1:2] == ["run"] for args, _, _ in podman.calls)
+    runtimes = []
+    manager = SandboxManager(
+        runtime_factory=lambda **kw: runtimes.append(FakeRuntime(**kw)) or runtimes[-1],
+        command_runner=podman,
+    )
+
+    runtime = manager.get_runtime("conversation-3")
+
+    run_calls = [args for args, _, _ in podman.calls if args[1:2] == ["run"]]
+    assert len(run_calls) == 1
+    assert runtime is runtimes[0]
+    assert runtime.kwargs["token"] == "secret"
+    assert state["record"]["container_id"] == "container-new"
+    assert state["record"]["auth_token"] == "secret"
+    assert state["record"]["session_name"] == "main"
+    assert state["record"]["status"] == "running"
+    assert runtimes[0].sessions == ["main"]
+    assert "conversation-3" in manager._recreated_containers
+    assert workspace_root.is_dir()
+    assert f"{(workspace_root / 'conversation-3' / 'work').resolve()}:/host-workspace:rw" in run_calls[0]
 
 
 def test_delete_closes_only_main_session_and_removes_one_container(monkeypatch):
