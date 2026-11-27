@@ -522,7 +522,7 @@ def _messages_with_tool_scope(messages: list[dict], tool_definitions: list[dict]
     if names:
         groups = {
             "Computer": [n for n in names if n in {"terminal", "publish_file", "get_tool_result"}],
-            "Other": [n for n in names if n not in {"terminal", "reset_terminal_session", "publish_file", "get_tool_result"}],
+            "Other": [n for n in names if n not in {"terminal", "publish_file", "get_tool_result"}],
         }
         sections = [f"{label}: {', '.join(items)}" for label, items in groups.items() if items]
         scope_text = ("[LOCAL_AGENT_TOOL_SCOPE]\nAll listed tools are available on this turn. Select the best fit; tools are grouped for navigation, not hidden by task type.\n" + "\n".join(sections))
